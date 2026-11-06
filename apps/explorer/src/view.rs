@@ -646,6 +646,10 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
             if place(ui, "🏠", "Home", &home_page, &app.cur) {
                 go = Some(home_page);
             }
+            let gallery = PathBuf::from(explorer_core::GALLERY);
+            if place(ui, "🖼", "Gallery", &gallery, &app.cur) {
+                go = Some(gallery);
+            }
             for (name, path) in &app.places {
                 let icon = match *name {
                     "Desktop" => "🖥",
@@ -716,6 +720,10 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
                 }
             }
             ui.add_space(6.0);
+            let libraries = PathBuf::from(explorer_core::LIBRARIES);
+            if place(ui, "📚", "Libraries", &libraries, &app.cur) {
+                go = Some(libraries);
+            }
             let network = PathBuf::from(explorer_core::NETWORK);
             if place(ui, "🖧", "Network", &network, &app.cur) {
                 go = Some(network);
@@ -831,14 +839,8 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
     let cur = app.cur.clone();
     // On Windows the shell's own menus are used (all installed handlers); egui menus are the
     // fallback for the virtual Network page and for non-Windows builds.
-    let shell_menus = app.hwnd != 0
-        && !matches!(
-            explorer_core::classify(&app.cur),
-            explorer_core::Place::Network
-                | explorer_core::Place::RecycleBin
-                | explorer_core::Place::ThisPc
-                | explorer_core::Place::Home
-        );
+    let place = explorer_core::classify(&app.cur);
+    let shell_menus = app.hwnd != 0 && (!place.is_page() || matches!(place, explorer_core::Place::Server(_)));
     let in_bin = app.in_recycle_bin();
     if shell_menus && bg.secondary_clicked() {
         action = Some(Action::ShellMenu(None));

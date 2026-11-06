@@ -21,6 +21,8 @@ mod windows;
 use windows as imp;
 
 #[cfg(windows)]
+mod libraries;
+#[cfg(windows)]
 mod preview;
 #[cfg(windows)]
 mod props;
@@ -74,6 +76,24 @@ pub fn read_props(path: &Path, props: &[explorer_core::Prop]) -> Vec<String> {
         let _ = path;
         vec![String::new(); props.len()]
     }
+}
+
+/// The libraries (display name, folders), e.g. ("Documents", [C:\\Users\\a\\Documents]).
+/// Without library files (or off Windows) the four standard ones are made from the known
+/// folders.
+pub fn libraries() -> Vec<(String, Vec<PathBuf>)> {
+    #[cfg(windows)]
+    let found = libraries::libraries();
+    #[cfg(not(windows))]
+    let found: Vec<(String, Vec<PathBuf>)> = Vec::new();
+    if !found.is_empty() {
+        return found;
+    }
+    known_folders()
+        .into_iter()
+        .filter(|(n, _)| matches!(*n, "Documents" | "Music" | "Pictures" | "Videos"))
+        .map(|(n, p)| (n.to_string(), vec![p]))
+        .collect()
 }
 
 /// One file or folder's entry; its `name` is the last path component.

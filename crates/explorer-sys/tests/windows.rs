@@ -486,3 +486,13 @@ fn property_columns_are_read() {
     assert!(v[2].is_empty(), "authors: {v:?}");
     fs::remove_dir_all(&d).unwrap();
 }
+
+#[test]
+fn libraries_list_their_folders() {
+    let _g = guard("libraries_list_their_folders");
+    let libs = explorer_sys::libraries();
+    println!("libraries: {libs:?}");
+    assert!(!libs.is_empty());
+    assert!(libs.iter().all(|(n, _)| !n.is_empty() && !n.ends_with(".library-ms")));
+    assert!(libs.iter().flat_map(|l| &l.1).any(|p| p.is_dir()), "{libs:?}");
+}

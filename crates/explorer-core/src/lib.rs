@@ -488,6 +488,14 @@ pub const HOME: &str = "::home";
 /// The virtual This PC page: known folders and drives. Its items are named by full path.
 pub const THIS_PC: &str = "::this-pc";
 
+/// The Libraries page; `::libraries\\<name>` is one library, showing its folders merged.
+/// Items are named by full path.
+pub const LIBRARIES: &str = "::libraries";
+
+/// The Gallery: pictures and videos from the Pictures library, newest first. Items are named
+/// by full path.
+pub const GALLERY: &str = "::gallery";
+
 /// What kind of location a path is, for the parts that are not plain folders.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Place {
@@ -496,6 +504,10 @@ pub enum Place {
     RecycleBin,
     ThisPc,
     Home,
+    Libraries,
+    /// One library, by name.
+    Library(String),
+    Gallery,
     /// `\\server`: the list of its shares.
     Server(String),
     /// `\\server\share\...`
@@ -521,6 +533,15 @@ pub fn classify(p: &Path) -> Place {
     if s == HOME {
         return Place::Home;
     }
+    if s == LIBRARIES {
+        return Place::Libraries;
+    }
+    if s == GALLERY {
+        return Place::Gallery;
+    }
+    if let Some(name) = s.strip_prefix(LIBRARIES).and_then(|r| r.strip_prefix(['\\', '/'])).filter(|n| !n.is_empty()) {
+        return Place::Library(name.to_string());
+    }
     let Some(rest) = s.strip_prefix(r"\\") else { return Place::Local };
     if rest.starts_with(r"?\") || rest.starts_with(r".\") {
         return Place::Local; // \\?\C:\... and device paths
@@ -533,6 +554,19 @@ pub fn classify(p: &Path) -> Place {
     }
 }
 
+impl Place {
+    /// A page made up by the app rather than a folder on disk (or a share): nothing can be
+    /// created, renamed or pasted in it, and it isn't watched.
+    pub fn is_page(&self) -> bool {
+        !matches!(self, Place::Unc { .. } | Place::Local)
+    }
+
+    /// A page whose items are named by their full path.
+    pub fn names_are_paths(&self) -> bool {
+        matches!(self, Place::ThisPc | Place::Home | Place::Libraries | Place::Library(_) | Place::Gallery)
+    }
+}
+
 /// Whether `p` starts with a drive letter or `\\?\` prefix (Windows paths).
 fn has_drive(p: &Path) -> bool {
     matches!(p.components().next(), Some(std::path::Component::Prefix(_)))
@@ -542,7 +576,7 @@ fn has_drive(p: &Path) -> bool {
 pub fn child_path(cur: &Path, name: &str) -> PathBuf {
     match classify(cur) {
         Place::Network => PathBuf::from(format!(r"\\{name}")),
-        Place::ThisPc | Place::Home => PathBuf::from(name),
+        p if p.names_are_paths() => PathBuf::from(name),
         Place::Server(server) => PathBuf::from(format!(r"\\{server}\{name}")),
         _ => cur.join(name),
     }
@@ -551,7 +585,8 @@ pub fn child_path(cur: &Path, name: &str) -> PathBuf {
 /// One level up: share root -> server -> Network; drive root -> none.
 pub fn parent_path(cur: &Path) -> Option<PathBuf> {
     match classify(cur) {
-        Place::Network | Place::RecycleBin | Place::ThisPc | Place::Home => None,
+        Place::Network | Place::RecycleBin | Place::ThisPc | Place::Home | Place::Libraries | Place::Gallery => None,
+        Place::Library(_) => Some(PathBuf::from(LIBRARIES)),
         Place::Server(_) => Some(PathBuf::from(NETWORK)),
         Place::Unc { server, share } => {
             let s = cur.to_string_lossy();
@@ -575,6 +610,12 @@ pub fn location_crumbs(cur: &Path) -> Vec<(String, PathBuf)> {
         Place::RecycleBin => vec![("Recycle Bin".into(), PathBuf::from(RECYCLE_BIN))],
         Place::ThisPc => vec![("This PC".into(), PathBuf::from(THIS_PC))],
         Place::Home => vec![("Home".into(), PathBuf::from(HOME))],
+        Place::Gallery => vec![("Gallery".into(), PathBuf::from(GALLERY))],
+        Place::Libraries => vec![("Libraries".into(), PathBuf::from(LIBRARIES))],
+        Place::Library(name) => vec![
+            ("Libraries".into(), PathBuf::from(LIBRARIES)),
+            (name.clone(), PathBuf::from(format!("{LIBRARIES}\\{name}"))),
+        ],
         Place::Server(server) => {
             vec![("Network".into(), PathBuf::from(NETWORK)), (server.clone(), PathBuf::from(format!(r"\\{server}")))]
         }
@@ -749,6 +790,8 @@ pub fn shell_folder_template(name: &str) -> Option<&'static str> {
         "networkplacesfolder" => NETWORK,
         "mycomputerfolder" | "thispc" => THIS_PC,
         "home" => HOME,
+        "libraries" => LIBRARIES,
+        "gallery" => GALLERY,
         _ => return None,
     })
 }
@@ -1112,5 +1155,19 @@ mod tests {
         let items = vec![("a.jpg".to_string(), false), ("b.PNG".to_string(), false), ("dir".to_string(), true)];
         assert_eq!(batch_names("Trip.jpg", &items), ["Trip (1).jpg", "Trip (2).PNG", "Trip (3)"]);
         assert_eq!(batch_names("Trip", &items)[0], "Trip (1).jpg");
+    }
+
+    #[test]
+    fn library_pages() {
+        let lib = Path::new(r"::libraries\Documents");
+        assert_eq!(classify(lib), Place::Library("Documents".into()));
+        assert_eq!(classify(Path::new(LIBRARIES)), Place::Libraries);
+        assert_eq!(classify(Path::new(GALLERY)), Place::Gallery);
+        assert_eq!(parent_path(lib), Some(PathBuf::from(LIBRARIES)));
+        assert_eq!(parent_path(Path::new(GALLERY)), None);
+        assert_eq!(location_crumbs(lib).len(), 2);
+        assert_eq!(child_path(lib, r"C:\Users\a\Documents\x.txt"), PathBuf::from(r"C:\Users\a\Documents\x.txt"));
+        assert!(Place::Gallery.is_page() && !Place::Local.is_page());
+        assert_eq!(shell_folder_template("libraries"), Some(LIBRARIES));
     }
 }

@@ -334,6 +334,13 @@ impl App {
                     None if self.cur.as_os_str() == explorer_core::THIS_PC => {
                         FolderView { view: ViewMode::Tiles, ..self.persist.settings.folder }
                     }
+                    None if self.cur.as_os_str() == explorer_core::LIBRARIES => {
+                        FolderView { view: ViewMode::Tiles, ..self.persist.settings.folder }
+                    }
+                    // The Gallery: big thumbnails, newest first.
+                    None if self.cur.as_os_str() == explorer_core::GALLERY => {
+                        FolderView { view: ViewMode::Large, sort: SortKey::Modified, ascending: false }
+                    }
                     // Home lists recent files newest first.
                     None if self.cur.as_os_str() == explorer_core::HOME => {
                         FolderView { view: ViewMode::Details, sort: SortKey::Modified, ascending: false }

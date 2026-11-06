@@ -497,6 +497,61 @@ impl App {
                         let _ = tx.send(Msg::Batch(generation, batch));
                         Ok(())
                     }
+                    Place::Libraries => {
+                        let batch = explorer_sys::libraries()
+                            .into_iter()
+                            .map(|(name, folders)| Entry {
+                                name: format!("{}\\{name}", explorer_core::LIBRARIES),
+                                label: Some(name),
+                                note: Some(format!(
+                                    "Library · {} location{}",
+                                    folders.len(),
+                                    if folders.len() == 1 { "" } else { "s" }
+                                )),
+                                is_dir: true,
+                                ..Default::default()
+                            })
+                            .collect();
+                        let _ = tx.send(Msg::Batch(generation, batch));
+                        Ok(())
+                    }
+                    // A library shows the contents of all its folders together.
+                    Place::Library(name) => {
+                        let folders = explorer_sys::libraries().into_iter().find(|(n, _)| *n == name).map(|l| l.1);
+                        match folders {
+                            None => Err(std::io::Error::new(std::io::ErrorKind::NotFound, "No such library")),
+                            Some(folders) => {
+                                for f in folders {
+                                    let _ = explorer_sys::list_dir(&f, &cancel, &mut |batch| {
+                                        let batch = batch
+                                            .into_iter()
+                                            .map(|mut e| {
+                                                e.label = Some(e.name.clone());
+                                                e.name = f.join(&e.name).to_string_lossy().into_owned();
+                                                e
+                                            })
+                                            .collect();
+                                        let _ = tx.send(Msg::Batch(generation, batch));
+                                        ctx.request_repaint();
+                                    });
+                                }
+                                Ok(())
+                            }
+                        }
+                    }
+                    // Every picture and video in the Pictures library, newest first.
+                    Place::Gallery => {
+                        let roots: Vec<PathBuf> = explorer_sys::libraries()
+                            .into_iter()
+                            .filter(|(n, _)| n == "Pictures")
+                            .flat_map(|l| l.1)
+                            .collect();
+                        gallery(&roots, &cancel, &mut |batch| {
+                            let _ = tx.send(Msg::Batch(generation, batch));
+                            ctx.request_repaint();
+                        });
+                        Ok(())
+                    }
                     // Known folders, then drives with their free space.
                     Place::ThisPc => {
                         let folders = explorer_sys::known_folders().into_iter().map(|(name, p)| Entry {
@@ -548,10 +603,7 @@ impl App {
     fn start_watch(&mut self) {
         self.watch_cancel.store(true, Ordering::Relaxed);
         self.watch_cancel = Arc::new(AtomicBool::new(false));
-        if matches!(
-            classify(&self.cur),
-            Place::Network | Place::Server(_) | Place::RecycleBin | Place::ThisPc | Place::Home
-        ) {
+        if classify(&self.cur).is_page() {
             return;
         }
         let (dir, cancel, tx, ctx) = (self.cur.clone(), self.watch_cancel.clone(), self.tx.clone(), self.ctx.clone());
@@ -1012,10 +1064,7 @@ impl App {
     /// A page that isn't a real folder (Network, a server's shares, Recycle Bin, This PC):
     /// nothing can be created, renamed or pasted there.
     pub fn in_virtual_place(&self) -> bool {
-        matches!(
-            classify(&self.cur),
-            Place::Network | Place::Server(_) | Place::RecycleBin | Place::ThisPc | Place::Home
-        )
+        classify(&self.cur).is_page()
     }
 
     pub fn in_recycle_bin(&self) -> bool {
@@ -1249,10 +1298,7 @@ impl App {
     }
 
     fn paste_into(&mut self, dest: PathBuf) {
-        if matches!(
-            classify(&dest),
-            Place::Network | Place::Server(_) | Place::RecycleBin | Place::ThisPc | Place::Home
-        ) {
+        if classify(&dest).is_page() {
             return;
         }
         let Some((files, cut)) = explorer_sys::clipboard_get_files() else {
@@ -1811,6 +1857,39 @@ impl eframe::App for App {
 
 /// The newest `max` files in Windows' Recent folder (shortcuts to what was opened), resolved
 /// to their targets; missing targets and folders are skipped.
+/// Most items the Gallery collects.
+const GALLERY_MAX: usize = 50_000;
+
+/// Pictures and videos under `roots` (all subfolders), named by full path.
+fn gallery(roots: &[PathBuf], cancel: &AtomicBool, sink: &mut dyn FnMut(Vec<Entry>)) {
+    use explorer_core::query::Kind;
+    let mut queue: std::collections::VecDeque<PathBuf> = roots.iter().cloned().collect();
+    let mut count = 0;
+    while let Some(dir) = queue.pop_front() {
+        if cancel.load(Ordering::Relaxed) || count >= GALLERY_MAX {
+            return;
+        }
+        let mut out = Vec::new();
+        let _ = explorer_sys::list_dir(&dir, cancel, &mut |batch| {
+            for mut e in batch {
+                if e.is_dir {
+                    if !e.link && !e.hidden {
+                        queue.push_back(dir.join(&e.name));
+                    }
+                } else if matches!(Kind::of(&e), Some(Kind::Picture | Kind::Video)) && !e.hidden {
+                    e.label = Some(e.name.clone());
+                    e.name = dir.join(&e.name).to_string_lossy().into_owned();
+                    out.push(e);
+                }
+            }
+        });
+        count += out.len();
+        if !out.is_empty() {
+            sink(out);
+        }
+    }
+}
+
 /// Search results on their way to the UI, sent in batches at most every 100 ms.
 struct SearchOut<'a> {
     found: Vec<Entry>,

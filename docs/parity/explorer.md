@@ -109,7 +109,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | --- | --- | --- |
 | Recycle Bin (browse, restore, empty) | ✅ | reads `$Recycle.Bin` `$I` records; original location and date deleted columns |
 | Home / Recent files | ✅ | Quick access + recent files from the Recent folder |
-| Libraries, Gallery | ❌ | |
+| Libraries, Gallery | ✅ | libraries read with IShellLibrary, folders merged; Gallery = Pictures library pictures and videos, newest first |
 | OneDrive status | ❌ | |
 | Control Panel and other shell namespaces | ➖ | not the file system |
 | Phones (MTP) | ❌ | |
