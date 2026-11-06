@@ -220,7 +220,8 @@ impl App {
         if settings.always_on_top {
             settings.apply_on_top(&cc.egui_ctx);
         }
-        INTERVAL_MS.store(settings.interval_ms, Ordering::Relaxed);
+        let interval = std::env::var("OXI_TASKMGR_INTERVAL_MS").ok().and_then(|v| v.parse().ok());
+        INTERVAL_MS.store(interval.unwrap_or(settings.interval_ms), Ordering::Relaxed);
         let tab = Tab::initial(&settings.default_tab);
         WANT_SERVICES.store(tab == Tab::Services, Ordering::Relaxed);
         WANT_SESSIONS.store(tab == Tab::Users, Ordering::Relaxed);
