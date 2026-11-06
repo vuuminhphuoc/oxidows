@@ -290,3 +290,10 @@ pub fn taskmgr_replacement() -> Option<String> {
 pub fn set_taskmgr_replacement(_exe: Option<&str>) -> io::Result<()> {
     unsupported()
 }
+pub fn is_running(name: &str) -> bool {
+    std::fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|e| std::fs::read_to_string(e.path().join("comm")).is_ok_and(|c| c.trim().eq_ignore_ascii_case(name)))
+}

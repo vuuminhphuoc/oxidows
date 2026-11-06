@@ -87,6 +87,7 @@ pub struct Status {
     msg: Arc<Mutex<Option<String>>>,
     dialog: Arc<Mutex<Option<Dialog>>>,
     goto_details: Arc<Mutex<Option<u32>>>,
+    goto_services: Arc<Mutex<Option<u32>>>,
 }
 
 impl Status {
@@ -101,6 +102,11 @@ impl Status {
     pub fn open(&self, d: Dialog) {
         if let Ok(mut m) = self.dialog.lock() {
             *m = Some(d);
+        }
+    }
+    pub fn goto_services(&self, pid: u32) {
+        if let Ok(mut m) = self.goto_services.lock() {
+            *m = Some(pid);
         }
     }
     pub fn goto_details(&self, pid: u32) {
@@ -424,6 +430,10 @@ impl eframe::App for App {
         if let Some(pid) = self.status.goto_details.lock().ok().and_then(|mut g| g.take()) {
             self.tab = Tab::Details;
             self.details.select(pid, &snap);
+        }
+        if let Some(pid) = self.status.goto_services.lock().ok().and_then(|mut g| g.take()) {
+            self.tab = Tab::Services;
+            self.services.show_pid(pid);
         }
         self.dialogs(ui.ctx());
         WANT_SERVICES.store(self.tab == Tab::Services, Ordering::Relaxed);

@@ -65,11 +65,41 @@ pub fn end_tree(status: &Status, rows: &[ProcessRow], root: &ProcessRow) {
     });
 }
 
+/// "Restart" for Windows Explorer: end it, then start a fresh shell once it is gone.
+fn restart_explorer(status: &Status, rows: &[ProcessRow], p: &ProcessRow) {
+    if !rows.iter().any(|r| r.pid == p.pid && r.name == p.name) {
+        status.set("Windows Explorer has already exited");
+        return;
+    }
+    if let Err(e) = taskmgr_sys::end_process(p.pid) {
+        status.set(format!("Could not end Windows Explorer: {e}"));
+        return;
+    }
+    let status = status.clone();
+    std::thread::spawn(move || {
+        // Windows relaunches the shell itself when AutoRestartShell is on; start one only if it did not,
+        // so no extra File Explorer window opens.
+        std::thread::sleep(std::time::Duration::from_millis(2000));
+        if taskmgr_sys::is_running("explorer.exe") {
+            status.set("Windows Explorer restarted");
+            return;
+        }
+        status.set(match taskmgr_sys::run_new_task("explorer.exe", false) {
+            Ok(()) => "Windows Explorer restarted".to_string(),
+            Err(e) => format!("Could not start Windows Explorer: {e}"),
+        });
+    });
+}
+
 /// The right-click menu shared by Processes and Details.
 pub fn process_menu(ui: &mut Ui, status: &Status, rows: &[ProcessRow], p: &ProcessRow, on_details: bool) {
     ui.label(RichText::new(format!("{} ({})", p.name, p.pid)).weak());
     if ui.button("End task").clicked() {
         end_task(status, rows, p.pid, &p.name);
+        ui.close();
+    }
+    if p.name.eq_ignore_ascii_case("explorer.exe") && ui.button("Restart").clicked() {
+        restart_explorer(status, rows, p);
         ui.close();
     }
     if ui.button("End process tree").clicked() {
@@ -118,6 +148,10 @@ pub fn process_menu(ui: &mut Ui, status: &Status, rows: &[ProcessRow], p: &Proce
     ui.separator();
     if !on_details && ui.button("Go to details").clicked() {
         status.goto_details(p.pid);
+        ui.close();
+    }
+    if p.name.eq_ignore_ascii_case("svchost.exe") && ui.button("Go to service(s)").clicked() {
+        status.goto_services(p.pid);
         ui.close();
     }
     if ui.add_enabled(!p.info.path.is_empty(), egui::Button::new("Open file location")).clicked() {

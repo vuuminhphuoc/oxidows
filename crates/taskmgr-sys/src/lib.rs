@@ -204,6 +204,11 @@ pub fn run_new_task(command: &str, admin: bool) -> io::Result<()> {
     imp::run_new_task(command.trim(), admin)
 }
 
+/// True if a process with this image name (case-insensitive) is running.
+pub fn is_running(name: &str) -> bool {
+    imp::is_running(name)
+}
+
 pub fn search_online(term: &str) -> io::Result<()> {
     let q: String = term
         .bytes()
