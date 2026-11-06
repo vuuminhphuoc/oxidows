@@ -10,16 +10,16 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Back / Forward / Up, Alt+Left/Right/Up, mouse back/forward buttons | ✅ | |
 | Breadcrumb address bar, click a segment | ✅ | |
 | Type a path / UNC path in the address bar (Ctrl+L, Alt+D) | ✅ | |
-| Breadcrumb segment dropdown (siblings of each segment) | ❌ | |
-| Address bar autocomplete | ❌ | |
-| Environment variables and shell: names in the address bar (`%TEMP%`, `shell:startup`) | ❌ | |
-| Recent locations history dropdown | ❌ | |
+| Breadcrumb segment dropdown (subfolders after each segment) | ✅ | |
+| Address bar autocomplete | ✅ | subfolders; Tab completes |
+| Environment variables and shell: names in the address bar (`%TEMP%`, `shell:startup`) | ✅ | common shell: names |
+| Recent locations history dropdown | ✅ | |
 | Navigation pane: Home, known folders, drives with free space | ✅ | |
 | Navigation pane: folder tree (expand/collapse) | ✅ | lazy, loaded in the background on first expand |
-| Pin / unpin to Quick access | ❌ | |
-| This PC page (drives as tiles) | ❌ | |
+| Pin / unpin to Quick access | ✅ | own list, mirrors the shell's Pin to Quick access verb |
+| This PC page (drives as tiles) | ✅ | known folders and drives with free space; Up from a drive root |
 | Tabs (Ctrl+T, Ctrl+W, Ctrl+Tab, drag tab out) | 🟡 | new/close/switch, middle-click a folder or tab; no drag-out yet |
-| Open in new window (Ctrl+N) | ❌ | |
+| Open in new window (Ctrl+N) | ✅ | |
 | Command-line argument opens a folder | ✅ | `oxi-explorer.exe <folder>` |
 
 ## Network (SMB)
@@ -43,8 +43,9 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Resize columns | ✅ | |
 | More columns (Date created, Attributes), choose columns | ✅ | right-click a column header |
 | Other columns (Owner, Dimensions, Authors, …) | ❌ | need the property system |
-| Group by (type, date, …) | ❌ | |
-| Large icons / Medium / Small / List / Tiles / Content views | 🟡 | Details and Large icons (Ctrl+Shift+6 / Ctrl+Shift+2) |
+| Group by (name, date modified, type, size) | ✅ | Details and icon views (not List) |
+| Extra large / Large / Medium / Small icons, List, Details, Tiles (Ctrl+Shift+1…7) | ✅ | |
+| Content view (Ctrl+Shift+8) | ❌ | |
 | Thumbnails for images and videos | ✅ | the shell's thumbnail cache (`IShellItemImageFactory`), Large icons view |
 | System file icons | ✅ | `SHGetFileInfoW`, cached per extension |
 | Overlay icons (shortcut arrow, OneDrive status) | ❌ | |
@@ -63,9 +64,9 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Click, Ctrl+click, Shift+click, Ctrl+A, Esc | ✅ | |
 | Arrows, Home/End, PageUp/PageDown, Shift to extend | ✅ | |
 | Type-ahead to jump to a name | ✅ | |
-| Rubber-band (drag rectangle) selection | ❌ | |
+| Rubber-band (drag rectangle) selection | 🟡 | icon, List and Tiles views; not yet in Details |
 | Item check boxes | ❌ | |
-| Invert selection | ❌ | |
+| Invert selection | ✅ | … menu |
 
 ## File operations
 

@@ -45,6 +45,7 @@ pub struct Settings {
     pub folders: BTreeMap<String, (u64, FolderView)>,
     /// Folders pinned to Quick access, in order.
     pub pinned: Vec<PathBuf>,
+    pub group_by: explorer_core::GroupBy,
 }
 
 impl Default for Settings {
@@ -61,6 +62,7 @@ impl Default for Settings {
             theme: Theme::System,
             folders: BTreeMap::new(),
             pinned: Vec::new(),
+            group_by: explorer_core::GroupBy::None,
         }
     }
 }
@@ -148,6 +150,16 @@ impl Settings {
                         _ => Pane::None,
                     }
                 }
+                "group_by" => {
+                    use explorer_core::GroupBy;
+                    s.group_by = match v {
+                        "name" => GroupBy::Name,
+                        "modified" => GroupBy::Modified,
+                        "type" => GroupBy::Type,
+                        "size" => GroupBy::Size,
+                        _ => GroupBy::None,
+                    }
+                }
                 "pin" if !v.is_empty() => s.pinned.push(PathBuf::from(v)),
                 "theme" => {
                     s.theme = match v {
@@ -186,6 +198,14 @@ impl Settings {
             self.col_created,
             self.col_attrs,
         );
+        let group = match self.group_by {
+            explorer_core::GroupBy::None => "none",
+            explorer_core::GroupBy::Name => "name",
+            explorer_core::GroupBy::Modified => "modified",
+            explorer_core::GroupBy::Type => "type",
+            explorer_core::GroupBy::Size => "size",
+        };
+        out.push_str(&format!("group_by={group}\n"));
         for p in &self.pinned {
             out.push_str(&format!("pin={}\n", p.display()));
         }
@@ -275,6 +295,7 @@ impl App {
         self.col_created = s.col_created;
         self.col_attrs = s.col_attrs;
         self.pane = s.pane;
+        self.group_by = s.group_by;
     }
 
     /// Once per frame: per-folder views, and saving changes.
@@ -323,6 +344,7 @@ impl App {
         s.col_created = self.col_created;
         s.col_attrs = self.col_attrs;
         s.pane = self.pane;
+        s.group_by = self.group_by;
 
         if self.persist.settings != self.persist.saved {
             let at = *self.persist.changed_at.get_or_insert_with(Instant::now);
@@ -358,11 +380,13 @@ mod tests {
             theme: Theme::Light,
             folders: BTreeMap::new(),
             pinned: Vec::new(),
+            group_by: explorer_core::GroupBy::None,
         };
         s.remember_folder(
             r"c:\users\a\pictures".into(),
             FolderView { view: ViewMode::Large, sort: SortKey::Modified, ascending: false },
         );
+        s.group_by = explorer_core::GroupBy::Type;
         s.pinned = vec![PathBuf::from(r"D:\Projects"), PathBuf::from(r"\\nas\share")];
         assert_eq!(Settings::parse(&s.to_text()), s);
         assert_eq!(Settings::parse("garbage\nwidth=abc\nview=nope"), Settings::default());

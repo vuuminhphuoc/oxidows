@@ -42,6 +42,9 @@ fn spec(mode: ViewMode) -> Spec {
     }
 }
 
+/// Height of a group heading in the icon views.
+const HEADING: f32 = 32.0;
+
 /// Thumbnail size the view asks the shell for.
 pub fn thumb_px(mode: ViewMode) -> u32 {
     if mode == ViewMode::ExtraLarge { 256 } else { 96 }
@@ -71,24 +74,45 @@ pub fn show(
         ((avail.x / sp.tile.x).floor() as usize).max(1)
     };
     let lines = n.div_ceil(per_line);
-    let cell = |pos: usize| -> (usize, usize) {
-        // (column, row)
-        if sp.column_major { (pos / per_line, pos % per_line) } else { (pos % per_line, pos / per_line) }
+    // Groups (row-major views only): each starts on a new line under a heading.
+    // (first position, count, top y)
+    let grouped = !app.groups.is_empty() && !sp.column_major;
+    let head = if grouped { HEADING } else { 0.0 };
+    let mut glayout: Vec<(usize, usize, f32)> = Vec::new();
+    let mut total_y = 0.0;
+    if grouped {
+        for g in &app.groups {
+            glayout.push((g.start, g.len, total_y));
+            total_y += head + g.len.div_ceil(per_line) as f32 * sp.tile.y;
+        }
+    } else {
+        glayout.push((0, n, 0.0));
+        total_y = lines as f32 * sp.tile.y;
+    }
+    // Offset of an item from the content origin.
+    let offset = |pos: usize| -> egui::Vec2 {
+        if sp.column_major {
+            return egui::vec2((pos / per_line) as f32 * sp.tile.x, (pos % per_line) as f32 * sp.tile.y);
+        }
+        let k = glayout.partition_point(|g| g.0 <= pos).saturating_sub(1);
+        let (start, _, y) = glayout[k];
+        let j = pos - start;
+        egui::vec2((j % per_line) as f32 * sp.tile.x, y + head + (j / per_line) as f32 * sp.tile.y)
     };
     let content = if sp.column_major {
         egui::vec2(lines as f32 * sp.tile.x, per_line as f32 * sp.tile.y)
     } else {
-        egui::vec2(per_line as f32 * sp.tile.x, lines as f32 * sp.tile.y)
+        egui::vec2(per_line as f32 * sp.tile.x, total_y)
     };
 
     let mut scroll = if sp.column_major { egui::ScrollArea::horizontal() } else { egui::ScrollArea::vertical() }
         .auto_shrink([false, false]);
     if let Some(pos) = app.scroll_to.take().filter(|&p| p < n) {
-        let (c, r) = cell(pos);
+        let o = offset(pos);
         scroll = if sp.column_major {
-            scroll.horizontal_scroll_offset((c as f32 * sp.tile.x - avail.x / 2.0).max(0.0))
+            scroll.horizontal_scroll_offset((o.x - avail.x / 2.0).max(0.0))
         } else {
-            scroll.vertical_scroll_offset((r as f32 * sp.tile.y - avail.y / 2.0).max(0.0))
+            scroll.vertical_scroll_offset((o.y - avail.y / 2.0).max(0.0))
         };
     }
 
@@ -105,10 +129,7 @@ pub fn show(
         let origin = ui.max_rect().min;
         let full = Rect::from_min_size(origin, content.max(viewport.size()));
         ui.set_min_size(full.size());
-        let tile_rect = |pos: usize| {
-            let (c, r) = cell(pos);
-            Rect::from_min_size(origin + egui::vec2(c as f32 * sp.tile.x, r as f32 * sp.tile.y), sp.tile)
-        };
+        let tile_rect = |pos: usize| Rect::from_min_size(origin + offset(pos), sp.tile);
 
         // Background first, so items (added later) win the pointer: click clears the
         // selection, right-click is the folder menu, drag draws the selection rectangle.
@@ -150,20 +171,44 @@ pub fn show(
             ui.data_mut(|d| d.remove::<egui::Vec2>(band_id));
         }
 
-        // Only the items in view.
-        let first_line = if sp.column_major {
-            (viewport.min.x / sp.tile.x).floor().max(0.0) as usize
+        // Only the items (and group headings) in view.
+        let mut visible: Vec<usize> = Vec::new();
+        if sp.column_major {
+            let first = (viewport.min.x / sp.tile.x).floor().max(0.0) as usize;
+            let last = (viewport.max.x / sp.tile.x).ceil() as usize;
+            visible.extend((first * per_line).min(n)..((last + 1) * per_line).min(n));
         } else {
-            (viewport.min.y / sp.tile.y).floor().max(0.0) as usize
-        };
-        let last_line = if sp.column_major {
-            (viewport.max.x / sp.tile.x).ceil() as usize
-        } else {
-            (viewport.max.y / sp.tile.y).ceil() as usize
-        };
-        let from = (first_line * per_line).min(n);
-        let to = ((last_line + 1) * per_line).min(n);
-        for pos in from..to {
+            for (k, &(start, len, y)) in glayout.iter().enumerate() {
+                let rows = len.div_ceil(per_line) as f32;
+                let (top, bottom) = (y, y + head + rows * sp.tile.y);
+                if bottom < viewport.min.y || top > viewport.max.y {
+                    continue;
+                }
+                if grouped {
+                    let g = &app.groups[k];
+                    let at = origin + egui::vec2(8.0, y + 6.0);
+                    let galley = ui.painter().layout_no_wrap(
+                        format!("{}  ({})", g.label, g.len),
+                        egui::FontId::proportional(14.0),
+                        ui.visuals().hyperlink_color,
+                    );
+                    let w = galley.size().x;
+                    ui.painter().galley(at, galley, text);
+                    let ly = origin.y + y + 6.0 + 9.0;
+                    ui.painter().hline(
+                        (origin.x + 16.0 + w)..=(origin.x + full.width() - 8.0),
+                        ly,
+                        egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+                    );
+                }
+                let first = ((viewport.min.y - y - head) / sp.tile.y).floor().max(0.0) as usize;
+                let last = ((viewport.max.y - y - head) / sp.tile.y).ceil().max(0.0) as usize;
+                visible.extend(
+                    (start + first * per_line).min(start + len)..(start + (last + 1) * per_line).min(start + len),
+                );
+            }
+        }
+        for pos in visible {
             let rect = tile_rect(pos);
             let resp = ui.interact(rect, ui.id().with(("item", pos)), Sense::click_and_drag());
             let e = &app.entries[app.view[pos]];

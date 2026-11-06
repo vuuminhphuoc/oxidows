@@ -670,6 +670,125 @@ pub fn shell_folder_template(name: &str) -> Option<&'static str> {
     })
 }
 
+/// Group by, as in Explorer's View ▸ Group by.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum GroupBy {
+    #[default]
+    None,
+    Name,
+    Modified,
+    Type,
+    Size,
+}
+
+/// One group of the view: its heading and the positions `start..start + len` of `view`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Group {
+    pub label: String,
+    pub start: usize,
+    pub len: usize,
+}
+
+/// Explorer's group for an item: (order, heading). Groups sort by `order`.
+pub fn group_of(e: &Entry, by: GroupBy, now: i64, utc_offset: i64) -> (u32, String) {
+    match by {
+        GroupBy::None => (0, String::new()),
+        GroupBy::Name => {
+            let c = e.display().chars().next().map(|c| c.to_ascii_uppercase()).unwrap_or(' ');
+            match c {
+                '0'..='9' => (0, "0–9".into()),
+                'A'..='H' => (1, "A – H".into()),
+                'I'..='P' => (2, "I – P".into()),
+                'Q'..='Z' => (3, "Q – Z".into()),
+                _ => (4, "Other".into()),
+            }
+        }
+        GroupBy::Type => (0, e.type_name()),
+        GroupBy::Size => {
+            if e.is_dir {
+                return (0, "Folders".into());
+            }
+            const KB: u64 = 1024;
+            const MB: u64 = KB * 1024;
+            const GB: u64 = MB * 1024;
+            let (o, l) = match e.size {
+                0 => (1, "Empty (0 KB)"),
+                s if s <= 16 * KB => (2, "Tiny (0 – 16 KB)"),
+                s if s <= MB => (3, "Small (16 KB – 1 MB)"),
+                s if s <= 128 * MB => (4, "Medium (1 – 128 MB)"),
+                s if s <= GB => (5, "Large (128 MB – 1 GB)"),
+                s if s <= 4 * GB => (6, "Huge (1 – 4 GB)"),
+                _ => (7, "Gigantic (> 4 GB)"),
+            };
+            (o, l.into())
+        }
+        GroupBy::Modified => {
+            if e.modified <= 0 {
+                return (9, "Unknown".into());
+            }
+            let day = |t: i64| (t + utc_offset).div_euclid(86_400);
+            let (today, d) = (day(now), day(e.modified));
+            // 1970-01-01 was a Thursday; weeks start on Monday.
+            let weekday = (today + 3).rem_euclid(7);
+            let week_start = today - weekday;
+            let (y, m, _) = civil_from_days(today);
+            let (dy, dm, _) = civil_from_days(d);
+            let (o, l) = if d > today {
+                (0, "In the future")
+            } else if d == today {
+                (1, "Today")
+            } else if d == today - 1 {
+                (2, "Yesterday")
+            } else if d >= week_start {
+                (3, "Earlier this week")
+            } else if d >= week_start - 7 {
+                (4, "Last week")
+            } else if dy == y && dm == m {
+                (5, "Earlier this month")
+            } else if (dy == y && dm + 1 == m) || (dy + 1 == y && m == 1 && dm == 12) {
+                (6, "Last month")
+            } else if dy == y {
+                (7, "Earlier this year")
+            } else {
+                (8, "A long time ago")
+            };
+            (o, l.into())
+        }
+    }
+}
+
+/// Reorders `view` (already sorted) so each group is contiguous, groups in Explorer's order
+/// (by name for Type; reversed when sorting descending), keeping the sort inside each group.
+pub fn group_view(
+    entries: &[Entry],
+    view: &mut Vec<usize>,
+    by: GroupBy,
+    ascending: bool,
+    now: i64,
+    utc_offset: i64,
+) -> Vec<Group> {
+    if by == GroupBy::None {
+        return Vec::new();
+    }
+    let keyed: Vec<((u32, String), usize)> =
+        view.iter().map(|&i| (group_of(&entries[i], by, now, utc_offset), i)).collect();
+    let mut order: Vec<(u32, String)> = keyed.iter().map(|(k, _)| k.clone()).collect();
+    order.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| natural_cmp(&a.1, &b.1)));
+    order.dedup();
+    if !ascending {
+        order.reverse();
+    }
+    let mut groups = Vec::with_capacity(order.len());
+    let mut out = Vec::with_capacity(view.len());
+    for k in order {
+        let start = out.len();
+        out.extend(keyed.iter().filter(|(g, _)| *g == k).map(|(_, i)| *i));
+        groups.push(Group { label: k.1, start, len: out.len() - start });
+    }
+    *view = out;
+    groups
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -841,5 +960,37 @@ mod tests {
         assert_eq!(h.jump(p("/b"), -1), Some(p("/a")));
         assert_eq!(h.jump(p("/a"), 2), Some(p("/c")));
         assert!(!h.can_forward());
+    }
+
+    #[test]
+    fn grouping() {
+        let f =
+            |name: &str, size: u64, modified: i64| Entry { name: name.into(), size, modified, ..Default::default() };
+        // 2026-11-06 (Friday) 12:00 UTC.
+        let now = 1_793_966_400;
+        assert_eq!(civil_from_days(now / 86_400), (2026, 11, 6));
+        let day = 86_400;
+        let e = vec![
+            f("b.txt", 10, now - 60),
+            f("a.txt", 5_000_000, now - day),
+            f("zeta.txt", 0, now - 3 * day), // Tuesday: earlier this week
+            f("old.txt", 2_000_000_000, now - 400 * day),
+            f("9.txt", 20_000, now - 8 * day), // last week
+        ];
+        let label = |by, i: usize| group_of(&e[i], by, now, 0).1;
+        assert_eq!(label(GroupBy::Modified, 0), "Today");
+        assert_eq!(label(GroupBy::Modified, 1), "Yesterday");
+        assert_eq!(label(GroupBy::Modified, 2), "Earlier this week");
+        assert_eq!(label(GroupBy::Modified, 4), "Last week");
+        assert_eq!(label(GroupBy::Modified, 3), "A long time ago");
+        assert_eq!(label(GroupBy::Size, 3), "Huge (1 – 4 GB)");
+        assert_eq!(label(GroupBy::Name, 4), "0–9");
+
+        let mut view: Vec<usize> = (0..e.len()).collect();
+        let g = group_view(&e, &mut view, GroupBy::Name, true, now, 0);
+        let labels: Vec<&str> = g.iter().map(|g| g.label.as_str()).collect();
+        assert_eq!(labels, ["0–9", "A – H", "I – P", "Q – Z"]);
+        assert_eq!(view, [4, 0, 1, 3, 2]);
+        assert_eq!(g[1], Group { label: "A – H".into(), start: 1, len: 2 });
     }
 }

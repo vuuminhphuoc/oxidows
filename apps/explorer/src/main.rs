@@ -144,6 +144,7 @@ struct ViewKey {
     sort: SortKey,
     ascending: bool,
     show_hidden: bool,
+    group: (explorer_core::GroupBy, bool),
 }
 
 struct App {
@@ -179,6 +180,10 @@ struct App {
     pub col_created: bool,
     pub col_attrs: bool,
     pub pane: pane::Pane,
+    pub group_by: explorer_core::GroupBy,
+    pub group_ascending: bool,
+    /// Groups of `view` when grouping is on (empty otherwise).
+    pub groups: Vec<explorer_core::Group>,
     pub persist: settings::Persist,
     pub undo_stack: Vec<undo::Undoable>,
     pub drag: Option<dnd::Drag>,
@@ -266,6 +271,9 @@ impl App {
             col_created: false,
             col_attrs: false,
             pane: pane::Pane::None,
+            group_by: explorer_core::GroupBy::None,
+            group_ascending: true,
+            groups: Vec::new(),
             persist: settings::Persist::new(settings.clone()),
             undo_stack: Vec::new(),
             drag: None,
@@ -1045,11 +1053,21 @@ impl App {
             sort: self.sort,
             ascending: self.ascending,
             show_hidden: self.show_hidden,
+            group: (self.group_by, self.group_ascending),
         };
         if self.view_key.as_ref() == Some(&key) {
             return;
         }
         self.view = sorted_view(&self.entries, &self.filter, self.show_hidden, self.sort, self.ascending);
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+        self.groups = explorer_core::group_view(
+            &self.entries,
+            &mut self.view,
+            self.group_by,
+            self.group_ascending,
+            now,
+            self.utc_offset,
+        );
         self.view_key = Some(key);
         if let Some(name) = self.pending_select.clone()
             && let Some(pos) = self.view.iter().position(|&i| self.entries[i].name == name)

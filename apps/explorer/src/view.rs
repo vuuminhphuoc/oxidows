@@ -193,6 +193,24 @@ pub fn toolbar(app: &mut App, ui: &mut Ui) {
                         app.view_mode = m;
                     }
                 }
+                ui.menu_button("Group by", |ui| {
+                    use explorer_core::GroupBy;
+                    for (g, label) in [
+                        (GroupBy::Name, "Name"),
+                        (GroupBy::Modified, "Date modified"),
+                        (GroupBy::Type, "Type"),
+                        (GroupBy::Size, "Size"),
+                        (GroupBy::None, "(None)"),
+                    ] {
+                        if ui.selectable_label(app.group_by == g, label).clicked() {
+                            app.group_by = g;
+                            ui.close();
+                        }
+                    }
+                    ui.separator();
+                    ui.selectable_value(&mut app.group_ascending, true, "Ascending");
+                    ui.selectable_value(&mut app.group_ascending, false, "Descending");
+                });
                 ui.horizontal(|ui| {
                     ui.label("Pane:");
                     for (p, label) in [(crate::pane::Pane::Preview, "Preview"), (crate::pane::Pane::Details, "Details")]
@@ -835,8 +853,19 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
         }
         // Column widths are remembered per column set.
         table = table.id_salt(("details", col_created, col_attrs, app.pane));
+        // With Group by on, a heading row (negative: -1 - group index) starts each group.
+        let rows_map: Vec<isize> = app
+            .groups
+            .iter()
+            .enumerate()
+            .flat_map(|(k, g)| std::iter::once(-1 - k as isize).chain((g.start..g.start + g.len).map(|p| p as isize)))
+            .collect();
+        let grouped = !rows_map.is_empty();
+        let n_rows = if grouped { rows_map.len() } else { n };
+        let n_cols = 4 + usize::from(col_created) + usize::from(col_attrs);
         if let Some(pos) = app.scroll_to.take().filter(|&p| p < n) {
-            table = table.scroll_to_row(pos, None);
+            let row = if grouped { rows_map.iter().position(|&r| r == pos as isize).unwrap_or(pos) } else { pos };
+            table = table.scroll_to_row(row, None);
         }
         table
             .header(row_h, |mut h| {
@@ -859,8 +888,25 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                 }
             })
             .body(|body| {
-                body.rows(row_h, n, |mut row| {
-                    let pos = row.index();
+                body.rows(row_h, n_rows, |mut row| {
+                    let pos = if grouped {
+                        match rows_map[row.index()] {
+                            h if h < 0 => {
+                                let g = &app.groups[(-1 - h) as usize];
+                                row.col(|ui| {
+                                    ui.label(RichText::new(&g.label).strong().color(ui.visuals().hyperlink_color));
+                                    ui.label(RichText::new(format!("  ({})", g.len)).weak());
+                                });
+                                for _ in 1..n_cols {
+                                    row.col(|_| {});
+                                }
+                                return;
+                            }
+                            p => p as usize,
+                        }
+                    } else {
+                        row.index()
+                    };
                     let e = &app.entries[app.view[pos]];
                     row.set_selected(app.selected.contains(&e.name));
                     let dim = e.hidden || e.system;
