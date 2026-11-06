@@ -48,7 +48,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Content view (Ctrl+Shift+8) | ✅ | name + type, date modified + size, thumbnails |
 | Thumbnails for images and videos | ✅ | the shell's thumbnail cache (`IShellItemImageFactory`), Large icons view |
 | System file icons | ✅ | `SHGetFileInfoW`, cached per extension |
-| Overlay icons (shortcut arrow, OneDrive status) | ❌ | |
+| Overlay icons (shortcut arrow, OneDrive status) | ✅ | shell overlays on links, junctions, cloud files; desktop.ini folder icons |
 | Show/hide hidden items | ✅ | |
 | Show/hide file name extensions | ✅ | … menu |
 | Show protected OS files | ✅ | separate checkbox; hidden+system items stay out unless it is on |

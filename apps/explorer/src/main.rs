@@ -49,7 +49,16 @@ pub enum IconKey {
 }
 
 impl IconKey {
+    /// Items that may look different from others of their type get their own icon, with the
+    /// shell's overlays: links and junctions (arrow), cloud files (OneDrive status), and
+    /// folders marked read-only/system, which is how a desktop.ini custom icon is enabled.
     pub fn for_entry(e: &Entry, dir: &Path) -> Self {
+        use explorer_core::attr;
+        const RECALL_ON_DATA_ACCESS: u32 = 0x40_0000;
+        let cloud = e.attrs & (attr::OFFLINE | attr::PINNED | attr::UNPINNED | RECALL_ON_DATA_ACCESS) != 0;
+        if e.link || cloud || (e.is_dir && e.attrs & (attr::READONLY | attr::SYSTEM) != 0) {
+            return IconKey::File(dir.join(&e.name));
+        }
         if e.is_dir {
             return IconKey::Dir;
         }

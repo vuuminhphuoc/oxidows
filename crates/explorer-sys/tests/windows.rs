@@ -392,6 +392,9 @@ fn shortcut_target_is_read() {
     let got = explorer_sys::resolve_link(&lnk).expect("target");
     let same = |a: &Path, b: &Path| fs::canonicalize(a).ok() == fs::canonicalize(b).ok();
     assert!(same(&got, &target), "{got:?} vs {target:?}");
+    // Its own icon, with the shortcut-arrow overlay.
+    let icon = explorer_sys::shell_icon(&lnk, false, true).expect("shortcut icon");
+    assert_eq!(icon.rgba.len(), icon.width * icon.height * 4);
     fs::remove_dir_all(&d).unwrap();
 }
 

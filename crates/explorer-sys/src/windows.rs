@@ -43,8 +43,9 @@ use windows_sys::Win32::UI::Shell::{
     DragQueryFileW, FO_COPY, FO_DELETE, FO_MOVE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOCONFIRMMKDIR, FOF_NOERRORUI,
     FOF_RENAMEONCOLLISION, FOF_SILENT, FOF_WANTNUKEWARNING, FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads,
     FOLDERID_Music, FOLDERID_Pictures, FOLDERID_Profile, FOLDERID_Videos, SEE_MASK_INVOKEIDLIST, SHELLEXECUTEINFOW,
-    SHERB_NOCONFIRMATION, SHEmptyRecycleBinW, SHFILEINFOW, SHFILEOPSTRUCTW, SHFileOperationW, SHGFI_ICON,
-    SHGFI_SMALLICON, SHGFI_USEFILEATTRIBUTES, SHGetFileInfoW, SHGetKnownFolderPath, ShellExecuteExW, ShellExecuteW,
+    SHERB_NOCONFIRMATION, SHEmptyRecycleBinW, SHFILEINFOW, SHFILEOPSTRUCTW, SHFileOperationW, SHGFI_ADDOVERLAYS,
+    SHGFI_ICON, SHGFI_SMALLICON, SHGFI_USEFILEATTRIBUTES, SHGetFileInfoW, SHGetKnownFolderPath, ShellExecuteExW,
+    ShellExecuteW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyIcon, GetIconInfo, HWND_MESSAGE, ICONINFO, SW_SHOWNORMAL,
@@ -527,7 +528,8 @@ pub fn shell_icon(path: &Path, is_dir: bool, per_file: bool) -> Option<IconImage
     let w = wide(path);
     let mut info: SHFILEINFOW = unsafe { zeroed() };
     let attrs = if is_dir { FILE_ATTRIBUTE_DIRECTORY } else { FILE_ATTRIBUTE_NORMAL };
-    let flags = SHGFI_ICON | SHGFI_SMALLICON | if per_file { 0 } else { SHGFI_USEFILEATTRIBUTES };
+    // Per item: with the shell's overlays (shortcut arrow, OneDrive status, sharing).
+    let flags = SHGFI_ICON | SHGFI_SMALLICON | if per_file { SHGFI_ADDOVERLAYS } else { SHGFI_USEFILEATTRIBUTES };
     let ok = unsafe { SHGetFileInfoW(w.as_ptr(), attrs, &mut info, size_of::<SHFILEINFOW>() as u32, flags) };
     if ok == 0 || info.hIcon.is_null() {
         return None;
