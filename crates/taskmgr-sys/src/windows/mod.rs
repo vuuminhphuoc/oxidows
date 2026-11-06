@@ -432,7 +432,9 @@ impl Collector {
         let (mut idle, mut kernel, mut user) = (FILETIME::default(), FILETIME::default(), FILETIME::default());
         // SAFETY: out-pointers to locals.
         if unsafe { GetSystemTimes(&mut idle, &mut kernel, &mut user) } != 0 {
-            sys.cpu = CpuTimes { idle: filetime(idle), total: filetime(kernel) + filetime(user) };
+            // The kernel figure includes idle time.
+            let (i, k) = (filetime(idle), filetime(kernel));
+            sys.cpu = CpuTimes { idle: i, total: k + filetime(user), kernel: k.saturating_sub(i) };
         }
 
         let bytes = self.cores.query(SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION_CLASS)?;
@@ -441,7 +443,11 @@ impl Collector {
         for i in 0..n {
             // SAFETY: `n` whole entries fit in the returned length.
             let c = unsafe { *ptr.add(i) };
-            sys.cores.push(CpuTimes { idle: c.idle_time as u64, total: (c.kernel_time + c.user_time) as u64 });
+            sys.cores.push(CpuTimes {
+                idle: c.idle_time as u64,
+                total: (c.kernel_time + c.user_time) as u64,
+                kernel: (c.kernel_time - c.idle_time).max(0) as u64,
+            });
         }
 
         // SAFETY: POD out-struct with its length set, as the API requires.

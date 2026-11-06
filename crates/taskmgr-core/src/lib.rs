@@ -20,6 +20,8 @@ pub struct CpuTimes {
     pub idle: u64,
     /// Idle + busy time.
     pub total: u64,
+    /// Busy time spent in kernel mode (excludes idle).
+    pub kernel: u64,
 }
 
 impl CpuTimes {
@@ -31,6 +33,15 @@ impl CpuTimes {
         }
         let idle = self.idle.saturating_sub(prev.idle).min(total);
         ((total - idle) as f64 * 100.0 / total as f64) as f32
+    }
+
+    /// Kernel-mode share in percent between `prev` and `self`.
+    pub fn kernel_since(&self, prev: &CpuTimes) -> f32 {
+        let total = self.total.saturating_sub(prev.total);
+        if total == 0 {
+            return 0.0;
+        }
+        (self.kernel.saturating_sub(prev.kernel).min(total) as f64 * 100.0 / total as f64) as f32
     }
 }
 
@@ -396,6 +407,9 @@ pub struct SystemRates {
     pub per_process_net: bool,
     pub cpu_pct: f32,
     pub cores_pct: Vec<f32>,
+    /// Kernel-mode share of all CPU time, and per logical processor.
+    pub kernel_pct: f32,
+    pub cores_kernel_pct: Vec<f32>,
     pub mem_used: u64,
     pub mem_total: u64,
     pub commit_used: u64,
@@ -620,6 +634,8 @@ impl Ring {
 pub struct History {
     pub cpu: Ring,
     pub cores: Vec<Ring>,
+    pub cpu_kernel: Ring,
+    pub cores_kernel: Vec<Ring>,
     /// Memory in use, percent of total.
     pub mem_pct: Ring,
     pub disk_active_pct: Ring,
@@ -639,6 +655,13 @@ pub struct History {
 impl History {
     fn push(&mut self, s: &SystemRates) {
         self.cpu.push(s.cpu_pct);
+        self.cpu_kernel.push(s.kernel_pct);
+        if self.cores_kernel.len() != s.cores_kernel_pct.len() {
+            self.cores_kernel = vec![Ring::default(); s.cores_kernel_pct.len()];
+        }
+        for (r, v) in self.cores_kernel.iter_mut().zip(&s.cores_kernel_pct) {
+            r.push(*v);
+        }
         if self.cores.len() != s.cores_pct.len() {
             self.cores = vec![Ring::default(); s.cores_pct.len()];
         }
@@ -775,6 +798,17 @@ impl Sampler {
             ),
             _ => (0.0, vec![0.0; sys.cores.len()], 0.0, 0.0),
         };
+        let (kernel_pct, cores_kernel_pct) = match &self.prev {
+            Some((_, prev)) if secs.is_some() => (
+                sys.cpu.kernel_since(&prev.cpu),
+                sys.cores
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| prev.cores.get(i).map_or(0.0, |p| c.kernel_since(p)))
+                    .collect(),
+            ),
+            _ => (0.0, vec![0.0; sys.cores.len()]),
+        };
         let disk_from_procs: f64 = processes.iter().map(|p| p.disk_bps).sum();
         let adapters = sys
             .adapters
@@ -800,6 +834,8 @@ impl Sampler {
             .collect();
         let system = SystemRates {
             per_process_net: sys.per_process_net,
+            kernel_pct,
+            cores_kernel_pct,
             cpu_pct,
             cores_pct,
             mem_used: sys.mem_total.saturating_sub(sys.mem_available),
@@ -1018,8 +1054,8 @@ mod tests {
 
     fn system(idle: u64, total: u64, cores: usize, rx: u64) -> RawSystem {
         RawSystem {
-            cpu: CpuTimes { idle, total },
-            cores: vec![CpuTimes { idle: idle / cores as u64, total: total / cores as u64 }; cores],
+            cpu: CpuTimes { idle, total, kernel: 0 },
+            cores: vec![CpuTimes { idle: idle / cores as u64, total: total / cores as u64, kernel: 0 }; cores],
             mem_total: 1000,
             mem_available: 250,
             net_rx_bytes: rx,
@@ -1029,8 +1065,8 @@ mod tests {
 
     #[test]
     fn cpu_usage_from_deltas() {
-        let a = CpuTimes { idle: 100, total: 200 };
-        let b = CpuTimes { idle: 125, total: 300 };
+        let a = CpuTimes { idle: 100, total: 200, kernel: 10 };
+        let b = CpuTimes { idle: 125, total: 300, kernel: 30 };
         assert_eq!(b.usage_since(&a), 75.0);
         assert_eq!(a.usage_since(&a), 0.0);
         // Counter going backwards (should not happen) must not panic or overflow.

@@ -30,6 +30,8 @@ enum Res {
 pub struct State {
     selected: Res,
     per_core: bool,
+    /// Draw kernel-mode time over the CPU graphs.
+    kernel: bool,
     cpu: CpuInfo,
     /// Addresses of the shown adapter, re-read every few seconds.
     adapter: Option<(String, Instant, AdapterInfo)>,
@@ -47,7 +49,7 @@ impl Default for State {
             _ if v.starts_with("gpu") => Res::Gpu(n("gpu")),
             _ => Res::Cpu,
         };
-        Self { selected, per_core: false, cpu: taskmgr_sys::cpu_info(), adapter: None }
+        Self { selected, per_core: false, kernel: false, cpu: taskmgr_sys::cpu_info(), adapter: None }
     }
 }
 
@@ -393,6 +395,7 @@ impl State {
         ui.horizontal(|ui| {
             ui.label(RichText::new("% Utilization over 60 seconds").small().weak());
             ui.checkbox(&mut self.per_core, "Logical processors");
+            ui.checkbox(&mut self.kernel, "Show kernel times");
         });
         if self.per_core && !h.cores.is_empty() {
             let n = h.cores.len();
@@ -403,12 +406,17 @@ impl State {
                 Vec2::new((w - gap * (cols - 1) as f32) / cols as f32, (big.y - gap * (rows - 1) as f32) / rows as f32);
             egui::Grid::new("cores").spacing([gap, gap]).show(ui, |ui| {
                 for (i, ring) in h.cores.iter().enumerate() {
-                    graph::area(ui, cell, ring, 100.0, CPU, false);
+                    match h.cores_kernel.get(i).filter(|_| self.kernel) {
+                        Some(k) => graph::with_kernel(ui, cell, ring, k, CPU, false),
+                        None => graph::area(ui, cell, ring, 100.0, CPU, false),
+                    };
                     if (i + 1) % cols == 0 {
                         ui.end_row();
                     }
                 }
             });
+        } else if self.kernel {
+            graph::with_kernel(ui, big, &h.cpu, &h.cpu_kernel, CPU, true);
         } else {
             graph::area(ui, big, &h.cpu, 100.0, CPU, true);
         }

@@ -85,7 +85,9 @@ impl Collector {
             }
             let v: Vec<u64> = it.map(|x| x.parse().unwrap_or(0)).collect();
             let idle = v.get(3).copied().unwrap_or(0) + v.get(4).copied().unwrap_or(0);
-            let times = CpuTimes { idle, total: v.iter().take(8).sum() };
+            // system + irq + softirq
+            let kernel = [2, 5, 6].iter().map(|&i| v.get(i).copied().unwrap_or(0)).sum();
+            let times = CpuTimes { idle, total: v.iter().take(8).sum(), kernel };
             if label == "cpu" {
                 sys.cpu = times;
             } else {
