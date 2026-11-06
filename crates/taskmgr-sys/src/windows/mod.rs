@@ -1,6 +1,16 @@
 //! Windows reader: NT native API for processes and per-core CPU, Win32 for memory and network,
 //! PDH for disk and GPU rates.
 
+mod procinfo;
+mod services;
+mod sessions;
+mod startup;
+
+pub use procinfo::{is_elevated, restart_elevated, set_priority, static_info};
+pub use services::{list_services, service_control};
+pub use sessions::list_sessions;
+pub use startup::{set_startup_enabled, startup_items};
+
 use std::ffi::c_void;
 use std::io;
 use std::mem::{size_of, zeroed};
@@ -289,6 +299,9 @@ impl Collector {
                     io_write_bytes: p.write_transfer_count as u64,
                     threads: p.number_of_threads,
                     handles: p.handle_count,
+                    session_id: p.session_id,
+                    base_priority: p.base_priority,
+                    info: Default::default(),
                 });
             }
             if p.next_entry_offset == 0 {

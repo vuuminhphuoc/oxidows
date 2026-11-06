@@ -8,6 +8,7 @@
 //! Nothing here touches the OS, so it is unit-tested on any platform.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Points kept for every Performance graph (one per sample: 60 s at the default 1 s interval).
@@ -49,6 +50,20 @@ pub struct RawProcess {
     pub io_write_bytes: u64,
     pub threads: u32,
     pub handles: u32,
+    pub session_id: u32,
+    /// Base priority as the kernel reports it (4 idle, 8 normal, 13 high, 24 realtime...).
+    pub base_priority: i32,
+    /// Path, command line and user: read once per process, shared between samples.
+    pub info: Arc<StaticInfo>,
+}
+
+/// Process facts that never change while it runs. Empty strings when access is denied.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StaticInfo {
+    pub path: String,
+    pub command_line: String,
+    /// `DOMAIN\user` on Windows, the user name or uid on Linux.
+    pub user: String,
 }
 
 /// System-wide counters for one sample.
@@ -90,6 +105,9 @@ pub struct ProcessRow {
     pub disk_bps: f64,
     pub threads: u32,
     pub handles: u32,
+    pub session_id: u32,
+    pub base_priority: i32,
+    pub info: Arc<StaticInfo>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -118,6 +136,136 @@ pub struct Snapshot {
     pub processes: Vec<ProcessRow>,
     pub system: SystemRates,
     pub history: History,
+    /// Filled only while a tab that needs it is open (see [`Extras`]).
+    pub services: Option<Arc<Vec<Service>>>,
+    pub sessions: Option<Arc<Vec<Session>>>,
+}
+
+/// Which optional lists the sampler should read this tick.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Extras {
+    pub services: bool,
+    pub sessions: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServiceState {
+    Stopped,
+    StartPending,
+    StopPending,
+    Running,
+    ContinuePending,
+    PausePending,
+    Paused,
+    Unknown,
+}
+
+impl ServiceState {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Stopped => "Stopped",
+            Self::StartPending => "Starting",
+            Self::StopPending => "Stopping",
+            Self::Running => "Running",
+            Self::ContinuePending => "Continuing",
+            Self::PausePending => "Pausing",
+            Self::Paused => "Paused",
+            Self::Unknown => "Unknown",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Service {
+    pub name: String,
+    pub display_name: String,
+    pub state: ServiceState,
+    /// 0 when not running.
+    pub pid: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Session {
+    pub id: u32,
+    pub user: String,
+    /// "Active", "Disconnected"...
+    pub state: String,
+}
+
+/// One entry of the Startup apps tab.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StartupItem {
+    pub name: String,
+    pub command: String,
+    /// Where it is registered, e.g. `HKCU\...\Run` or the Startup folder path.
+    pub location: String,
+    pub enabled: bool,
+    /// False when changing it needs administrator rights (machine-wide entries).
+    pub per_user: bool,
+}
+
+/// Users tab row: processes grouped by session.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UserUsage {
+    pub session_id: u32,
+    pub user: String,
+    pub state: String,
+    pub processes: usize,
+    pub cpu_pct: f32,
+    pub memory: u64,
+}
+
+/// Groups processes by session; sessions with no processes still appear.
+pub fn users_view(rows: &[ProcessRow], sessions: &[Session]) -> Vec<UserUsage> {
+    let mut out: Vec<UserUsage> = sessions
+        .iter()
+        .map(|s| UserUsage {
+            session_id: s.id,
+            user: s.user.clone(),
+            state: s.state.clone(),
+            processes: 0,
+            cpu_pct: 0.0,
+            memory: 0,
+        })
+        .collect();
+    for p in rows {
+        let i = match out.iter().position(|u| u.session_id == p.session_id) {
+            Some(i) => i,
+            None => {
+                out.push(UserUsage {
+                    session_id: p.session_id,
+                    user: String::new(),
+                    state: String::new(),
+                    processes: 0,
+                    cpu_pct: 0.0,
+                    memory: 0,
+                });
+                out.len() - 1
+            }
+        };
+        let u = &mut out[i];
+        u.processes += 1;
+        u.cpu_pct += p.cpu_pct;
+        u.memory += p.memory;
+        // A session without a WTS user name (e.g. on Linux) takes the user of its processes.
+        if u.user.is_empty() && !p.info.user.is_empty() {
+            u.user = p.info.user.clone();
+        }
+    }
+    out.sort_by_key(|u| u.session_id);
+    out
+}
+
+/// Windows priority class name from a base priority.
+pub fn priority_label(base: i32) -> &'static str {
+    match base {
+        i32::MIN..=5 => "Low",
+        6..=7 => "Below normal",
+        8 => "Normal",
+        9..=12 => "Above normal",
+        13..=23 => "High",
+        _ => "Realtime",
+    }
 }
 
 /// Fixed-size ring of the most recent values.
@@ -267,6 +415,9 @@ impl Sampler {
                     disk_bps,
                     threads: p.threads,
                     handles: p.handles,
+                    session_id: p.session_id,
+                    base_priority: p.base_priority,
+                    info: p.info,
                 }
             })
             .collect();
@@ -310,7 +461,7 @@ impl Sampler {
             self.history.push(&system);
         }
         self.prev = Some((raw.at, raw.system));
-        Snapshot { processes, system, history: self.history.clone() }
+        Snapshot { processes, system, history: self.history.clone(), services: None, sessions: None }
     }
 }
 
@@ -488,11 +639,45 @@ mod tests {
                 disk_bps: 0.0,
                 threads: 0,
                 handles: 0,
+                session_id: 0,
+                base_priority: 8,
+                info: Arc::default(),
             })
             .collect();
         assert_eq!(sorted_view(&rows, "", SortKey::Cpu, true), vec![1, 0, 2]);
         assert_eq!(sorted_view(&rows, "CHROME", SortKey::Cpu, false), vec![2, 0]);
         assert_eq!(sorted_view(&rows, "3", SortKey::Name, false), vec![2]);
+    }
+
+    #[test]
+    fn users_group_by_session() {
+        let row = |pid, session, cpu, mem| ProcessRow {
+            pid,
+            parent_pid: 0,
+            name: String::new(),
+            cpu_pct: cpu,
+            memory: mem,
+            disk_bps: 0.0,
+            threads: 1,
+            handles: 1,
+            session_id: session,
+            base_priority: 8,
+            info: Arc::new(StaticInfo { user: "svc".into(), ..Default::default() }),
+        };
+        let rows = [row(1, 0, 1.0, 10), row(2, 1, 2.0, 20), row(3, 1, 3.0, 30)];
+        let sessions = [Session { id: 1, user: "PC\\phuoc".into(), state: "Active".into() }];
+        let v = users_view(&rows, &sessions);
+        assert_eq!(v.len(), 2);
+        assert_eq!((v[0].session_id, v[0].processes, v[0].user.as_str()), (0, 1, "svc"));
+        assert_eq!((v[1].processes, v[1].memory, v[1].cpu_pct), (2, 50, 5.0));
+        assert_eq!(v[1].user, "PC\\phuoc");
+    }
+
+    #[test]
+    fn priority_labels() {
+        assert_eq!(priority_label(8), "Normal");
+        assert_eq!(priority_label(13), "High");
+        assert_eq!(priority_label(4), "Low");
     }
 
     #[test]

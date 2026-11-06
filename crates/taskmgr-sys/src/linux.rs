@@ -63,6 +63,10 @@ impl Collector {
             io_write_bytes: write,
             threads: num(17) as u32,
             handles,
+            session_id: num(3) as u32,
+            // Map nice (-20..19) onto the Windows scale around Normal = 8.
+            base_priority: 8 - (f.get(16).and_then(|v| v.parse::<i32>().ok()).unwrap_or(0) / 3),
+            info: Default::default(),
         })
     }
 
@@ -117,4 +121,87 @@ impl Collector {
 pub fn end_process(pid: u32) -> io::Result<()> {
     let status = std::process::Command::new("kill").args(["-9", &pid.to_string()]).status()?;
     if status.success() { Ok(()) } else { Err(io::Error::other(format!("kill exited with {status}"))) }
+}
+
+// ---- Extras (development stand-ins for the Windows features) ----
+
+use taskmgr_core::{Service, Session, StartupItem, StaticInfo};
+
+use crate::{PriorityClass, ServiceAction};
+
+pub fn static_info(pid: u32) -> StaticInfo {
+    let path = fs::read_link(format!("/proc/{pid}/exe")).map(|p| p.display().to_string()).unwrap_or_default();
+    let command_line = fs::read(format!("/proc/{pid}/cmdline"))
+        .map(|b| String::from_utf8_lossy(&b).split('\0').filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" "))
+        .unwrap_or_default();
+    let uid = fs::read_to_string(format!("/proc/{pid}/status"))
+        .ok()
+        .and_then(|s| s.lines().find_map(|l| l.strip_prefix("Uid:").map(|v| v.split_whitespace().next().unwrap_or("").to_string())))
+        .unwrap_or_default();
+    let user = fs::read_to_string("/etc/passwd")
+        .ok()
+        .and_then(|p| p.lines().find_map(|l| {
+            let f: Vec<&str> = l.split(':').collect();
+            (f.get(2) == Some(&uid.as_str())).then(|| f[0].to_string())
+        }))
+        .unwrap_or(uid);
+    StaticInfo { path, command_line, user }
+}
+
+pub fn set_priority(pid: u32, class: PriorityClass) -> io::Result<()> {
+    let nice = match class {
+        PriorityClass::Idle => 19,
+        PriorityClass::BelowNormal => 10,
+        PriorityClass::Normal => 0,
+        PriorityClass::AboveNormal => -5,
+        PriorityClass::High => -10,
+        PriorityClass::Realtime => -20,
+    };
+    let st = std::process::Command::new("renice").args(["-n", &nice.to_string(), "-p", &pid.to_string()]).status()?;
+    if st.success() { Ok(()) } else { Err(io::Error::other(format!("renice exited with {st}"))) }
+}
+
+pub fn list_services() -> io::Result<Vec<Service>> {
+    Ok(Vec::new())
+}
+
+pub fn service_control(_name: &str, _action: ServiceAction) -> io::Result<()> {
+    Err(io::Error::new(io::ErrorKind::Unsupported, "services are Windows-only"))
+}
+
+pub fn list_sessions() -> io::Result<Vec<Session>> {
+    Ok(Vec::new())
+}
+
+pub fn startup_items() -> Vec<StartupItem> {
+    let Some(home) = std::env::var_os("HOME") else { return Vec::new() };
+    let dir = std::path::Path::new(&home).join(".config/autostart");
+    let Ok(rd) = fs::read_dir(&dir) else { return Vec::new() };
+    rd.flatten()
+        .filter_map(|e| {
+            let text = fs::read_to_string(e.path()).ok()?;
+            let get = |k: &str| text.lines().find_map(|l| l.strip_prefix(k)).unwrap_or("").to_string();
+            Some(StartupItem {
+                name: get("Name="),
+                command: get("Exec="),
+                location: dir.display().to_string(),
+                enabled: get("Hidden=") != "true",
+                per_user: true,
+            })
+        })
+        .collect()
+}
+
+pub fn set_startup_enabled(_item: &StartupItem, _enabled: bool) -> io::Result<()> {
+    Err(io::Error::new(io::ErrorKind::Unsupported, "not implemented on Linux"))
+}
+
+pub fn is_elevated() -> bool {
+    fs::read_to_string("/proc/self/status")
+        .map(|s| s.lines().any(|l| l.starts_with("Uid:") && l.split_whitespace().nth(1) == Some("0")))
+        .unwrap_or(false)
+}
+
+pub fn restart_elevated() -> io::Result<()> {
+    Err(io::Error::new(io::ErrorKind::Unsupported, "run with sudo instead"))
 }

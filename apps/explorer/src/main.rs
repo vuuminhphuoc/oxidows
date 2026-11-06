@@ -918,6 +918,18 @@ impl eframe::App for App {
     }
 }
 
+/// wgpu on Windows: it falls back to the WARP software rasteriser on machines without a GPU
+/// driver (VMs, RDP, CI runners), where OpenGL is only the 1.1 GDI stub. `OXI_RENDERER=glow`
+/// or `wgpu` overrides.
+fn renderer() -> eframe::Renderer {
+    match std::env::var("OXI_RENDERER").as_deref() {
+        Ok("glow") => eframe::Renderer::Glow,
+        Ok("wgpu") => eframe::Renderer::Wgpu,
+        _ if cfg!(windows) => eframe::Renderer::Wgpu,
+        _ => eframe::Renderer::Glow,
+    }
+}
+
 fn main() -> eframe::Result {
     let start = std::env::args_os()
         .nth(1)
@@ -925,6 +937,7 @@ fn main() -> eframe::Result {
         .filter(|p| p.is_dir())
         .unwrap_or_else(explorer_sys::home_dir);
     let options = eframe::NativeOptions {
+        renderer: renderer(),
         viewport: egui::ViewportBuilder::default()
             .with_title("Explorer (Rust)")
             .with_inner_size([1040.0, 660.0])

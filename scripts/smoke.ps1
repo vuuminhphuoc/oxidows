@@ -12,7 +12,9 @@ param(
     [string] $OutDir = "smoke",
     [int] $SettleSeconds = 5,
     [int] $IdleSeconds = 10,
-    [int] $WindowTimeoutSeconds = 30
+    [int] $WindowTimeoutSeconds = 30,
+    # Only wait, screenshot and close (extra views of an app; metrics come from the main run).
+    [switch] $ScreenshotOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -55,12 +57,13 @@ if ($p.HasExited) {
     throw "$Name crashed after its window appeared (exit code $($p.ExitCode))"
 }
 
+if ($ScreenshotOnly) { $IdleSeconds = 0 }
 # Idle CPU: process CPU time over a quiet interval, as a share of the whole machine.
 $cpu0 = $p.TotalProcessorTime
 Start-Sleep -Seconds $IdleSeconds
 $p.Refresh()
 $cpu1 = $p.TotalProcessorTime
-$idleCpuPct = [math]::Round(($cpu1 - $cpu0).TotalMilliseconds / ($IdleSeconds * 1000 * [Environment]::ProcessorCount) * 100, 3)
+$idleCpuPct = if ($IdleSeconds -gt 0) { [math]::Round(($cpu1 - $cpu0).TotalMilliseconds / ($IdleSeconds * 1000 * [Environment]::ProcessorCount) * 100, 3) } else { $null }
 
 # "Memory" in Task Manager = private working set.
 $privateWs = $null
@@ -97,6 +100,11 @@ $result = [ordered]@{
     os                  = (Get-CimInstance Win32_OperatingSystem).Caption
 }
 Stop-Process -Id $p.Id -Force
+if ($ScreenshotOnly) {
+    if (-not $shot) { throw "${Name}: screenshot failed" }
+    Write-Host "${Name}: screenshot saved"
+    return
+}
 
 $result | ConvertTo-Json | Set-Content (Join-Path $OutDir "$Name.json")
 $table = "| Metric | Value |`n| --- | --- |`n" + (($result.GetEnumerator() | ForEach-Object { "| $($_.Key) | $($_.Value) |" }) -join "`n")

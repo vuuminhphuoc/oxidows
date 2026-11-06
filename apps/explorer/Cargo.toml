@@ -13,4 +13,4 @@ explorer-core = { workspace = true }
 explorer-sys = { workspace = true }
 egui = { workspace = true }
 egui_extras = { workspace = true }
-eframe = { workspace = true, features = ["default_fonts", "glow", "x11", "wayland"] }
+eframe = { workspace = true, features = ["default_fonts", "glow", "wgpu", "x11", "wayland"] }
