@@ -202,6 +202,19 @@ fn spawn_sampler(ctx: egui::Context, tx: Sender<Result<Arc<Snapshot>, String>>) 
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        if std::env::var_os("OXI_TASKMGR_TIMING").is_some() {
+            match &cc.wgpu_render_state {
+                Some(rs) => {
+                    let i = rs.adapter.get_info();
+                    eprintln!("renderer: wgpu {:?} {} ({:?}, driver {})", i.backend, i.name, i.device_type, i.driver);
+                    for a in &rs.available_adapters {
+                        let i = a.get_info();
+                        eprintln!("  available: {:?} {} ({:?})", i.backend, i.name, i.device_type);
+                    }
+                }
+                None => eprintln!("renderer: glow"),
+            }
+        }
         let settings = settings::Settings::load();
         settings.apply_theme(&cc.egui_ctx);
         if settings.always_on_top {
