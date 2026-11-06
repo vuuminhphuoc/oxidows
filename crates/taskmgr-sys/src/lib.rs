@@ -123,6 +123,16 @@ pub fn app_history() -> io::Result<taskmgr_core::AppHistory> {
     imp::app_history()
 }
 
+/// "Switch to": brings the process's main window to the front.
+pub fn switch_to(pid: u32) -> io::Result<()> {
+    imp::switch_to(pid)
+}
+
+/// Opens the file's Properties dialog.
+pub fn file_properties(path: &str) -> io::Result<()> {
+    imp::file_properties(path)
+}
+
 /// Stops background work (the ETW network trace on Windows). Call on exit.
 pub fn shutdown() {
     imp::shutdown();

@@ -99,6 +99,8 @@ pub struct Status {
     dialog: Arc<Mutex<Option<Dialog>>>,
     goto_details: Arc<Mutex<Option<u32>>>,
     goto_services: Arc<Mutex<Option<u32>>>,
+    /// "Switch to" brought another window forward ("Minimize on use" acts on it).
+    used: Arc<AtomicBool>,
 }
 
 impl Status {
@@ -114,6 +116,9 @@ impl Status {
         if let Ok(mut m) = self.dialog.lock() {
             *m = Some(d);
         }
+    }
+    pub fn used(&self) {
+        self.used.store(true, Ordering::Relaxed);
     }
     pub fn goto_services(&self, pid: u32) {
         if let Ok(mut m) = self.goto_services.lock() {
@@ -435,6 +440,9 @@ impl eframe::App for App {
             if let raw_window_handle::RawWindowHandle::Win32(w) = h.as_raw() {
                 taskmgr_sys::tray::install(w.hwnd.get());
             }
+        }
+        if self.status.used.swap(false, Ordering::Relaxed) && self.settings.minimize_on_use {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Minimized(true));
         }
         if self.settings.hide_when_minimized && ui.ctx().input(|i| i.viewport().minimized == Some(true)) {
             taskmgr_sys::tray::hide_window();

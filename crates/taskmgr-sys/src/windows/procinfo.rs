@@ -9,11 +9,11 @@ use taskmgr_core::StaticInfo;
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 use windows_sys::Win32::Security::{
     GetTokenInformation, LookupAccountSidW, SID_NAME_USE, TOKEN_ELEVATION, TOKEN_QUERY, TOKEN_USER, TokenElevation,
-    TokenUser,
+    TokenUser, TokenVirtualizationAllowed, TokenVirtualizationEnabled,
 };
 use windows_sys::Win32::System::Threading::{
     ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, GetCurrentProcess, HIGH_PRIORITY_CLASS,
-    IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS, OpenProcess, OpenProcessToken, PROCESS_NAME_WIN32,
+    IDLE_PRIORITY_CLASS, IsWow64Process2, NORMAL_PRIORITY_CLASS, OpenProcess, OpenProcessToken, PROCESS_NAME_WIN32,
     PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION, QueryFullProcessImageNameW, REALTIME_PRIORITY_CLASS,
     SetPriorityClass,
 };
@@ -49,7 +49,59 @@ pub fn static_info(pid: u32) -> StaticInfo {
     };
     let path = image_path(&h);
     let (description, publisher) = version_strings(&path);
-    StaticInfo { command_line: command_line(&h), user: token_user(h.0), description, publisher, path }
+    let (elevated, uac_virtualization) = token_flags(h.0);
+    StaticInfo {
+        command_line: command_line(&h),
+        user: token_user(h.0),
+        description,
+        publisher,
+        path,
+        elevated,
+        uac_virtualization,
+        platform: platform(h.0),
+    }
+}
+
+/// Reads one DWORD-sized token fact.
+fn token_dword(tok: HANDLE, class: i32) -> Option<u32> {
+    let mut v = 0u32;
+    let mut ret = 0u32;
+    // SAFETY: 4-byte out value.
+    (unsafe { GetTokenInformation(tok, class, (&mut v as *mut u32).cast(), 4, &mut ret) } != 0).then_some(v)
+}
+
+/// (elevated, UAC virtualization) from the process token.
+fn token_flags(process: HANDLE) -> (Option<bool>, String) {
+    let mut tok = null_mut();
+    // SAFETY: out-pointer to a local.
+    if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut tok) } == 0 {
+        return (None, String::new());
+    }
+    let tok = Handle(tok);
+    let elevated = token_dword(tok.0, TokenElevation).map(|v| v != 0);
+    let virt = match (token_dword(tok.0, TokenVirtualizationAllowed), token_dword(tok.0, TokenVirtualizationEnabled)) {
+        (Some(0), _) => "Not allowed",
+        (Some(_), Some(0)) => "Disabled",
+        (Some(_), Some(_)) => "Enabled",
+        _ => "",
+    };
+    (elevated, virt.to_string())
+}
+
+fn platform(process: HANDLE) -> String {
+    let (mut proc_m, mut native) = (0u16, 0u16);
+    // SAFETY: two out values.
+    if unsafe { IsWow64Process2(process, &mut proc_m, &mut native) } == 0 {
+        return String::new();
+    }
+    let m = if proc_m == 0 { native } else { proc_m };
+    match m {
+        0x8664 => "64-bit",
+        0xAA64 => "ARM64",
+        0x014c | 0x01c4 => "32-bit",
+        _ => "",
+    }
+    .to_string()
 }
 
 fn image_path(h: &Handle) -> String {
@@ -316,7 +368,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 unsafe extern "system" fn collect_window(hwnd: HWND, lparam: LPARAM) -> windows_sys::core::BOOL {
     // SAFETY: lparam is the &mut HashSet passed by `window_pids`, alive for the EnumWindows call.
     unsafe {
-        let set = &mut *(lparam as *mut std::collections::HashSet<u32>);
+        let set = &mut *(lparam as *mut std::collections::HashMap<u32, usize>);
         if IsWindowVisible(hwnd) == 0 || !GetWindow(hwnd, GW_OWNER).is_null() || GetWindowTextLengthW(hwnd) == 0 {
             return 1;
         }
@@ -327,17 +379,60 @@ unsafe extern "system" fn collect_window(hwnd: HWND, lparam: LPARAM) -> windows_
         }
         let mut pid = 0u32;
         GetWindowThreadProcessId(hwnd, &mut pid);
-        set.insert(pid);
+        set.entry(pid).or_insert(hwnd as usize);
     }
     1
 }
 
+fn app_windows() -> std::collections::HashMap<u32, usize> {
+    let mut map = std::collections::HashMap::new();
+    // SAFETY: callback only touches `map` during this call.
+    unsafe { EnumWindows(Some(collect_window), &mut map as *mut _ as LPARAM) };
+    map
+}
+
+/// "Switch to": brings the process's main window to the front.
+pub fn switch_to(pid: u32) -> io::Result<()> {
+    let Some(&h) = app_windows().get(&pid) else {
+        return Err(io::Error::other("this process has no window"));
+    };
+    let h = h as HWND;
+    // SAFETY: a window handle just enumerated; the calls fail harmlessly if it closed.
+    unsafe {
+        if windows_sys::Win32::UI::WindowsAndMessaging::IsIconic(h) != 0 {
+            windows_sys::Win32::UI::WindowsAndMessaging::ShowWindow(
+                h,
+                windows_sys::Win32::UI::WindowsAndMessaging::SW_RESTORE,
+            );
+        }
+        windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow(h);
+    }
+    Ok(())
+}
+
+/// Opens the Explorer Properties dialog of a file.
+pub fn file_properties(path: &str) -> io::Result<()> {
+    use windows_sys::Win32::UI::Shell::{SEE_MASK_INVOKEIDLIST, SHELLEXECUTEINFOW, ShellExecuteExW};
+    let file: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
+    let verb: Vec<u16> = "properties".encode_utf16().chain(Some(0)).collect();
+    // SAFETY: zeroed struct with size, mask and NUL-terminated strings set.
+    unsafe {
+        let mut info: SHELLEXECUTEINFOW = zeroed();
+        info.cbSize = size_of::<SHELLEXECUTEINFOW>() as u32;
+        info.fMask = SEE_MASK_INVOKEIDLIST;
+        info.lpVerb = verb.as_ptr();
+        info.lpFile = file.as_ptr();
+        info.nShow = SW_SHOWNORMAL;
+        if ShellExecuteExW(&mut info) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
 /// PIDs owning a visible, unowned, titled top-level window: what Task Manager lists under "Apps".
 pub fn window_pids() -> std::collections::HashSet<u32> {
-    let mut set = std::collections::HashSet::new();
-    // SAFETY: callback only touches `set` during this call.
-    unsafe { EnumWindows(Some(collect_window), &mut set as *mut _ as LPARAM) };
-    set
+    app_windows().into_keys().collect()
 }
 
 /// (FileDescription, CompanyName) from the exe's version resource.

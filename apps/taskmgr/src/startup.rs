@@ -101,6 +101,10 @@ impl State {
                             let _ = taskmgr_sys::search_online(&it.name);
                             ui.close();
                         }
+                        if ui.button("Properties").clicked() {
+                            let _ = taskmgr_sys::file_properties(&taskmgr_sys::startup_exe(&it.command));
+                            ui.close();
+                        }
                     });
                 });
             });

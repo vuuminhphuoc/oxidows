@@ -63,6 +63,8 @@ impl Collector {
             io_write_bytes: write,
             net_bytes: 0,
             suspended: false,
+            efficiency: false,
+            counters: Default::default(),
             threads: num(17) as u32,
             handles,
             session_id: num(3) as u32,
@@ -311,5 +313,11 @@ pub mod tray {
     pub fn hide_window() {}
 }
 pub fn app_history() -> io::Result<taskmgr_core::AppHistory> {
+    unsupported()
+}
+pub fn switch_to(_pid: u32) -> io::Result<()> {
+    unsupported()
+}
+pub fn file_properties(_path: &str) -> io::Result<()> {
     unsupported()
 }

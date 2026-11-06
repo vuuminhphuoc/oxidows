@@ -34,6 +34,23 @@ impl CpuTimes {
     }
 }
 
+/// Extra per-process counters for the Details columns.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ProcCounters {
+    pub working_set: u64,
+    pub peak_working_set: u64,
+    /// Commit size (private bytes).
+    pub commit: u64,
+    pub paged_pool: u64,
+    pub nonpaged_pool: u64,
+    pub page_faults: u32,
+    pub hard_faults: u32,
+    pub read_ops: u64,
+    pub write_ops: u64,
+    pub other_ops: u64,
+    pub other_bytes: u64,
+}
+
 /// One process as the OS reports it: cumulative counters, no rates.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RawProcess {
@@ -52,6 +69,9 @@ pub struct RawProcess {
     pub net_bytes: u64,
     /// Every thread is suspended.
     pub suspended: bool,
+    /// Efficiency mode (EcoQoS) is on.
+    pub efficiency: bool,
+    pub counters: ProcCounters,
     pub threads: u32,
     pub handles: u32,
     pub session_id: u32,
@@ -73,6 +93,12 @@ pub struct StaticInfo {
     pub description: String,
     /// Version-resource CompanyName.
     pub publisher: String,
+    /// Runs with an elevated (administrator) token.
+    pub elevated: Option<bool>,
+    /// "Not allowed", "Disabled" or "Enabled".
+    pub uac_virtualization: String,
+    /// "64-bit", "32-bit" or "ARM64".
+    pub platform: String,
 }
 
 /// System-wide counters for one sample.
@@ -96,6 +122,8 @@ pub struct RawSystem {
     pub gpu_pct: Option<f32>,
     /// GPU % per process (busiest engine), from the same PDH read.
     pub gpu_per_pid: Vec<(u32, f32)>,
+    /// Busiest engine type per process.
+    pub gpu_engine_per_pid: Vec<(u32, String)>,
     /// Utilization per engine type ("3D", "Copy", "VideoDecode"...), summed over processes.
     pub gpu_engines: Vec<(String, f32)>,
     pub gpu_dedicated_used: Option<u64>,
@@ -216,6 +244,8 @@ pub struct GpuUsage {
     pub total: f32,
     pub per_pid: Vec<(u32, f32)>,
     pub engines: Vec<(String, f32)>,
+    /// Busiest engine type per process (only processes using the GPU).
+    pub engine_per_pid: Vec<(u32, String)>,
 }
 
 /// A display adapter as DXGI reports it. `luid` is formatted as in PDH instance names:
@@ -301,16 +331,25 @@ pub fn gpu_from_engines(items: &[(String, f64)]) -> GpuUsage {
     }
     let total = by_type.values().copied().fold(0.0, f64::max).min(100.0) as f32;
     let mut per_pid: HashMap<u32, f64> = HashMap::new();
-    for ((pid, _), v) in by_pid_type {
+    let mut engine_of: HashMap<u32, (&str, f64)> = HashMap::new();
+    for ((pid, ty), v) in by_pid_type {
         let e = per_pid.entry(pid).or_default();
         *e = e.max(v);
+        if v > 0.0 {
+            let best = engine_of.entry(pid).or_insert((ty, v));
+            if v > best.1 {
+                *best = (ty, v);
+            }
+        }
     }
+    let mut engine_per_pid: Vec<(u32, String)> = engine_of.into_iter().map(|(p, (t, _))| (p, t.to_string())).collect();
+    engine_per_pid.sort_by_key(|(p, _)| *p);
     let mut v: Vec<(u32, f32)> = per_pid.into_iter().map(|(p, g)| (p, g.min(100.0) as f32)).collect();
     v.sort_by_key(|(p, _)| *p);
     let mut engines: Vec<(String, f32)> =
         by_type.into_iter().filter(|(t, _)| !t.is_empty()).map(|(t, u)| (t.to_string(), u.min(100.0) as f32)).collect();
     engines.sort_by(|a, b| a.0.cmp(&b.0));
-    GpuUsage { total, per_pid: v, engines }
+    GpuUsage { total, per_pid: v, engines, engine_per_pid }
 }
 
 #[derive(Clone, Debug)]
@@ -334,6 +373,10 @@ pub struct ProcessRow {
     /// Sent + received bytes per second.
     pub net_bps: f64,
     pub suspended: bool,
+    pub efficiency: bool,
+    pub counters: ProcCounters,
+    /// Busiest GPU engine type ("3D", "VideoDecode"...), empty when idle.
+    pub gpu_engine: String,
     /// Total CPU time (user + kernel) in 100 ns units.
     pub cpu_time: u64,
     pub io_read_bytes: u64,
@@ -663,6 +706,8 @@ impl Sampler {
         let ncpu = raw.system.cores.len().max(1) as f64;
 
         let gpu_map: HashMap<u32, f32> = raw.system.gpu_per_pid.iter().copied().collect();
+        let engine_map: HashMap<u32, &str> =
+            raw.system.gpu_engine_per_pid.iter().map(|(p, e)| (*p, e.as_str())).collect();
         let gpu_of = |pid: u32| gpu_map.get(&pid).copied().unwrap_or(0.0);
         let mut procs_now = HashMap::with_capacity(raw.processes.len());
         let mut thread_count = 0u64;
@@ -698,6 +743,9 @@ impl Sampler {
                     disk_bps,
                     net_bps,
                     suspended: p.suspended,
+                    efficiency: p.efficiency,
+                    counters: p.counters,
+                    gpu_engine: engine_map.get(&p.pid).map(|e| e.to_string()).unwrap_or_default(),
                     cpu_time: p.cpu_time,
                     io_read_bytes: p.io_read_bytes,
                     io_write_bytes: p.io_write_bytes,
@@ -1052,6 +1100,9 @@ mod tests {
                 disk_bps: 0.0,
                 net_bps: 0.0,
                 suspended: false,
+                efficiency: false,
+                counters: Default::default(),
+                gpu_engine: String::new(),
                 cpu_time: 0,
                 io_read_bytes: 0,
                 io_write_bytes: 0,
@@ -1081,6 +1132,9 @@ mod tests {
             disk_bps: 0.0,
             net_bps: 0.0,
             suspended: false,
+            efficiency: false,
+            counters: Default::default(),
+            gpu_engine: String::new(),
             cpu_time: 0,
             io_read_bytes: 0,
             io_write_bytes: 0,
@@ -1127,6 +1181,9 @@ mod tests {
             disk_bps: 0.0,
             net_bps: 0.0,
             suspended: false,
+            efficiency: false,
+            counters: Default::default(),
+            gpu_engine: String::new(),
             cpu_time: 0,
             io_read_bytes: 0,
             io_write_bytes: 0,
@@ -1156,7 +1213,8 @@ mod tests {
         .into_iter()
         .map(|(n, v)| (n.to_string(), v))
         .collect();
-        let GpuUsage { total, per_pid: per, engines } = gpu_from_engines(&items);
+        let GpuUsage { total, per_pid: per, engines, engine_per_pid } = gpu_from_engines(&items);
+        assert_eq!(engine_per_pid, vec![(10, "VideoDecode".to_string()), (20, "3D".to_string())]);
         assert_eq!(total, 70.0); // 3D: 30 + 40
         assert_eq!(per, vec![(10, 50.0), (20, 40.0)]);
         assert_eq!(engines, vec![("3D".to_string(), 70.0), ("VideoDecode".to_string(), 50.0)]);

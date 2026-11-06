@@ -32,10 +32,24 @@ pub enum Col {
     Path,
     CommandLine,
     ParentPid,
+    WorkingSet,
+    PeakWorkingSet,
+    Commit,
+    PagedPool,
+    NonPagedPool,
+    PageFaults,
+    IoReads,
+    IoWrites,
+    IoOther,
+    IoOtherBytes,
+    GpuEngine,
+    Elevated,
+    UacVirtualization,
+    Platform,
 }
 
 impl Col {
-    pub const ALL: [Col; 20] = [
+    pub const ALL: [Col; 34] = [
         Col::Name,
         Col::Pid,
         Col::Status,
@@ -56,6 +70,20 @@ impl Col {
         Col::Path,
         Col::CommandLine,
         Col::ParentPid,
+        Col::WorkingSet,
+        Col::PeakWorkingSet,
+        Col::Commit,
+        Col::PagedPool,
+        Col::NonPagedPool,
+        Col::PageFaults,
+        Col::IoReads,
+        Col::IoWrites,
+        Col::IoOther,
+        Col::IoOtherBytes,
+        Col::GpuEngine,
+        Col::Elevated,
+        Col::UacVirtualization,
+        Col::Platform,
     ];
 
     /// What a fresh install shows, as in Task Manager plus Path.
@@ -94,6 +122,20 @@ impl Col {
             Col::Path => "Image path name",
             Col::CommandLine => "Command line",
             Col::ParentPid => "Parent PID",
+            Col::WorkingSet => "Working set (memory)",
+            Col::PeakWorkingSet => "Peak working set (memory)",
+            Col::Commit => "Commit size",
+            Col::PagedPool => "Paged pool",
+            Col::NonPagedPool => "NP pool",
+            Col::PageFaults => "Page faults",
+            Col::IoReads => "I/O reads",
+            Col::IoWrites => "I/O writes",
+            Col::IoOther => "I/O other",
+            Col::IoOtherBytes => "I/O other bytes",
+            Col::GpuEngine => "GPU engine",
+            Col::Elevated => "Elevated",
+            Col::UacVirtualization => "UAC virtualization",
+            Col::Platform => "Platform",
         }
     }
 
@@ -120,6 +162,20 @@ impl Col {
             Col::Path => "path",
             Col::CommandLine => "cmdline",
             Col::ParentPid => "ppid",
+            Col::WorkingSet => "workingset",
+            Col::PeakWorkingSet => "peakws",
+            Col::Commit => "commit",
+            Col::PagedPool => "pagedpool",
+            Col::NonPagedPool => "nppool",
+            Col::PageFaults => "pagefaults",
+            Col::IoReads => "ioreads",
+            Col::IoWrites => "iowrites",
+            Col::IoOther => "ioother",
+            Col::IoOtherBytes => "iootherbytes",
+            Col::GpuEngine => "gpuengine",
+            Col::Elevated => "elevated",
+            Col::UacVirtualization => "uacvirt",
+            Col::Platform => "platform",
         }
     }
 
@@ -137,7 +193,9 @@ impl Col {
     fn column(self) -> Column {
         match self {
             Col::Name => Column::initial(170.0).clip(true),
-            Col::User | Col::Description | Col::Publisher => Column::initial(150.0).clip(true),
+            Col::User | Col::Description | Col::Publisher | Col::GpuEngine | Col::UacVirtualization => {
+                Column::initial(150.0).clip(true)
+            }
             Col::Path | Col::CommandLine => Column::initial(260.0).clip(true),
             Col::Memory | Col::IoRead | Col::IoWrite | Col::Network | Col::CpuTime => Column::initial(90.0),
             Col::Priority | Col::Status => Column::initial(90.0),
@@ -158,6 +216,16 @@ impl Col {
                 | Col::IoWrite
                 | Col::Network
                 | Col::Gpu
+                | Col::WorkingSet
+                | Col::PeakWorkingSet
+                | Col::Commit
+                | Col::PagedPool
+                | Col::NonPagedPool
+                | Col::PageFaults
+                | Col::IoReads
+                | Col::IoWrites
+                | Col::IoOther
+                | Col::IoOtherBytes
         )
     }
 
@@ -184,6 +252,20 @@ impl Col {
             Col::Path => text(&a.info.path, &b.info.path),
             Col::CommandLine => text(&a.info.command_line, &b.info.command_line),
             Col::ParentPid => a.parent_pid.cmp(&b.parent_pid),
+            Col::WorkingSet => a.counters.working_set.cmp(&b.counters.working_set),
+            Col::PeakWorkingSet => a.counters.peak_working_set.cmp(&b.counters.peak_working_set),
+            Col::Commit => a.counters.commit.cmp(&b.counters.commit),
+            Col::PagedPool => a.counters.paged_pool.cmp(&b.counters.paged_pool),
+            Col::NonPagedPool => a.counters.nonpaged_pool.cmp(&b.counters.nonpaged_pool),
+            Col::PageFaults => a.counters.page_faults.cmp(&b.counters.page_faults),
+            Col::IoReads => a.counters.read_ops.cmp(&b.counters.read_ops),
+            Col::IoWrites => a.counters.write_ops.cmp(&b.counters.write_ops),
+            Col::IoOther => a.counters.other_ops.cmp(&b.counters.other_ops),
+            Col::IoOtherBytes => a.counters.other_bytes.cmp(&b.counters.other_bytes),
+            Col::GpuEngine => a.gpu_engine.cmp(&b.gpu_engine),
+            Col::Elevated => a.info.elevated.cmp(&b.info.elevated),
+            Col::UacVirtualization => a.info.uac_virtualization.cmp(&b.info.uac_virtualization),
+            Col::Platform => a.info.platform.cmp(&b.info.platform),
         }
     }
 
@@ -192,7 +274,14 @@ impl Col {
         let text = match self {
             Col::Name => p.name.clone(),
             Col::Pid => p.pid.to_string(),
-            Col::Status => (if p.suspended { "Suspended" } else { "Running" }).to_string(),
+            Col::Status => (if p.suspended {
+                "Suspended"
+            } else if p.efficiency {
+                "Running (efficiency mode)"
+            } else {
+                "Running"
+            })
+            .to_string(),
             Col::User => dash(&p.info.user),
             Col::Session => p.session_id.to_string(),
             Col::Cpu => format!("{:.0}", p.cpu_pct),
@@ -220,6 +309,25 @@ impl Col {
                 return;
             }
             Col::ParentPid => p.parent_pid.to_string(),
+            Col::WorkingSet => format_bytes(p.counters.working_set as f64),
+            Col::PeakWorkingSet => format_bytes(p.counters.peak_working_set as f64),
+            Col::Commit => format_bytes(p.counters.commit as f64),
+            Col::PagedPool => format_bytes(p.counters.paged_pool as f64),
+            Col::NonPagedPool => format_bytes(p.counters.nonpaged_pool as f64),
+            Col::PageFaults => p.counters.page_faults.to_string(),
+            Col::IoReads => p.counters.read_ops.to_string(),
+            Col::IoWrites => p.counters.write_ops.to_string(),
+            Col::IoOther => p.counters.other_ops.to_string(),
+            Col::IoOtherBytes => format_bytes(p.counters.other_bytes as f64),
+            Col::GpuEngine => dash(&p.gpu_engine),
+            Col::Elevated => (match p.info.elevated {
+                Some(true) => "Yes",
+                Some(false) => "No",
+                None => "-",
+            })
+            .to_string(),
+            Col::UacVirtualization => dash(&p.info.uac_virtualization),
+            Col::Platform => dash(&p.info.platform),
         };
         ui.label(text);
     }

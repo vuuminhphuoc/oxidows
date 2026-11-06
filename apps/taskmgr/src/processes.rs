@@ -1,6 +1,8 @@
 //! Processes tab: a virtualised table (only visible rows are laid out), sort by any column,
 //! search by name or PID, End task from a button, the Delete key or the right-click menu.
 
+use std::collections::{HashMap, HashSet};
+
 use egui::{Color32, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 use taskmgr_core::{
@@ -18,6 +20,8 @@ pub struct State {
     selected: Option<(u32, String)>,
     group: bool,
     collapsed: [bool; 3],
+    /// Apps whose child processes are shown.
+    expanded: HashSet<u32>,
     windir: String,
     status: Status,
 }
@@ -25,6 +29,41 @@ pub struct State {
 enum Line {
     Header(ProcGroup, usize),
     Row(usize),
+    /// An app with its child processes folded in: root index, totals, child count.
+    App(usize, Box<ProcessRow>, usize),
+    Child(usize),
+}
+
+/// Indexes of the processes `root` started, directly or not (a child starts after its parent,
+/// which rules out reused PIDs). Children that are apps themselves stay separate.
+fn descendants(rows: &[ProcessRow], kids: &HashMap<u32, Vec<usize>>, root: usize) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut stack = vec![root];
+    while let Some(i) = stack.pop() {
+        let p = &rows[i];
+        for &c in kids.get(&p.pid).map_or(&[][..], Vec::as_slice) {
+            let child = &rows[c];
+            if c != i && child.start_time >= p.start_time && !child.has_window && !out.contains(&c) {
+                out.push(c);
+                stack.push(c);
+            }
+        }
+    }
+    out
+}
+
+/// The root's row with its children's usage added, as Task Manager shows a grouped app.
+fn app_total(rows: &[ProcessRow], root: usize, children: &[usize]) -> ProcessRow {
+    let mut t = rows[root].clone();
+    for &c in children {
+        let r = &rows[c];
+        t.cpu_pct += r.cpu_pct;
+        t.memory += r.memory;
+        t.disk_bps += r.disk_bps;
+        t.net_bps += r.net_bps;
+        t.gpu_pct = t.gpu_pct.max(r.gpu_pct);
+    }
+    t
 }
 
 /// Ends `pid` only if it still belongs to the program the user picked.
@@ -96,6 +135,13 @@ fn restart_explorer(status: &Status, rows: &[ProcessRow], p: &ProcessRow) {
 /// The right-click menu shared by Processes and Details.
 pub fn process_menu(ui: &mut Ui, status: &Status, rows: &[ProcessRow], p: &ProcessRow, on_details: bool) {
     ui.label(RichText::new(format!("{} ({})", p.name, p.pid)).weak());
+    if p.has_window && ui.button("Switch to").clicked() {
+        match taskmgr_sys::switch_to(p.pid) {
+            Ok(()) => status.used(),
+            Err(e) => status.set(format!("Could not switch to {}: {e}", p.name)),
+        }
+        ui.close();
+    }
     if ui.button("End task").clicked() {
         end_task(status, rows, p.pid, &p.name);
         ui.close();
@@ -162,6 +208,12 @@ pub fn process_menu(ui: &mut Ui, status: &Status, rows: &[ProcessRow], p: &Proce
         }
         ui.close();
     }
+    if ui.add_enabled(!p.info.path.is_empty(), egui::Button::new("Properties")).clicked() {
+        if let Err(e) = taskmgr_sys::file_properties(&p.info.path) {
+            status.set(format!("Could not open Properties: {e}"));
+        }
+        ui.close();
+    }
     if ui.button("Search online").clicked() {
         if let Err(e) = taskmgr_sys::search_online(&p.name) {
             status.set(format!("Could not open the browser: {e}"));
@@ -192,6 +244,7 @@ impl State {
             selected: None,
             group,
             collapsed: [false; 3],
+            expanded: HashSet::new(),
             windir: std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into()),
             status,
         }
@@ -215,10 +268,38 @@ impl State {
 
         let view = sorted_view(rows, &self.filter, self.sort, !self.ascending);
         let lines: Vec<Line> = if self.group {
+            let mut kids: HashMap<u32, Vec<usize>> = HashMap::new();
+            for (i, r) in rows.iter().enumerate() {
+                kids.entry(r.parent_pid).or_default().push(i);
+            }
+            // Apps claim their child processes, so those leave the other groups.
+            let apps: Vec<(usize, Vec<usize>)> = view
+                .iter()
+                .copied()
+                .filter(|&i| group_of(&rows[i], &self.windir) == ProcGroup::Apps)
+                .map(|i| (i, descendants(rows, &kids, i)))
+                .collect();
+            let claimed: HashSet<usize> = apps.iter().flat_map(|(_, c)| c.iter().copied()).collect();
             let mut lines = Vec::with_capacity(view.len() + 3);
-            for (gi, g) in [ProcGroup::Apps, ProcGroup::Background, ProcGroup::Windows].into_iter().enumerate() {
-                let members: Vec<usize> =
-                    view.iter().copied().filter(|&i| group_of(&rows[i], &self.windir) == g).collect();
+            if !apps.is_empty() {
+                lines.push(Line::Header(ProcGroup::Apps, apps.len()));
+                if !self.collapsed[0] {
+                    for (i, children) in &apps {
+                        let n = children.len();
+                        lines.push(Line::App(*i, Box::new(app_total(rows, *i, children)), n));
+                        if self.expanded.contains(&rows[*i].pid) {
+                            lines.push(Line::Child(*i));
+                            lines.extend(children.iter().copied().map(Line::Child));
+                        }
+                    }
+                }
+            }
+            for (gi, g) in [(1, ProcGroup::Background), (2, ProcGroup::Windows)] {
+                let members: Vec<usize> = view
+                    .iter()
+                    .copied()
+                    .filter(|&i| !claimed.contains(&i) && group_of(&rows[i], &self.windir) == g)
+                    .collect();
                 if members.is_empty() {
                     continue;
                 }
@@ -237,6 +318,7 @@ impl State {
 
         let mut clicked_sort = None;
         let mut toggle_group = None;
+        let mut toggle_app = None;
         TableBuilder::new(ui)
             .striped(true)
             .resizable(true)
@@ -293,19 +375,41 @@ impl State {
                             }
                             return;
                         }
-                        Line::Row(i) => &rows[i],
+                        Line::Row(i) | Line::Child(i) => &rows[i],
+                        Line::App(_, ref total, _) => total,
+                    };
+                    let (indent, fold) = match lines[row.index()] {
+                        Line::App(_, _, n) => (0.0, Some(n)),
+                        Line::Child(_) => (34.0, None),
+                        _ => (if self.group { 14.0 } else { 0.0 }, None),
                     };
                     let is_sel = self.selected.as_ref().is_some_and(|(pid, _)| *pid == p.pid);
                     row.set_selected(is_sel);
                     row.col(|ui| {
-                        if self.group {
-                            ui.add_space(14.0);
+                        ui.add_space(indent);
+                        match fold {
+                            Some(n) if n > 0 => {
+                                let open = self.expanded.contains(&p.pid);
+                                if ui.small_button(if open { "v" } else { ">" }).clicked() {
+                                    toggle_app = Some(p.pid);
+                                }
+                                ui.label(format!("{} ({})", display_name(p), n + 1)).on_hover_text(&p.name);
+                            }
+                            Some(_) => {
+                                ui.add_space(18.0);
+                                ui.label(display_name(p)).on_hover_text(&p.name);
+                            }
+                            None => {
+                                ui.label(display_name(p)).on_hover_text(&p.name);
+                            }
                         }
-                        ui.label(display_name(p)).on_hover_text(&p.name);
                     });
                     row.col(|ui| {
                         if p.suspended {
                             ui.label(RichText::new("Suspended").weak());
+                        } else if p.efficiency {
+                            ui.label(RichText::new("Efficiency").color(Color32::from_rgb(60, 170, 90)))
+                                .on_hover_text("Efficiency mode: this process runs at low priority and power");
                         }
                     });
                     row.col(|ui| {
@@ -342,9 +446,19 @@ impl State {
                     if resp.clicked() {
                         self.selected = Some((p.pid, p.name.clone()));
                     }
-                    resp.context_menu(|ui| process_menu(ui, &self.status, rows, p, false));
+                    // Actions on a grouped app act on its root process, not the totals row.
+                    let target = match lines[row.index()] {
+                        Line::App(i, _, _) => &rows[i],
+                        _ => p,
+                    };
+                    resp.context_menu(|ui| process_menu(ui, &self.status, rows, target, false));
                 });
             });
+        if let Some(pid) = toggle_app
+            && !self.expanded.remove(&pid)
+        {
+            self.expanded.insert(pid);
+        }
         if let Some(gi) = toggle_group {
             self.collapsed[gi] = !self.collapsed[gi];
         }

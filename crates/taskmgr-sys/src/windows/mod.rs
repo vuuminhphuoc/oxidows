@@ -19,8 +19,8 @@ pub fn app_history() -> io::Result<taskmgr_core::AppHistory> {
     srum::app_history(f64::from(hw::base_mhz()) * 1e6)
 }
 pub use procinfo::{
-    affinity, create_dump, efficiency_mode, is_elevated, is_running, open_url, restart_elevated, run_new_task,
-    set_affinity, set_efficiency_mode, set_priority, static_info,
+    affinity, create_dump, efficiency_mode, file_properties, is_elevated, is_running, open_url, restart_elevated,
+    run_new_task, set_affinity, set_efficiency_mode, set_priority, static_info, switch_to,
 };
 pub use services::{list_services, service_control};
 pub use sessions::{disconnect_session, list_sessions, logoff_session};
@@ -350,6 +350,7 @@ impl Collector {
         let windows = procinfo::window_pids();
         for p in &mut processes {
             p.has_window = windows.contains(&p.pid);
+            p.efficiency = procinfo::efficiency_mode(p.pid).unwrap_or(false);
         }
         if self.net {
             net::with_totals(|t| {
@@ -395,6 +396,20 @@ impl Collector {
                     io_write_bytes: p.write_transfer_count as u64,
                     net_bytes: 0,
                     suspended: all_threads_suspended(bytes, offset, p),
+                    efficiency: false,
+                    counters: taskmgr_core::ProcCounters {
+                        working_set: p.working_set_size as u64,
+                        peak_working_set: p.peak_working_set_size as u64,
+                        commit: p.pagefile_usage as u64,
+                        paged_pool: p.quota_paged_pool_usage as u64,
+                        nonpaged_pool: p.quota_non_paged_pool_usage as u64,
+                        page_faults: p.page_fault_count,
+                        hard_faults: p.hard_fault_count,
+                        read_ops: p.read_operation_count as u64,
+                        write_ops: p.write_operation_count as u64,
+                        other_ops: p.other_operation_count as u64,
+                        other_bytes: p.other_transfer_count as u64,
+                    },
                     threads: p.number_of_threads,
                     handles: p.handle_count,
                     session_id: p.session_id,
@@ -507,8 +522,9 @@ impl Collector {
                         ded_items.as_deref().unwrap_or_default(),
                         shared_items.as_deref().unwrap_or_default(),
                     );
-                    let taskmgr_core::GpuUsage { total, per_pid, engines: by_engine } =
+                    let taskmgr_core::GpuUsage { total, per_pid, engines: by_engine, engine_per_pid } =
                         taskmgr_core::gpu_from_engines(&engines);
+                    sys.gpu_engine_per_pid = engine_per_pid;
                     sys.gpu_pct = Some(total);
                     sys.gpu_per_pid = per_pid;
                     sys.gpu_engines = by_engine;
