@@ -16,6 +16,8 @@ pub enum Undoable {
         from: PathBuf,
         to: PathBuf,
     },
+    /// A batch rename: (from, to) for each item.
+    Renames(Vec<(PathBuf, PathBuf)>),
     NewFolder(PathBuf),
     /// (where it was, where it went)
     Moved(Vec<(PathBuf, PathBuf)>),
@@ -30,6 +32,7 @@ impl Undoable {
         let n = |k: usize| if k == 1 { String::new() } else { format!(" {k} items") };
         match self {
             Undoable::Rename { .. } => "Rename".into(),
+            Undoable::Renames(v) => format!("Rename{}", n(v.len())),
             Undoable::NewFolder(_) => "New folder".into(),
             Undoable::Moved(v) => format!("Move{}", n(v.len())),
             Undoable::Copied(v) => format!("Copy{}", n(v.len())),
@@ -126,6 +129,8 @@ impl App {
         match (u, undo) {
             (Undoable::Rename { from, to }, true) => rename_no_replace(to, from),
             (Undoable::Rename { from, to }, false) => rename_no_replace(from, to),
+            (Undoable::Renames(pairs), true) => pairs.iter().try_for_each(|(f, t)| rename_no_replace(t, f)),
+            (Undoable::Renames(pairs), false) => pairs.iter().try_for_each(|(f, t)| rename_no_replace(f, t)),
             (Undoable::NewFolder(p), true) => match std::fs::remove_dir(p) {
                 Ok(()) => Ok(()),
                 // Something was put in it since: send it to the Recycle Bin instead.

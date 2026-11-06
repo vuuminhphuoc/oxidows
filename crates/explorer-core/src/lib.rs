@@ -207,11 +207,24 @@ pub fn natural_cmp(a: &str, b: &str) -> Ordering {
 /// Indices into `entries`: filtered by `filter` (case-insensitive substring), hidden items
 /// dropped unless `show_hidden`, folders always first, then sorted by `key`.
 pub fn sorted_view(entries: &[Entry], filter: &str, show_hidden: bool, key: SortKey, ascending: bool) -> Vec<usize> {
+    sorted_view_with(entries, filter, show_hidden, show_hidden, key, ascending)
+}
+
+/// [`sorted_view`] with "protected operating system files" (hidden + system) controlled on
+/// their own, as Explorer's folder options do.
+pub fn sorted_view_with(
+    entries: &[Entry],
+    filter: &str,
+    show_hidden: bool,
+    show_protected: bool,
+    key: SortKey,
+    ascending: bool,
+) -> Vec<usize> {
     let needle = filter.trim().to_lowercase();
     let mut idx: Vec<usize> = entries
         .iter()
         .enumerate()
-        .filter(|(_, e)| show_hidden || !(e.hidden || e.system))
+        .filter(|(_, e)| if e.system { show_hidden && show_protected } else { show_hidden || !e.hidden })
         .filter(|(_, e)| needle.is_empty() || e.display().to_lowercase().contains(&needle))
         .map(|(i, _)| i)
         .collect();
@@ -789,6 +802,36 @@ pub fn group_view(
     groups
 }
 
+/// Batch rename, as Explorer does it: every item gets `base (1)`, `base (2)`, … in the given
+/// order, each keeping its own extension (folders have none). `base` may carry the first
+/// item's extension, which is dropped. Folders count as extension-less.
+pub fn batch_names(base: &str, items: &[(String, bool)]) -> Vec<String> {
+    let stem_of = |n: &str| match n.rfind('.') {
+        Some(i) if i > 0 => (n[..i].to_string(), n[i..].to_string()),
+        _ => (n.to_string(), String::new()),
+    };
+    let base = match items.first() {
+        Some((first, false)) => {
+            let (_, ext) = stem_of(first);
+            if !ext.is_empty() && base.to_lowercase().ends_with(&ext.to_lowercase()) {
+                base[..base.len() - ext.len()].to_string()
+            } else {
+                base.to_string()
+            }
+        }
+        _ => base.to_string(),
+    };
+    let base = base.trim_end();
+    items
+        .iter()
+        .enumerate()
+        .map(|(i, (name, is_dir))| {
+            let ext = if *is_dir { String::new() } else { stem_of(name).1 };
+            format!("{base} ({}){ext}", i + 1)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -992,5 +1035,12 @@ mod tests {
         assert_eq!(labels, ["0–9", "A – H", "I – P", "Q – Z"]);
         assert_eq!(view, [4, 0, 1, 3, 2]);
         assert_eq!(g[1], Group { label: "A – H".into(), start: 1, len: 2 });
+    }
+
+    #[test]
+    fn batch_rename_names() {
+        let items = vec![("a.jpg".to_string(), false), ("b.PNG".to_string(), false), ("dir".to_string(), true)];
+        assert_eq!(batch_names("Trip.jpg", &items), ["Trip (1).jpg", "Trip (2).PNG", "Trip (3)"]);
+        assert_eq!(batch_names("Trip", &items)[0], "Trip (1).jpg");
     }
 }

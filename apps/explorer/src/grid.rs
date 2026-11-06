@@ -333,7 +333,16 @@ pub fn show(
                 }
             }
 
-            if resp.middle_clicked() && e.is_dir {
+            // Item check boxes: on hover or when selected, top-left of the item.
+            let mut ticked = false;
+            if app.item_checkboxes && (resp.hovered() || app.selected.contains(&e.name)) {
+                let mut on = app.selected.contains(&e.name);
+                let r = Rect::from_min_size(rect.min + egui::vec2(4.0, 4.0), egui::vec2(18.0, 18.0));
+                ticked = ui.put(r, egui::Checkbox::without_text(&mut on)).changed();
+            }
+            if ticked {
+                *action = Some(Action::Click(pos, egui::Modifiers::COMMAND | egui::Modifiers::CTRL));
+            } else if resp.middle_clicked() && e.is_dir {
                 *action = Some(Action::OpenInNewTab(pos));
             } else if resp.double_clicked() {
                 *action = Some(Action::Open(pos));

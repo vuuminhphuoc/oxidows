@@ -46,6 +46,8 @@ pub struct Settings {
     /// Folders pinned to Quick access, in order.
     pub pinned: Vec<PathBuf>,
     pub group_by: explorer_core::GroupBy,
+    pub show_protected: bool,
+    pub item_checkboxes: bool,
 }
 
 impl Default for Settings {
@@ -63,6 +65,8 @@ impl Default for Settings {
             folders: BTreeMap::new(),
             pinned: Vec::new(),
             group_by: explorer_core::GroupBy::None,
+            show_protected: false,
+            item_checkboxes: false,
         }
     }
 }
@@ -150,6 +154,8 @@ impl Settings {
                         _ => Pane::None,
                     }
                 }
+                "show_protected" => s.show_protected = flag(v),
+                "item_checkboxes" => s.item_checkboxes = flag(v),
                 "group_by" => {
                     use explorer_core::GroupBy;
                     s.group_by = match v {
@@ -205,7 +211,10 @@ impl Settings {
             explorer_core::GroupBy::Type => "type",
             explorer_core::GroupBy::Size => "size",
         };
-        out.push_str(&format!("group_by={group}\n"));
+        out.push_str(&format!(
+            "group_by={group}\nshow_protected={}\nitem_checkboxes={}\n",
+            self.show_protected, self.item_checkboxes
+        ));
         for p in &self.pinned {
             out.push_str(&format!("pin={}\n", p.display()));
         }
@@ -296,6 +305,8 @@ impl App {
         self.col_attrs = s.col_attrs;
         self.pane = s.pane;
         self.group_by = s.group_by;
+        self.show_protected = s.show_protected;
+        self.item_checkboxes = s.item_checkboxes;
     }
 
     /// Once per frame: per-folder views, and saving changes.
@@ -345,6 +356,8 @@ impl App {
         s.col_attrs = self.col_attrs;
         s.pane = self.pane;
         s.group_by = self.group_by;
+        s.show_protected = self.show_protected;
+        s.item_checkboxes = self.item_checkboxes;
 
         if self.persist.settings != self.persist.saved {
             let at = *self.persist.changed_at.get_or_insert_with(Instant::now);
@@ -381,12 +394,15 @@ mod tests {
             folders: BTreeMap::new(),
             pinned: Vec::new(),
             group_by: explorer_core::GroupBy::None,
+            show_protected: false,
+            item_checkboxes: false,
         };
         s.remember_folder(
             r"c:\users\a\pictures".into(),
             FolderView { view: ViewMode::Large, sort: SortKey::Modified, ascending: false },
         );
         s.group_by = explorer_core::GroupBy::Type;
+        s.item_checkboxes = true;
         s.pinned = vec![PathBuf::from(r"D:\Projects"), PathBuf::from(r"\\nas\share")];
         assert_eq!(Settings::parse(&s.to_text()), s);
         assert_eq!(Settings::parse("garbage\nwidth=abc\nview=nope"), Settings::default());

@@ -17,9 +17,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use explorer_core::{
-    Entry, History, Place, SortKey, child_path, classify, parent_path, sorted_view, unique_name, validate_name,
-};
+use explorer_core::{Entry, History, Place, SortKey, child_path, classify, parent_path, unique_name, validate_name};
 use explorer_sys::{Drive, FileOp};
 
 /// Results from worker threads. Listing messages carry the generation they were started for,
@@ -111,8 +109,19 @@ pub enum IconState {
 }
 
 enum Dialog {
-    Rename { original: String, text: String, error: Option<&'static str>, opened: bool },
-    NewFolder { text: String, error: Option<&'static str>, opened: bool },
+    /// `others`: more selected items, renamed together as "text (1)", "text (2)", …
+    Rename {
+        original: String,
+        others: Vec<String>,
+        text: String,
+        error: Option<&'static str>,
+        opened: bool,
+    },
+    NewFolder {
+        text: String,
+        error: Option<&'static str>,
+        opened: bool,
+    },
     MapDrive(MapDrive),
     ConfirmPurge(Vec<Entry>),
 }
@@ -181,6 +190,9 @@ struct App {
     pub col_attrs: bool,
     pub pane: pane::Pane,
     pub group_by: explorer_core::GroupBy,
+    /// Show hidden + system ("protected operating system") files too.
+    pub show_protected: bool,
+    pub item_checkboxes: bool,
     pub group_ascending: bool,
     /// Groups of `view` when grouping is on (empty otherwise).
     pub groups: Vec<explorer_core::Group>,
@@ -272,6 +284,8 @@ impl App {
             col_attrs: false,
             pane: pane::Pane::None,
             group_by: explorer_core::GroupBy::None,
+            show_protected: false,
+            item_checkboxes: false,
             group_ascending: true,
             groups: Vec::new(),
             persist: settings::Persist::new(settings.clone()),
@@ -1052,13 +1066,20 @@ impl App {
             filter: self.filter.clone(),
             sort: self.sort,
             ascending: self.ascending,
-            show_hidden: self.show_hidden,
+            show_hidden: self.show_hidden && !self.show_protected,
             group: (self.group_by, self.group_ascending),
         };
         if self.view_key.as_ref() == Some(&key) {
             return;
         }
-        self.view = sorted_view(&self.entries, &self.filter, self.show_hidden, self.sort, self.ascending);
+        self.view = explorer_core::sorted_view_with(
+            &self.entries,
+            &self.filter,
+            self.show_hidden,
+            self.show_protected,
+            self.sort,
+            self.ascending,
+        );
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
         self.groups = explorer_core::group_view(
             &self.entries,
@@ -1175,12 +1196,19 @@ impl App {
         if self.in_virtual_place() {
             return;
         }
-        let sel = self.selected_entries();
-        if let [e] = sel.as_slice() {
+        // In view order, so the numbering follows what the user sees.
+        let sel: Vec<String> =
+            self.view.iter().map(|&i| &self.entries[i].name).filter(|n| self.selected.contains(*n)).cloned().collect();
+        if let Some(first) = sel.first() {
             // In search results `name` is a relative path; only its last part is edited.
-            let leaf =
-                Path::new(&e.name).file_name().map_or_else(|| e.name.clone(), |n| n.to_string_lossy().into_owned());
-            self.dialog = Some(Dialog::Rename { original: e.name.clone(), text: leaf, error: None, opened: false });
+            let leaf = Path::new(first).file_name().map_or_else(|| first.clone(), |n| n.to_string_lossy().into_owned());
+            self.dialog = Some(Dialog::Rename {
+                original: first.clone(),
+                others: sel[1..].to_vec(),
+                text: leaf,
+                error: None,
+                opened: false,
+            });
         }
     }
 
@@ -1260,6 +1288,39 @@ impl App {
     /// Returns an error to show in the dialog, or `None` once done.
     fn finish_dialog(&mut self, dialog: &Dialog) -> Option<&'static str> {
         match dialog {
+            Dialog::Rename { original, others, text, .. } if !others.is_empty() => {
+                let base = text.trim_end();
+                if let Err(e) = validate_name(base) {
+                    return Some(e);
+                }
+                let names: Vec<String> = std::iter::once(original).chain(others).cloned().collect();
+                let items: Vec<(String, bool)> =
+                    names.iter().map(|n| (n.clone(), self.entries.iter().any(|e| &e.name == n && e.is_dir))).collect();
+                let new_names = explorer_core::batch_names(base, &items);
+                let mut done = Vec::new();
+                let mut failed = 0;
+                for (old, new) in names.iter().zip(&new_names) {
+                    let from = self.cur.join(old);
+                    let to = from.with_file_name(new);
+                    if to.exists() || std::fs::rename(&from, &to).is_err() {
+                        failed += 1;
+                    } else {
+                        done.push((from, to));
+                    }
+                }
+                self.selected = done
+                    .iter()
+                    .filter_map(|(_, to)| to.file_name().map(|n| n.to_string_lossy().into_owned()))
+                    .collect();
+                if failed > 0 {
+                    self.status = Some(format!("Renamed {}, {failed} could not be renamed", done.len()));
+                }
+                if !done.is_empty() {
+                    self.push_undo(undo::Undoable::Renames(done));
+                }
+                self.refresh();
+                None
+            }
             Dialog::Rename { original, text, .. } => {
                 let new = text.trim_end();
                 let from = self.cur.join(original);

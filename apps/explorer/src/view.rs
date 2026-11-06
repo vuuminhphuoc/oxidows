@@ -232,7 +232,12 @@ pub fn toolbar(app: &mut App, ui: &mut Ui) {
                     }
                 });
                 ui.checkbox(&mut app.show_hidden, "Hidden items");
+                ui.add_enabled(
+                    app.show_hidden,
+                    egui::Checkbox::new(&mut app.show_protected, "Protected operating system files"),
+                );
                 ui.checkbox(&mut app.show_extensions, "File name extensions");
+                ui.checkbox(&mut app.item_checkboxes, "Item check boxes");
                 if ui.button("Open in Terminal").clicked() {
                     if let Err(e) = explorer_sys::open_terminal(&app.cur) {
                         app.status = Some(format!("Terminal: {e}"));
@@ -918,6 +923,12 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                     };
                     let name_text = if dim { RichText::new(shown).color(weak) } else { RichText::new(shown) };
                     row.col(|ui| {
+                        if app.item_checkboxes {
+                            let mut on = app.selected.contains(&e.name);
+                            if ui.checkbox(&mut on, "").changed() {
+                                action = Some(Action::Click(pos, egui::Modifiers::COMMAND | egui::Modifiers::CTRL));
+                            }
+                        }
                         let key = IconKey::for_entry(e, &app.cur);
                         match app.icons.get(&key) {
                             Some(IconState::Ready(tex)) => {
@@ -1188,7 +1199,9 @@ fn map_drive_dialog(app: &mut App, ui: &mut Ui, mut m: MapDrive) {
 pub fn dialog(app: &mut App, ui: &mut Ui) {
     let Some(mut d) = app.dialog.take() else { return };
     let (title, text, error, opened) = match &mut d {
-        Dialog::Rename { text, error, opened, .. } => ("Rename", text, error, opened),
+        Dialog::Rename { text, error, opened, others, .. } => {
+            (if others.is_empty() { "Rename" } else { "Rename all selected" }, text, error, opened)
+        }
         Dialog::NewFolder { text, error, opened } => ("New folder", text, error, opened),
         Dialog::MapDrive(_) => {
             let Dialog::MapDrive(m) = d else { unreachable!() };
