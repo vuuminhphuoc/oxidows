@@ -3,6 +3,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod pane;
+mod settings;
 mod view;
 
 use std::collections::{HashMap, HashSet};
@@ -140,6 +141,7 @@ struct App {
     pub col_created: bool,
     pub col_attrs: bool,
     pub pane: pane::Pane,
+    pub persist: settings::Persist,
     preview: Option<(PathBuf, pane::PreviewState)>,
 
     /// Selected names (names survive refreshes; indices don't).
@@ -188,7 +190,8 @@ struct App {
 }
 
 impl App {
-    fn new(cc: &eframe::CreationContext<'_>, start: PathBuf) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>, start: PathBuf, settings: settings::Settings) -> Self {
+        settings.apply_theme(&cc.egui_ctx);
         let (tx, rx) = channel();
         let mut app = Self {
             ctx: cc.egui_ctx.clone(),
@@ -217,6 +220,7 @@ impl App {
             col_created: false,
             col_attrs: false,
             pane: pane::Pane::None,
+            persist: settings::Persist::new(settings.clone()),
             preview: None,
             selected: HashSet::new(),
             cursor: None,
@@ -252,6 +256,8 @@ impl App {
             tree_pending: HashSet::new(),
             active_tab: 0,
         };
+        let s = app.persist.settings.clone();
+        app.apply_settings(&s);
         let first = app.snapshot();
         app.tabs.push(first);
         app.start_listing(false);
@@ -1415,6 +1421,8 @@ impl eframe::App for App {
             self.title = title;
         }
 
+        let ctx = ui.ctx().clone();
+        self.persist_tick(&ctx);
         view::tab_bar(self, ui);
         view::toolbar(self, ui);
         view::status_bar(self, ui);
@@ -1440,13 +1448,15 @@ fn renderer() -> eframe::Renderer {
 fn main() -> eframe::Result {
     let start =
         std::env::args_os().nth(1).map(PathBuf::from).filter(|p| p.is_dir()).unwrap_or_else(explorer_sys::home_dir);
+    let settings = settings::Settings::load();
     let options = eframe::NativeOptions {
         renderer: renderer(),
         viewport: egui::ViewportBuilder::default()
             .with_title("Explorer (Rust)")
-            .with_inner_size([1040.0, 660.0])
+            .with_inner_size(settings.size)
+            .with_maximized(settings.maximized)
             .with_min_inner_size([520.0, 320.0]),
         ..Default::default()
     };
-    eframe::run_native("oxi-explorer", options, Box::new(|cc| Ok(Box::new(App::new(cc, start)))))
+    eframe::run_native("oxi-explorer", options, Box::new(|cc| Ok(Box::new(App::new(cc, start, settings)))))
 }

@@ -133,6 +133,17 @@ pub fn toolbar(app: &mut App, ui: &mut Ui) {
                         }
                     }
                 });
+                ui.horizontal(|ui| {
+                    use crate::settings::Theme;
+                    ui.label("Theme:");
+                    let before = app.persist.settings.theme;
+                    for (t, label) in [(Theme::System, "System"), (Theme::Light, "Light"), (Theme::Dark, "Dark")] {
+                        ui.selectable_value(&mut app.persist.settings.theme, t, label);
+                    }
+                    if app.persist.settings.theme != before {
+                        app.persist.settings.apply_theme(ui.ctx());
+                    }
+                });
                 ui.checkbox(&mut app.show_hidden, "Hidden items");
                 ui.checkbox(&mut app.show_extensions, "File name extensions");
                 if ui.button("Open in Terminal").clicked() {
