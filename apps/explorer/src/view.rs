@@ -1,6 +1,6 @@
 //! Drawing: toolbar with address bar, sidebar, virtualised file table, status bar, dialogs.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use egui::{Align, Layout, RichText, Sense, Ui};
 use egui_extras::{Column, TableBuilder};
@@ -263,6 +263,18 @@ fn address_bar(app: &mut App, ui: &mut Ui) {
 struct TreeOut {
     go: Option<PathBuf>,
     load: Vec<PathBuf>,
+    /// A drag is in progress: folders under the pointer are drop targets.
+    dragging: bool,
+    drop: Option<PathBuf>,
+}
+
+/// Marks `resp` as the drop target when a drag is over it.
+fn drop_hover(resp: &egui::Response, dragging: bool, path: &Path, out: &mut Option<PathBuf>) {
+    if dragging && resp.contains_pointer() {
+        *out = Some(path.to_path_buf());
+        let stroke = egui::Stroke::new(1.5, resp.ctx.global_style().visuals.selection.stroke.color);
+        resp.ctx.layer_painter(resp.layer_id).rect_stroke(resp.rect, 3.0, stroke, egui::StrokeKind::Inside);
+    }
 }
 
 /// Expandable node: arrow + clickable label; children are listed lazily the first time it opens.
@@ -306,6 +318,7 @@ fn tree_node(
     if header.inner.clicked() {
         out.go = Some(path.clone());
     }
+    drop_hover(&header.inner, out.dragging, path, &mut out.drop);
     header.inner
 }
 
@@ -315,16 +328,23 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
             ui.add_space(6.0);
             let mut go: Option<PathBuf> = None;
             let mut unmap: Option<char> = None;
-            let mut tree_out = TreeOut::default();
-            let place = |ui: &mut Ui, icon: &str, name: &str, path: &PathBuf, cur: &PathBuf| {
+            let dragging = app.drag.is_some();
+            let mut tree_out = TreeOut { dragging, ..Default::default() };
+            let mut place_drop: Option<PathBuf> = None;
+            let mut place = |ui: &mut Ui, icon: &str, name: &str, path: &PathBuf, cur: &PathBuf| {
                 let selected = path == cur;
-                ui.with_layout(Layout::top_down_justified(Align::LEFT), |ui| {
-                    ui.add(
-                        egui::Button::selectable(selected, format!("{icon}  {name}")).min_size(egui::vec2(0.0, 22.0)),
-                    )
-                    .clicked()
-                })
-                .inner
+                let r = ui
+                    .with_layout(Layout::top_down_justified(Align::LEFT), |ui| {
+                        ui.add(
+                            egui::Button::selectable(selected, format!("{icon}  {name}"))
+                                .min_size(egui::vec2(0.0, 22.0)),
+                        )
+                    })
+                    .inner;
+                if path.as_os_str() != explorer_core::NETWORK {
+                    drop_hover(&r, dragging, path, &mut place_drop);
+                }
+                r.clicked()
             };
             if place(ui, "🏠", "Home", &app.home, &app.cur) {
                 go = Some(app.home.clone());
@@ -410,6 +430,9 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
             }
             if go.is_none() {
                 go = tree_out.go;
+            }
+            if let Some(t) = place_drop.or(tree_out.drop) {
+                app.drop_target = Some(t);
             }
             for p in tree_out.load {
                 app.load_tree(p);
@@ -597,13 +620,17 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
     let n = app.view.len();
     let weak = ui.visuals().weak_text_color();
     let mut wanted_icons: Vec<IconKey> = Vec::new();
+    // Drag and drop, collected while drawing (the rows only borrow `app`).
+    let dragging = app.drag.is_some();
+    let mut drag_start: Option<String> = None;
+    let mut hover_target: Option<PathBuf> = None;
     if app.view_mode == ViewMode::Icons {
         icon_grid(app, ui, &mut action, &mut wanted_icons, shell_menus, in_bin);
     } else {
         let mut table = TableBuilder::new(ui)
             .striped(true)
             .resizable(true)
-            .sense(Sense::click())
+            .sense(Sense::click_and_drag())
             .cell_layout(Layout::left_to_right(Align::Center))
             .column(Column::remainder().at_least(120.0).clip(true))
             .column(Column::initial(135.0).at_least(80.0).clip(true))
@@ -717,6 +744,12 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                         });
                     }
                     let resp = row.response();
+                    if resp.drag_started() && !in_bin {
+                        drag_start = Some(e.name.clone());
+                    }
+                    if e.is_dir && !app.is_dragged(&e.name) {
+                        drop_hover(&resp, dragging, &app.child(&e.name), &mut hover_target);
+                    }
                     if resp.middle_clicked() && e.is_dir {
                         action = Some(Action::OpenInNewTab(pos));
                     } else if resp.double_clicked() {
@@ -796,6 +829,12 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
 
     app.request_icons(wanted_icons);
     app.request_thumbs();
+    if let Some(n) = drag_start {
+        app.drag_source(&n);
+    }
+    if let Some(t) = hover_target {
+        app.drop_target = Some(t);
+    }
     match toggle_col {
         Some(SortKey::Created) => app.col_created = !app.col_created,
         Some(SortKey::Attributes) => app.col_attrs = !app.col_attrs,
@@ -1007,6 +1046,9 @@ fn icon_grid(
     in_bin: bool,
 ) {
     let (tile_w, tile_h, img) = (112.0_f32, 124.0_f32, 96.0_f32);
+    let dragging = app.drag.is_some();
+    let mut drag_start: Option<String> = None;
+    let mut hover_target: Option<PathBuf> = None;
     let n = app.view.len();
     let cols = ((ui.available_width() / tile_w).floor() as usize).max(1);
     let rows = n.div_ceil(cols);
@@ -1027,7 +1069,10 @@ fn icon_grid(
                         break;
                     }
                     let e = &app.entries[app.view[pos]];
-                    let (rect, resp) = ui.allocate_exact_size(egui::vec2(tile_w, tile_h), Sense::click());
+                    let (rect, resp) = ui.allocate_exact_size(egui::vec2(tile_w, tile_h), Sense::click_and_drag());
+                    if resp.drag_started() && !in_bin {
+                        drag_start = Some(e.name.clone());
+                    }
                     let selected = app.selected.contains(&e.name);
                     if selected {
                         ui.painter().rect_filled(rect.shrink(2.0), 4.0, sel_fill);
@@ -1039,6 +1084,9 @@ fn icon_grid(
                         egui::vec2(img, img),
                     );
                     let path = app.child(&e.name);
+                    if e.is_dir && !app.is_dragged(&e.name) {
+                        drop_hover(&resp, dragging, &path, &mut hover_target);
+                    }
                     let thumb = if e.is_dir || in_bin { None } else { app.thumbs.get(&path) };
                     match thumb {
                         Some(IconState::Ready(tex)) => {
@@ -1113,4 +1161,10 @@ fn icon_grid(
             });
         }
     });
+    if let Some(n) = drag_start {
+        app.drag_source(&n);
+    }
+    if let Some(t) = hover_target {
+        app.drop_target = Some(t);
+    }
 }

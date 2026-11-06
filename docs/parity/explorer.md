@@ -41,7 +41,8 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Details view: Name, Date modified, Type, Size | ✅ | |
 | Sort by any column, folders first, natural order | ✅ | |
 | Resize columns | ✅ | |
-| More columns (Date created, Attributes, Owner, …), choose columns | ❌ | |
+| More columns (Date created, Attributes), choose columns | ✅ | right-click a column header |
+| Other columns (Owner, Dimensions, Authors, …) | ❌ | need the property system |
 | Group by (type, date, …) | ❌ | |
 | Large icons / Medium / Small / List / Tiles / Content views | 🟡 | Details and Large icons (Ctrl+Shift+6 / Ctrl+Shift+2) |
 | Thumbnails for images and videos | ✅ | the shell's thumbnail cache (`IShellItemImageFactory`), Large icons view |
@@ -51,8 +52,8 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Show/hide file name extensions | ✅ | … menu |
 | Show protected OS files | ❌ | hidden+system shown with "Hidden items" |
 | Compact mode | ➖ | |
-| Preview pane | ❌ | |
-| Details pane | ❌ | |
+| Preview pane (Alt+P) | 🟡 | text files and shell thumbnails (images, videos, PDFs); no embedded preview handlers (Office) yet |
+| Details pane (Alt+Shift+P) | ✅ | type, size, dates, attributes; totals for a multi-selection |
 | Status bar: item count, selection count and size | ✅ | |
 
 ## Selection and keyboard
@@ -81,11 +82,12 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Batch rename | ❌ | |
 | Delete to Recycle Bin, Shift+Delete permanently | ✅ | |
 | Native progress, conflict and Undo dialogs | ✅ | `SHFileOperationW` |
-| Undo / Redo (Ctrl+Z / Ctrl+Y) inside the app | ❌ | |
+| Undo / Redo (Ctrl+Z / Ctrl+Y) inside the app | ✅ | rename, new folder, copy, move, delete to Recycle Bin |
 | New folder (Ctrl+Shift+N) | ✅ | |
 | New → text file, shortcut, other registered types | ✅ | through the shell menu |
 | Drag and drop into the window | ✅ | move on same drive, copy across drives |
-| Drag and drop out of the window / between folders | ❌ | |
+| Drag onto folders, the navigation pane and the Recycle Bin | ✅ | Ctrl copies, Shift moves, as Explorer |
+| Drag out of the window to other programs | ✅ | system OLE drag with the shell's data object (`SHDoDragDrop`) |
 | Compress to ZIP / extract | ✅ | through the shell menu |
 | Properties dialog (Alt+Enter) | ✅ | the shell's own |
 | Open in Terminal | ✅ | Windows Terminal, else cmd |
@@ -118,6 +120,6 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Folder refreshes itself when others change it | ✅ | `FindFirstChangeNotificationW` |
 | Large folders stay responsive | ✅ | streamed listing, virtual table |
 | Long paths (> 260 chars) | ✅ | `\\?\` prefix |
-| Remembers window size, view and sort per folder | ❌ | |
-| Dark / light theme follows Windows | 🟡 | egui default dark |
+| Remembers window size, view and sort per folder | ✅ | `%APPDATA%\oxidows\explorer.ini` |
+| Dark / light theme follows Windows | ✅ | System / Light / Dark in the … menu |
 | Replace Win+E / default folder handler | ❌ | registry opt-in, later |

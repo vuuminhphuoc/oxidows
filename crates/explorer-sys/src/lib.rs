@@ -247,6 +247,31 @@ pub fn shell_menu_verbs(dir: &Path, items: &[PathBuf]) -> io::Result<Vec<String>
     }
 }
 
+/// What the drop target did with a drag from [`drag_out`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DropResult {
+    /// Cancelled, or dropped where files aren't accepted.
+    None,
+    Copied,
+    /// The target moved the files (they are gone from here).
+    Moved,
+    Linked,
+}
+
+/// Starts a system drag of `items` (all in one folder) so they can be dropped on other
+/// programs. Call while the mouse button is held; blocks until the drop. Windows only.
+pub fn drag_out(hwnd: isize, items: &[PathBuf]) -> io::Result<DropResult> {
+    #[cfg(windows)]
+    {
+        shell_menu::drag_out(hwnd, items)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (hwnd, items);
+        Err(io::Error::new(io::ErrorKind::Unsupported, "drag out is Windows-only"))
+    }
+}
+
 // ---- Recycle Bin ---------------------------------------------------------------------------
 
 /// One deleted item. Windows keeps `$R…` (the data) and `$I…` (where it came from, when) side

@@ -215,3 +215,52 @@ pub fn show(hwnd: isize, dir: &Path, items: &[PathBuf], extended: bool) -> io::R
     }
     Ok(outcome)
 }
+
+/// The shell's data object for `items` (all in one folder): what Explorer puts on the
+/// clipboard or in a drag, with every format other programs expect (CF_HDROP, shell IDs,
+/// file contents for virtual targets…).
+fn data_object(hwnd: HWND, items: &[PathBuf]) -> io::Result<windows::Win32::System::Com::IDataObject> {
+    crate::windows::com_init();
+    let pidls = parse(items)?;
+    let parent: IShellFolder = unsafe { SHBindToParent(pidls.0[0], None) }.map_err(to_io)?;
+    let children: Vec<*const ITEMIDLIST> = pidls
+        .0
+        .iter()
+        .map(|&p| {
+            let mut c = std::ptr::null_mut();
+            let _: windows::core::Result<IShellFolder> = unsafe { SHBindToParent(p, Some(&mut c)) };
+            c as *const ITEMIDLIST
+        })
+        .collect();
+    unsafe { parent.GetUIObjectOf(hwnd, &children, None) }.map_err(to_io)
+}
+
+/// Drags `items` out with OLE drag and drop, like dragging from Explorer: any window that
+/// accepts files (Explorer, the desktop, mail, chat apps, editors…) can take them. Blocks
+/// until the drop or cancel. Returns what the target did.
+pub fn drag_out(hwnd: isize, items: &[PathBuf]) -> io::Result<crate::DropResult> {
+    use windows::Win32::System::Ole::{DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_MOVE, OleInitialize};
+    use windows::Win32::UI::Shell::SHDoDragDrop;
+    let hwnd = HWND(hwnd as *mut c_void);
+    // Already done by winit for its drop target; a second call on the same thread is harmless.
+    let _ = unsafe { OleInitialize(None) };
+    let data = data_object(hwnd, items)?;
+    // No drop source of our own: the shell supplies the standard one (drag image, cursors,
+    // Esc to cancel, right-button drag menu).
+    let effect = unsafe {
+        SHDoDragDrop(
+            Some(hwnd),
+            &data,
+            None::<&windows::Win32::System::Ole::IDropSource>,
+            DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK,
+        )
+    };
+    match effect {
+        Ok(e) if e.contains(DROPEFFECT_MOVE) => Ok(crate::DropResult::Moved),
+        Ok(e) if e.contains(DROPEFFECT_COPY) => Ok(crate::DropResult::Copied),
+        Ok(e) if e.contains(DROPEFFECT_LINK) => Ok(crate::DropResult::Linked),
+        Ok(_) => Ok(crate::DropResult::None),
+        // DRAGDROP_S_CANCEL is a success code; failures are real errors.
+        Err(e) => Err(to_io(e)),
+    }
+}

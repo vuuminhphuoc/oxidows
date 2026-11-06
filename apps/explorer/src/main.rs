@@ -2,6 +2,7 @@
 // Release builds on Windows run without a console window.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod dnd;
 mod pane;
 mod settings;
 mod undo;
@@ -145,6 +146,10 @@ struct App {
     pub pane: pane::Pane,
     pub persist: settings::Persist,
     pub undo_stack: Vec<undo::Undoable>,
+    pub drag: Option<dnd::Drag>,
+    /// Folder under the pointer during a drag (set while drawing each frame).
+    pub drop_target: Option<PathBuf>,
+    release_pointer: bool,
     pub redo_stack: Vec<undo::Undoable>,
     preview: Option<(PathBuf, pane::PreviewState)>,
 
@@ -226,6 +231,9 @@ impl App {
             pane: pane::Pane::None,
             persist: settings::Persist::new(settings.clone()),
             undo_stack: Vec::new(),
+            drag: None,
+            drop_target: None,
+            release_pointer: false,
             redo_stack: Vec::new(),
             preview: None,
             selected: HashSet::new(),
@@ -1419,10 +1427,9 @@ impl eframe::App for App {
             i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect()
         });
         if !dropped.is_empty() {
-            let root = |p: &Path| p.components().next().map(|c| c.as_os_str().to_ascii_lowercase());
-            let same_drive = dropped.iter().all(|p| root(p) == root(&self.cur));
-            let op = if same_drive { FileOp::Move } else { FileOp::Copy };
-            self.run_op(op, dropped, Some(self.cur.clone()));
+            let mods = ui.input(|i| i.modifiers);
+            let target = self.drop_target.clone().unwrap_or_else(|| self.cur.clone());
+            self.drop_into(dropped, target, mods);
         }
 
         if self.dialog.is_none() {
@@ -1444,6 +1451,7 @@ impl eframe::App for App {
 
         let ctx = ui.ctx().clone();
         self.persist_tick(&ctx);
+        self.drop_target = None;
         view::tab_bar(self, ui);
         view::toolbar(self, ui);
         view::status_bar(self, ui);
@@ -1451,6 +1459,20 @@ impl eframe::App for App {
         pane::show(self, ui);
         egui::CentralPanel::default().show(ui, |ui| view::file_list(self, ui));
         view::dialog(self, ui);
+        self.finish_drag(&ctx);
+    }
+
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+        if std::mem::take(&mut self.release_pointer) {
+            // The button went up inside the system drag loop; tell egui so it stops dragging.
+            raw.events.push(egui::Event::PointerButton {
+                pos: egui::Pos2::ZERO,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+            raw.events.push(egui::Event::PointerGone);
+        }
     }
 }
 
