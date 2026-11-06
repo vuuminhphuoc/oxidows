@@ -16,10 +16,11 @@ as the feature.
 | Status bar (process count, CPU, memory) | done | |
 | Settings: default start page, update speed, always on top | done | |
 | Settings: theme (light / dark / system) | done | |
-| Settings: minimize on use, hide when minimized | todo | needs "Switch to" and a tray icon |
+| Settings: hide when minimized | done | the tray icon brings the window back |
+| Settings: minimize on use | todo | needs "Switch to" |
 | Settings persisted between runs | done | `%APPDATA%\oxidows\taskmgr.ini` |
 | Replace Ctrl+Shift+Esc / taskmgr.exe | done | opt-in on Settings, IFEO `Debugger`, needs admin |
-| Notification-area icon with CPU usage | todo | |
+| Notification-area icon with CPU usage | done | left click shows, right click Show / Exit |
 | Keyboard: Delete = End task, Ctrl+Tab / Ctrl+Shift+Tab between pages | done | |
 
 ## Processes
@@ -33,9 +34,9 @@ as the feature.
 | Groups: Apps / Background processes / Windows processes | done | collapsible, can be turned off |
 | Friendly names (file description) | done | hover shows the image name |
 | Expand an app to its child processes and windows | todo | |
-| Network column | todo | needs per-process ETW network accounting |
+| Network column | done | ETW Microsoft-Windows-Kernel-Network; needs administrator (Task Manager uses a system service) |
 | GPU engine column | todo | per-process engine type |
-| Status column (Suspended, Efficiency mode) | todo | |
+| Status column | partial | Suspended done; Efficiency mode not shown in the column |
 | Publisher column | done | version resource CompanyName |
 | Power usage, Power usage trend | won't (for now) | no public per-process energy API |
 | End process tree | done | children first, PID-reuse guard |
@@ -61,9 +62,10 @@ as the feature.
 | One entry per physical disk: active time, response time, read / write speed | done | PDH `PhysicalDisk(*)` |
 | Disk capacity, type (SSD / HDD), system disk flag | todo | |
 | One entry per adapter: send / receive, link speed | done | `GetIfTable2` |
-| Adapter IPv4 / IPv6, SSID | todo | |
+| Adapter IPv4 / IPv6, DNS name, SSID | done | `GetAdaptersAddresses`, WLAN API |
 | GPU utilization, engines (3D, Copy, Video…), dedicated / shared memory | done | PDH `GPU Engine(*)`, `GPU Adapter Memory(*)` |
-| One entry per GPU adapter, adapter name, driver version | todo | one combined GPU entry today |
+| One entry per GPU adapter with name, dedicated / shared memory used of total | done | DXGI + PDH split by LUID |
+| GPU driver version, DirectX version, physical location | todo | |
 | NPU | todo | where present |
 | Copy to clipboard | done | |
 | Summary view | todo | |
@@ -73,7 +75,7 @@ as the feature.
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| CPU time, network, metered network per app since a date | todo | data lives in SRUM (`sru\SRUDB.dat`, ESE database) |
+| CPU time, network, metered network per app since a date | todo | data lives in SRUM (`sru\SRUDB.dat`), an ESE database the DPS service keeps locked; reading it needs admin plus a shadow copy |
 | Delete usage history | todo | |
 
 ## Startup apps
@@ -93,7 +95,7 @@ as the feature.
 | Feature | Status | Notes |
 | --- | --- | --- |
 | Signed-in sessions with status, CPU, memory, disk, process count | done | |
-| Network per user | todo | needs per-process network |
+| Network per user | done | needs administrator, like the Network column |
 | Expand a user to their processes | done | |
 | Disconnect, Sign off | done | asks first |
 
@@ -102,7 +104,7 @@ as the feature.
 | Feature | Status | Notes |
 | --- | --- | --- |
 | Name, PID, user, session, CPU, memory, threads, handles, priority, path, command line | done | |
-| Choose columns (~40 in the original) | todo | |
+| Choose columns | partial | 20 of ~40 columns, saved between runs |
 | Same right-click actions as Processes | done | end, tree, efficiency, priority, affinity, dump, search |
 | Go to service(s) | done | svchost.exe rows |
 | UAC virtualization, Analyze wait chain | todo | |

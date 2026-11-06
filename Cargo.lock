@@ -1698,7 +1698,7 @@ dependencies = [
 
 [[package]]
 name = "oxi-taskmgr"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "eframe",
  "egui",
@@ -2271,11 +2271,11 @@ dependencies = [
 
 [[package]]
 name = "taskmgr-core"
-version = "0.1.1"
+version = "0.2.0"
 
 [[package]]
 name = "taskmgr-sys"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "taskmgr-core",
  "windows-sys 0.61.2",

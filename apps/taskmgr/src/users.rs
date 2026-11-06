@@ -5,9 +5,17 @@ use std::collections::HashSet;
 
 use egui::{RichText, Ui};
 use egui_extras::{Column, TableBuilder};
-use taskmgr_core::{Snapshot, display_name, format_bytes, users_view};
+use taskmgr_core::{Snapshot, display_name, format_bits_per_sec, format_bytes, users_view};
 
 use crate::{ConfirmAction, Dialog, Status};
+
+fn net_cell(ui: &mut Ui, on: bool, bps: f64) {
+    if on {
+        ui.label(format_bits_per_sec(bps));
+    } else {
+        ui.label(RichText::new("-").weak()).on_hover_text(crate::processes::NET_HINT);
+    }
+}
 
 pub struct State {
     expanded: HashSet<u32>,
@@ -65,6 +73,7 @@ impl State {
             }
         }
         let mem_total = snap.system.mem_total.max(1) as f64;
+        let net_on = snap.system.per_process_net;
         let mut toggle = None;
         TableBuilder::new(ui)
             .striped(true)
@@ -77,9 +86,10 @@ impl State {
             .column(Column::exact(80.0))
             .column(Column::exact(70.0))
             .column(Column::exact(130.0))
+            .column(Column::exact(90.0))
             .column(Column::remainder())
             .header(22.0, |mut h| {
-                for t in ["User", "Session", "Status", "Processes", "CPU", "Memory", "Disk"] {
+                for t in ["User", "Session", "Status", "Processes", "CPU", "Memory", "Disk", "Network"] {
                     h.col(|ui| {
                         ui.label(RichText::new(t).strong());
                     });
@@ -91,8 +101,9 @@ impl State {
                         let u = &users[i];
                         row.set_selected(self.selected == Some(u.session_id));
                         let open = self.expanded.contains(&u.session_id);
-                        let disk: f64 =
-                            snap.processes.iter().filter(|p| p.session_id == u.session_id).map(|p| p.disk_bps).sum();
+                        let mine = || snap.processes.iter().filter(|p| p.session_id == u.session_id);
+                        let disk: f64 = mine().map(|p| p.disk_bps).sum();
+                        let net: f64 = mine().map(|p| p.net_bps).sum();
                         row.col(|ui| {
                             let name = if u.user.is_empty() { "(system)" } else { &u.user };
                             ui.label(RichText::new(format!("{} {name}", if open { "v" } else { ">" })).strong());
@@ -119,6 +130,7 @@ impl State {
                         row.col(|ui| {
                             ui.label(format!("{}/s", format_bytes(disk)));
                         });
+                        row.col(|ui| net_cell(ui, net_on, net));
                         if row.response().clicked() {
                             self.selected = Some(u.session_id);
                             toggle = Some(u.session_id);
@@ -144,6 +156,7 @@ impl State {
                         row.col(|ui| {
                             ui.label(format!("{}/s", format_bytes(p.disk_bps)));
                         });
+                        row.col(|ui| net_cell(ui, net_on, p.net_bps));
                     }
                 });
             });
