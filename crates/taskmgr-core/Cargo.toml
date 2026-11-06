@@ -1,5 +1,5 @@
 [package]
-name = "tm-core"
+name = "taskmgr-core"
 description = "Platform-independent sampling math: CPU %, rates, history"
 version.workspace = true
 edition.workspace = true

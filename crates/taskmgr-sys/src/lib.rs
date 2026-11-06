@@ -9,7 +9,7 @@
 
 use std::io;
 
-pub use tm_core::RawSample;
+pub use taskmgr_core::RawSample;
 
 #[cfg(windows)]
 mod windows;

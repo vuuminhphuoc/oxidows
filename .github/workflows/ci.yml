@@ -10,8 +10,8 @@ jobs:
           components: clippy
       - run: cargo clippy --workspace -- -D warnings
       - run: cargo test --workspace
-      - run: cargo build --release -p rtaskmgr
+      - run: cargo build --release -p oxi-taskmgr
       - uses: actions/upload-artifact@v4
         with:
-          name: rtaskmgr-windows
-          path: target/release/rtaskmgr.exe
+          name: oxi-taskmgr-windows
+          path: target/release/oxi-taskmgr.exe

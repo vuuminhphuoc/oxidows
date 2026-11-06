@@ -1597,6 +1597,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxi-taskmgr"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "egui",
+ "egui_extras",
+ "taskmgr-core",
+ "taskmgr-sys",
+]
+
+[[package]]
 name = "parking_lot"
 version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1842,17 +1853,6 @@ name = "renderdoc-sys"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
-
-[[package]]
-name = "rtaskmgr"
-version = "0.1.0"
-dependencies = [
- "eframe",
- "egui",
- "egui_extras",
- "tm-core",
- "tm-sys",
-]
 
 [[package]]
 name = "rustc-hash"
@@ -2129,6 +2129,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "taskmgr-core"
+version = "0.1.0"
+
+[[package]]
+name = "taskmgr-sys"
+version = "0.1.0"
+dependencies = [
+ "taskmgr-core",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2180,18 +2192,6 @@ dependencies = [
  "quick-error",
  "weezl",
  "zune-jpeg",
-]
-
-[[package]]
-name = "tm-core"
-version = "0.1.0"
-
-[[package]]
-name = "tm-sys"
-version = "0.1.0"
-dependencies = [
- "tm-core",
- "windows-sys 0.61.2",
 ]
 
 [[package]]

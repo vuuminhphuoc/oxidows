@@ -3,7 +3,7 @@
 
 use egui::{Color32, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
-use tm_core::{ProcessRow, SortKey, Snapshot, format_bytes, sorted_view};
+use taskmgr_core::{ProcessRow, SortKey, Snapshot, format_bytes, sorted_view};
 
 #[derive(Default)]
 pub struct State {
@@ -132,7 +132,7 @@ impl State {
             self.message = Some(format!("{name} ({pid}) has already exited"));
             return;
         }
-        self.message = Some(match tm_sys::end_process(pid) {
+        self.message = Some(match taskmgr_sys::end_process(pid) {
             Ok(()) => format!("Ended {name} ({pid})"),
             Err(e) => format!("Could not end {name} ({pid}): {e}"),
         });

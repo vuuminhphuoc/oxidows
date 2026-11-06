@@ -2,7 +2,7 @@
 
 //! Platform-independent part of the Task Manager.
 //!
-//! `tm-sys` produces [`RawSample`]s (cumulative counters read straight from the OS).
+//! `taskmgr-sys` produces [`RawSample`]s (cumulative counters read straight from the OS).
 //! [`Sampler`] turns two consecutive raw samples into a [`Snapshot`] of rates (CPU %, bytes/s)
 //! and keeps a [`History`] of the last [`HISTORY_LEN`] system-wide points for the graphs.
 //! Nothing here touches the OS, so it is unit-tested on any platform.

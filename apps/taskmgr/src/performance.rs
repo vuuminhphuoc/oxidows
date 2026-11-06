@@ -2,7 +2,7 @@
 //! the right with its figures underneath.
 
 use egui::{Color32, RichText, Ui, Vec2};
-use tm_core::{Snapshot, format_bits_per_sec, format_bytes, format_uptime};
+use taskmgr_core::{Snapshot, format_bits_per_sec, format_bytes, format_uptime};
 
 use crate::graph;
 
@@ -41,7 +41,7 @@ impl State {
         let disk_max = h.disk_bps.max().max(1024.0 * 1024.0);
 
         egui::Panel::left("perf-list").exact_size(230.0).resizable(false).show(ui, |ui| {
-            let mut entry = |ui: &mut Ui, res: Res, title: &str, value: String, ring: &tm_core::Ring, max, color| {
+            let mut entry = |ui: &mut Ui, res: Res, title: &str, value: String, ring: &taskmgr_core::Ring, max, color| {
                 let sel = self.selected == res;
                 let frame = egui::Frame::new()
                     .inner_margin(6)

@@ -3,14 +3,15 @@ resolver = "3"
 members = ["crates/*", "apps/*"]
 
 [workspace.package]
+repository = "https://github.com/vuuminhphuoc/oxidows"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.85"
 
 [workspace.dependencies]
-tm-core = { path = "crates/tm-core" }
-tm-sys = { path = "crates/tm-sys" }
+taskmgr-core = { path = "crates/taskmgr-core" }
+taskmgr-sys = { path = "crates/taskmgr-sys" }
 eframe = { version = "0.36", default-features = false }
 egui = "0.36"
 egui_extras = { version = "0.36", default-features = false }

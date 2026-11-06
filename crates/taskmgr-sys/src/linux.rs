@@ -4,7 +4,7 @@ use std::fs;
 use std::io;
 use std::time::{Duration, Instant};
 
-use tm_core::{CpuTimes, RawProcess, RawSample, RawSystem};
+use taskmgr_core::{CpuTimes, RawProcess, RawSample, RawSystem};
 
 pub struct Collector {
     ticks_per_sec: u64,

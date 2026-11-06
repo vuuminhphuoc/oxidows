@@ -1,7 +1,7 @@
 //! Hand-drawn line + area graphs: a few hundred vertices per frame, no plotting crate.
 
 use egui::{Color32, Pos2, Rect, Sense, Shape, Stroke, Ui, Vec2};
-use tm_core::Ring;
+use taskmgr_core::Ring;
 
 pub fn area(ui: &mut Ui, size: Vec2, ring: &Ring, max: f32, color: Color32, grid: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(size, Sense::hover());

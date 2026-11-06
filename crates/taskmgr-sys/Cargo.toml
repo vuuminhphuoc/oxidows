@@ -1,5 +1,5 @@
 [package]
-name = "tm-sys"
+name = "taskmgr-sys"
 description = "Raw system readers: NT API + PDH on Windows, /proc on Linux (dev only)"
 version.workspace = true
 edition.workspace = true
@@ -9,7 +9,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-tm-core = { workspace = true }
+taskmgr-core = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [

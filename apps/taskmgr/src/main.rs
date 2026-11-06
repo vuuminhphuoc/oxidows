@@ -12,7 +12,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use tm_core::{Sampler, Snapshot};
+use taskmgr_core::{Sampler, Snapshot};
 
 /// Shared with the sampler thread. 0 = paused.
 static INTERVAL_MS: AtomicU64 = AtomicU64::new(1000);
@@ -40,7 +40,7 @@ fn spawn_sampler(ctx: egui::Context, tx: Sender<Result<Arc<Snapshot>, String>>) 
     thread::Builder::new()
         .name("sampler".into())
         .spawn(move || {
-            let mut collector = match tm_sys::Collector::new() {
+            let mut collector = match taskmgr_sys::Collector::new() {
                 Ok(c) => c,
                 Err(e) => {
                     let _ = tx.send(Err(e.to_string()));
@@ -80,8 +80,8 @@ impl App {
             rx,
             snapshot: Arc::default(),
             error: None,
-            // RTASKMGR_TAB=performance opens on the Performance tab (handy for scripted screenshots).
-            tab: if std::env::var("RTASKMGR_TAB").is_ok_and(|v| v.eq_ignore_ascii_case("performance")) {
+            // OXI_TASKMGR_TAB=performance opens on the Performance tab (handy for scripted screenshots).
+            tab: if std::env::var("OXI_TASKMGR_TAB").is_ok_and(|v| v.eq_ignore_ascii_case("performance")) {
                 Tab::Performance
             } else {
                 Tab::Processes
@@ -101,7 +101,7 @@ impl App {
                     self.error = None;
                     if !self.first_data_logged && !self.snapshot.processes.is_empty() {
                         self.first_data_logged = true;
-                        if std::env::var_os("RTASKMGR_TIMING").is_some() {
+                        if std::env::var_os("OXI_TASKMGR_TIMING").is_some() {
                             eprintln!("first process list after {:?}", self.started.elapsed());
                         }
                     }
@@ -170,10 +170,10 @@ impl eframe::App for App {
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Task Manager (Rust)")
+            .with_title("Task Manager (oxidows)")
             .with_inner_size([960.0, 640.0])
             .with_min_inner_size([560.0, 360.0]),
         ..Default::default()
     };
-    eframe::run_native("rtaskmgr", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
+    eframe::run_native("oxi-taskmgr", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
 }

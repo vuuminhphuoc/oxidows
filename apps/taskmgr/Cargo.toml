@@ -1,5 +1,5 @@
 [package]
-name = "rtaskmgr"
+name = "oxi-taskmgr"
 description = "A fast Task Manager written in Rust"
 version.workspace = true
 edition.workspace = true
@@ -9,8 +9,8 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-tm-core = { workspace = true }
-tm-sys = { workspace = true }
+taskmgr-core = { workspace = true }
+taskmgr-sys = { workspace = true }
 egui = { workspace = true }
 egui_extras = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "glow", "x11", "wayland"] }

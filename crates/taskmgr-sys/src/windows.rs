@@ -7,7 +7,7 @@ use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
 use std::time::{Duration, Instant};
 
-use tm_core::{CpuTimes, RawProcess, RawSample, RawSystem};
+use taskmgr_core::{CpuTimes, RawProcess, RawSample, RawSystem};
 use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
 use windows_sys::Win32::NetworkManagement::IpHelper::{FreeMibTable, GetIfTable2, MIB_IF_TABLE2};
 use windows_sys::Win32::System::Performance::{
