@@ -44,8 +44,7 @@ pub fn tab_bar(app: &mut App, ui: &mut Ui) {
                 ui.add_space(4.0);
             }
             if ui.button("+").on_hover_text("New tab (Ctrl+T)").clicked() {
-                let home = app.home.clone();
-                app.new_tab(home, true);
+                app.new_tab(PathBuf::from(explorer_core::HOME), true);
             }
             if let Some(i) = switch {
                 app.switch_tab(i);
@@ -550,8 +549,9 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
                 }
                 r.clicked()
             };
-            if place(ui, "🏠", "Home", &app.home, &app.cur) {
-                go = Some(app.home.clone());
+            let home_page = PathBuf::from(explorer_core::HOME);
+            if place(ui, "🏠", "Home", &home_page, &app.cur) {
+                go = Some(home_page);
             }
             for (name, path) in &app.places {
                 let icon = match *name {
@@ -741,7 +741,10 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
     let shell_menus = app.hwnd != 0
         && !matches!(
             explorer_core::classify(&app.cur),
-            explorer_core::Place::Network | explorer_core::Place::RecycleBin | explorer_core::Place::ThisPc
+            explorer_core::Place::Network
+                | explorer_core::Place::RecycleBin
+                | explorer_core::Place::ThisPc
+                | explorer_core::Place::Home
         );
     let in_bin = app.in_recycle_bin();
     if shell_menus && bg.secondary_clicked() {

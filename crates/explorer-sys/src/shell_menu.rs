@@ -264,3 +264,21 @@ pub fn drag_out(hwnd: isize, items: &[PathBuf]) -> io::Result<crate::DropResult>
         Err(e) => Err(to_io(e)),
     }
 }
+
+/// Target of a `.lnk` shortcut (files and folders only; shortcuts to virtual items give `None`).
+pub fn resolve_link(lnk: &Path) -> Option<PathBuf> {
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, IPersistFile, STGM_READ};
+    use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
+    crate::windows::com_init();
+    unsafe {
+        let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).ok()?;
+        let file: IPersistFile = link.cast().ok()?;
+        let w = wide(lnk);
+        file.Load(PCWSTR(w.as_ptr()), STGM_READ).ok()?;
+        let mut buf = [0u16; 1024];
+        // SLGP_RAWPATH = 4: don't expand or resolve; fast, no disk access to the target.
+        link.GetPath(&mut buf, std::ptr::null_mut(), 4).ok()?;
+        let n = buf.iter().position(|&c| c == 0)?;
+        (n > 0).then(|| PathBuf::from(String::from_utf16_lossy(&buf[..n])))
+    }
+}

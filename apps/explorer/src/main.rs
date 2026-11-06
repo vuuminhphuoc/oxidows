@@ -236,7 +236,6 @@ struct App {
     icon_tx: Option<Sender<IconKey>>,
     drives: Vec<Drive>,
     places: Vec<(&'static str, PathBuf)>,
-    home: PathBuf,
     utc_offset: i64,
     started: Instant,
     timing_logged: bool,
@@ -318,7 +317,6 @@ impl App {
             icon_tx: None,
             drives: Vec::new(),
             places: explorer_sys::known_folders(),
-            home: explorer_sys::home_dir(),
             utc_offset: explorer_sys::utc_offset_secs(),
             started: Instant::now(),
             timing_logged: false,
@@ -421,6 +419,7 @@ impl App {
         }
         let (dir, generation, cancel, tx, ctx) =
             (self.cur.clone(), self.generation, self.cancel.clone(), self.tx.clone(), self.ctx.clone());
+        let pinned = self.persist.settings.pinned.clone();
         thread::Builder::new()
             .name("list".into())
             .spawn(move || {
@@ -454,6 +453,31 @@ impl App {
                                 ..Default::default()
                             })
                             .collect();
+                        let _ = tx.send(Msg::Batch(generation, batch));
+                        Ok(())
+                    }
+                    // Quick access, then recently opened files (newest first), from the
+                    // shortcuts Windows keeps in the Recent folder.
+                    Place::Home => {
+                        let quick = explorer_sys::known_folders()
+                            .into_iter()
+                            .map(|(n, p)| (n.to_string(), p))
+                            .chain(pinned.iter().map(|p| {
+                                (
+                                    p.file_name()
+                                        .map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned()),
+                                    p.clone(),
+                                )
+                            }))
+                            .map(|(label, p)| Entry {
+                                name: p.to_string_lossy().into_owned(),
+                                label: Some(label),
+                                note: Some("Quick access".into()),
+                                is_dir: true,
+                                ..Default::default()
+                            });
+                        let mut batch: Vec<Entry> = quick.collect();
+                        batch.extend(recent_files(60));
                         let _ = tx.send(Msg::Batch(generation, batch));
                         Ok(())
                     }
@@ -508,7 +532,10 @@ impl App {
     fn start_watch(&mut self) {
         self.watch_cancel.store(true, Ordering::Relaxed);
         self.watch_cancel = Arc::new(AtomicBool::new(false));
-        if matches!(classify(&self.cur), Place::Network | Place::Server(_) | Place::RecycleBin | Place::ThisPc) {
+        if matches!(
+            classify(&self.cur),
+            Place::Network | Place::Server(_) | Place::RecycleBin | Place::ThisPc | Place::Home
+        ) {
             return;
         }
         let (dir, cancel, tx, ctx) = (self.cur.clone(), self.watch_cancel.clone(), self.tx.clone(), self.ctx.clone());
@@ -935,7 +962,10 @@ impl App {
     /// A page that isn't a real folder (Network, a server's shares, Recycle Bin, This PC):
     /// nothing can be created, renamed or pasted there.
     pub fn in_virtual_place(&self) -> bool {
-        matches!(classify(&self.cur), Place::Network | Place::Server(_) | Place::RecycleBin | Place::ThisPc)
+        matches!(
+            classify(&self.cur),
+            Place::Network | Place::Server(_) | Place::RecycleBin | Place::ThisPc | Place::Home
+        )
     }
 
     pub fn in_recycle_bin(&self) -> bool {
@@ -1167,7 +1197,10 @@ impl App {
     }
 
     fn paste_into(&mut self, dest: PathBuf) {
-        if matches!(classify(&dest), Place::Network | Place::Server(_) | Place::RecycleBin | Place::ThisPc) {
+        if matches!(
+            classify(&dest),
+            Place::Network | Place::Server(_) | Place::RecycleBin | Place::ThisPc | Place::Home
+        ) {
             return;
         }
         let Some((files, cut)) = explorer_sys::clipboard_get_files() else {
@@ -1430,7 +1463,7 @@ impl App {
             )
         });
         if new_tab {
-            let home = self.home.clone();
+            let home = PathBuf::from(explorer_core::HOME);
             self.new_tab(home, true);
         }
         if close_tab {
@@ -1691,6 +1724,49 @@ impl eframe::App for App {
     }
 }
 
+/// The newest `max` files in Windows' Recent folder (shortcuts to what was opened), resolved
+/// to their targets; missing targets and folders are skipped.
+fn recent_files(max: usize) -> Vec<Entry> {
+    let Some(dir) = explorer_core::shell_folder_template("recent")
+        .map(|t| PathBuf::from(explorer_core::expand_env(t, |k| std::env::var(k).ok())))
+    else {
+        return Vec::new();
+    };
+    let mut links: Vec<(i64, PathBuf)> = std::fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|d| d.path().extension().is_some_and(|e| e.eq_ignore_ascii_case("lnk")))
+        .map(|d| {
+            let t = d
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_secs() as i64);
+            (t, d.path())
+        })
+        .collect();
+    links.sort_by_key(|l| std::cmp::Reverse(l.0));
+    let mut seen = HashSet::new();
+    links
+        .into_iter()
+        .filter_map(|(t, lnk)| {
+            let target = explorer_sys::resolve_link(&lnk)?;
+            let md = std::fs::metadata(&target).ok().filter(|m| m.is_file())?;
+            seen.insert(target.clone()).then(|| Entry {
+                name: target.to_string_lossy().into_owned(),
+                label: target.file_name().map(|n| n.to_string_lossy().into_owned()),
+                note: target.parent().map(|p| p.to_string_lossy().into_owned()),
+                size: md.len(),
+                modified: t,
+                ..Default::default()
+            })
+        })
+        .take(max)
+        .collect()
+}
+
 /// wgpu on Windows: it falls back to the WARP software rasteriser on machines without a GPU
 /// driver (VMs, RDP, CI runners), where OpenGL is only the 1.1 GDI stub. `OXI_RENDERER=glow`
 /// or `wgpu` overrides.
@@ -1708,7 +1784,8 @@ fn main() -> eframe::Result {
         .nth(1)
         .map(PathBuf::from)
         .filter(|p| p.is_dir() || classify(p) != Place::Local)
-        .unwrap_or_else(explorer_sys::home_dir);
+        // Like Explorer, open on Home.
+        .unwrap_or_else(|| PathBuf::from(explorer_core::HOME));
     let settings = settings::Settings::load();
     let options = eframe::NativeOptions {
         renderer: renderer(),

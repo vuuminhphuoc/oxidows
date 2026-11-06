@@ -247,6 +247,19 @@ pub fn shell_menu_verbs(dir: &Path, items: &[PathBuf]) -> io::Result<Vec<String>
     }
 }
 
+/// Where a `.lnk` shortcut points. Windows only (`None` elsewhere).
+pub fn resolve_link(lnk: &Path) -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        shell_menu::resolve_link(lnk)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = lnk;
+        None
+    }
+}
+
 /// What the drop target did with a drag from [`drag_out`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DropResult {

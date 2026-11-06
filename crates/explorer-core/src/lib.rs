@@ -421,6 +421,9 @@ pub const NETWORK: &str = "::network";
 /// The virtual Recycle Bin location.
 pub const RECYCLE_BIN: &str = "::recycle-bin";
 
+/// The virtual Home page: Quick access folders and recent files. Items are named by full path.
+pub const HOME: &str = "::home";
+
 /// The virtual This PC page: known folders and drives. Its items are named by full path.
 pub const THIS_PC: &str = "::this-pc";
 
@@ -431,6 +434,7 @@ pub enum Place {
     Network,
     RecycleBin,
     ThisPc,
+    Home,
     /// `\\server`: the list of its shares.
     Server(String),
     /// `\\server\share\...`
@@ -453,6 +457,9 @@ pub fn classify(p: &Path) -> Place {
     if s == THIS_PC {
         return Place::ThisPc;
     }
+    if s == HOME {
+        return Place::Home;
+    }
     let Some(rest) = s.strip_prefix(r"\\") else { return Place::Local };
     if rest.starts_with(r"?\") || rest.starts_with(r".\") {
         return Place::Local; // \\?\C:\... and device paths
@@ -474,7 +481,7 @@ fn has_drive(p: &Path) -> bool {
 pub fn child_path(cur: &Path, name: &str) -> PathBuf {
     match classify(cur) {
         Place::Network => PathBuf::from(format!(r"\\{name}")),
-        Place::ThisPc => PathBuf::from(name),
+        Place::ThisPc | Place::Home => PathBuf::from(name),
         Place::Server(server) => PathBuf::from(format!(r"\\{server}\{name}")),
         _ => cur.join(name),
     }
@@ -483,7 +490,7 @@ pub fn child_path(cur: &Path, name: &str) -> PathBuf {
 /// One level up: share root -> server -> Network; drive root -> none.
 pub fn parent_path(cur: &Path) -> Option<PathBuf> {
     match classify(cur) {
-        Place::Network | Place::RecycleBin | Place::ThisPc => None,
+        Place::Network | Place::RecycleBin | Place::ThisPc | Place::Home => None,
         Place::Server(_) => Some(PathBuf::from(NETWORK)),
         Place::Unc { server, share } => {
             let s = cur.to_string_lossy();
@@ -506,6 +513,7 @@ pub fn location_crumbs(cur: &Path) -> Vec<(String, PathBuf)> {
         Place::Network => vec![("Network".into(), PathBuf::from(NETWORK))],
         Place::RecycleBin => vec![("Recycle Bin".into(), PathBuf::from(RECYCLE_BIN))],
         Place::ThisPc => vec![("This PC".into(), PathBuf::from(THIS_PC))],
+        Place::Home => vec![("Home".into(), PathBuf::from(HOME))],
         Place::Server(server) => {
             vec![("Network".into(), PathBuf::from(NETWORK)), (server.clone(), PathBuf::from(format!(r"\\{server}")))]
         }
@@ -679,6 +687,7 @@ pub fn shell_folder_template(name: &str) -> Option<&'static str> {
         "recyclebinfolder" => RECYCLE_BIN,
         "networkplacesfolder" => NETWORK,
         "mycomputerfolder" | "thispc" => THIS_PC,
+        "home" => HOME,
         _ => return None,
     })
 }

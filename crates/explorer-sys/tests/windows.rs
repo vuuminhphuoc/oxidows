@@ -371,3 +371,26 @@ fn thumbnails() {
     assert!(t.width > 16 && t.width <= 96 && t.height <= 96, "{}x{}", t.width, t.height);
     assert_eq!(t.rgba.len(), t.width * t.height * 4);
 }
+
+#[test]
+fn shortcut_target_is_read() {
+    let _g = guard("shortcut_target_is_read");
+    let d = scratch("lnk");
+    // Long form: the shell may store either spelling of the runner's 8.3 %TEMP%.
+    let long = fs::canonicalize(&d).unwrap();
+    let d = PathBuf::from(long.to_string_lossy().trim_start_matches(r"\\?\"));
+    let target = d.join("target.txt");
+    fs::write(&target, b"x").unwrap();
+    let lnk = d.join("target.lnk");
+    let script = format!(
+        "$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{}');$s.TargetPath='{}';$s.Save()",
+        lnk.display(),
+        target.display()
+    );
+    let st = std::process::Command::new("powershell").args(["-NoProfile", "-Command", &script]).status().unwrap();
+    assert!(st.success());
+    let got = explorer_sys::resolve_link(&lnk).expect("target");
+    let same = |a: &Path, b: &Path| fs::canonicalize(a).ok() == fs::canonicalize(b).ok();
+    assert!(same(&got, &target), "{got:?} vs {target:?}");
+    fs::remove_dir_all(&d).unwrap();
+}

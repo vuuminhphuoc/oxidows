@@ -327,6 +327,10 @@ impl App {
                     None if self.cur.as_os_str() == explorer_core::THIS_PC => {
                         FolderView { view: ViewMode::Tiles, ..self.persist.settings.folder }
                     }
+                    // Home lists recent files newest first.
+                    None if self.cur.as_os_str() == explorer_core::HOME => {
+                        FolderView { view: ViewMode::Details, sort: SortKey::Modified, ascending: false }
+                    }
                     None => self.persist.settings.folder,
                 };
                 {
