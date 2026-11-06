@@ -12,14 +12,19 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use explorer_core::{Entry, History, SortKey, sorted_view, unique_name, validate_name};
+use explorer_core::{
+    Entry, History, Place, SortKey, child_path, classify, parent_path, sorted_view, unique_name, validate_name,
+};
 use explorer_sys::{Drive, FileOp};
 
 /// Results from worker threads. Listing messages carry the generation they were started for,
 /// so batches from a folder the user already left are dropped.
 enum Msg {
     Batch(u64, Vec<Entry>),
-    Done(u64, Result<(), String>, Duration),
+    /// Finished listing: error text and whether signing in could fix it.
+    Done(u64, Result<(), (String, bool)>, Duration),
+    /// A sign-in to a share finished.
+    Connected(PathBuf, std::io::Result<()>),
     Drives(Vec<Drive>),
     OpDone(String, std::io::Result<bool>),
     /// The watched folder changed on disk.
@@ -58,6 +63,14 @@ pub enum IconState {
 enum Dialog {
     Rename { original: String, text: String, error: Option<&'static str>, opened: bool },
     NewFolder { text: String, error: Option<&'static str>, opened: bool },
+    MapDrive(MapDrive),
+}
+
+pub struct MapDrive {
+    pub letters: Vec<char>,
+    pub letter: char,
+    pub path: String,
+    pub persistent: bool,
 }
 
 /// What the cached sorted view was computed from; recomputed only when this changes, so a
@@ -114,6 +127,8 @@ struct App {
     focus_search: bool,
     /// Query of the running/finished search through subfolders; `None` = normal listing.
     pub deep_search: Option<String>,
+    pub needs_sign_in: bool,
+    prompted: HashSet<PathBuf>,
     dialog: Option<Dialog>,
     status: Option<String>,
     ops_running: usize,
@@ -165,6 +180,8 @@ impl App {
             address_edit: None,
             focus_search: false,
             deep_search: None,
+            needs_sign_in: false,
+            prompted: HashSet::new(),
             dialog: None,
             status: None,
             ops_running: 0,
@@ -268,11 +285,28 @@ impl App {
             .name("list".into())
             .spawn(move || {
                 let t = Instant::now();
-                let r = explorer_sys::list_dir(&dir, &cancel, &mut |batch| {
-                    let _ = tx.send(Msg::Batch(generation, batch));
-                    ctx.request_repaint();
-                });
-                let _ = tx.send(Msg::Done(generation, r.map_err(|e| e.to_string()), t.elapsed()));
+                let r = match classify(&dir) {
+                    // Computers and shares are shown as folders.
+                    Place::Network => {
+                        let names = explorer_sys::network_computers();
+                        let batch = names
+                            .into_iter()
+                            .map(|n| Entry { name: n.trim_start_matches('\\').to_string(), is_dir: true, ..Default::default() })
+                            .collect();
+                        let _ = tx.send(Msg::Batch(generation, batch));
+                        Ok(())
+                    }
+                    Place::Server(server) => explorer_sys::list_shares(&server).map(|shares| {
+                        let batch = shares.into_iter().map(|s| Entry { name: s.name, is_dir: true, ..Default::default() }).collect();
+                        let _ = tx.send(Msg::Batch(generation, batch));
+                    }),
+                    _ => explorer_sys::list_dir(&dir, &cancel, &mut |batch| {
+                        let _ = tx.send(Msg::Batch(generation, batch));
+                        ctx.request_repaint();
+                    }),
+                };
+                let r = r.map_err(|e| (e.to_string(), explorer_sys::is_auth_error(&e)));
+                let _ = tx.send(Msg::Done(generation, r, t.elapsed()));
                 ctx.request_repaint();
             })
             .expect("spawn list thread");
@@ -282,6 +316,9 @@ impl App {
     fn start_watch(&mut self) {
         self.watch_cancel.store(true, Ordering::Relaxed);
         self.watch_cancel = Arc::new(AtomicBool::new(false));
+        if matches!(classify(&self.cur), Place::Network | Place::Server(_)) {
+            return;
+        }
         let (dir, cancel, tx, ctx) = (self.cur.clone(), self.watch_cancel.clone(), self.tx.clone(), self.ctx.clone());
         thread::Builder::new()
             .name("watch".into())
@@ -385,7 +422,12 @@ impl App {
                     }
                     self.loading = false;
                     self.list_time = Some(took);
-                    self.list_error = r.err();
+                    self.needs_sign_in = matches!(r, Err((_, true)));
+                    self.list_error = r.err().map(|(e, _)| e);
+                    // Like Explorer: a share that refuses the current login asks for one, once.
+                    if self.needs_sign_in && self.prompted.insert(self.share_root()) {
+                        self.sign_in();
+                    }
                     if !self.timing_logged {
                         self.timing_logged = true;
                         if std::env::var_os("OXI_EXPLORER_TIMING").is_some() {
@@ -398,6 +440,14 @@ impl App {
                     }
                 }
                 Msg::Batch(..) | Msg::Done(..) => {}
+                Msg::Connected(root, r) => match r {
+                    Ok(()) => {
+                        if self.share_root() == root {
+                            self.refresh();
+                        }
+                    }
+                    Err(e) => self.status = Some(format!("Could not connect to {}: {e}", root.display())),
+                },
                 Msg::Drives(d) => self.drives = d,
                 Msg::Changed(dir) if dir == self.cur && self.deep_search.is_none() => {
                     self.changed_at.get_or_insert_with(Instant::now);
@@ -455,7 +505,7 @@ impl App {
     fn back(&mut self) {
         if let Some(p) = self.history.back(self.cur.clone()) {
             // Going back up to a parent selects the folder we were in.
-            let child = (self.cur.parent() == Some(p.as_path()))
+            let child = (parent_path(&self.cur).as_deref() == Some(p.as_path()))
                 .then(|| self.cur.file_name().map(|n| n.to_string_lossy().into_owned()))
                 .flatten();
             self.cur = p;
@@ -470,9 +520,40 @@ impl App {
         }
     }
 
+    /// `\\server\share` for a UNC location, `\\server` for a server, else the path itself.
+    pub fn share_root(&self) -> PathBuf {
+        match classify(&self.cur) {
+            Place::Unc { server, share } => PathBuf::from(format!(r"\\{server}\{share}")),
+            Place::Server(server) => PathBuf::from(format!(r"\\{server}")),
+            _ => self.cur.clone(),
+        }
+    }
+
+    /// Asks Windows to sign in to the current share (its own credential dialog).
+    pub fn sign_in(&mut self) {
+        let root = self.share_root();
+        // A server (share list) authenticates through its IPC$ share.
+        let target = if matches!(classify(&self.cur), Place::Server(_)) { root.join("IPC$") } else { root.clone() };
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        thread::spawn(move || {
+            let r = explorer_sys::connect(&target, true);
+            let _ = tx.send(Msg::Connected(root, r));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn child(&self, name: &str) -> PathBuf {
+        child_path(&self.cur, name)
+    }
+
     fn up(&mut self) {
-        let Some(parent) = self.cur.parent().map(Path::to_path_buf) else { return };
-        let child = self.cur.file_name().map(|n| n.to_string_lossy().into_owned());
+        let Some(parent) = parent_path(&self.cur) else { return };
+        let child = match classify(&self.cur) {
+            Place::Server(s) => Some(s),
+            _ => Path::new(self.cur.to_string_lossy().trim_end_matches('\\'))
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned()),
+        };
         let from = std::mem::replace(&mut self.cur, parent);
         self.history.visit(from);
         self.entered_new_folder(child);
@@ -486,7 +567,7 @@ impl App {
     }
 
     fn open_entry(&mut self, e: &Entry) {
-        let path = self.cur.join(&e.name);
+        let path = self.child(&e.name);
         if e.is_dir {
             self.navigate(path);
         } else if let Err(err) = explorer_sys::open(&path) {
@@ -500,8 +581,9 @@ impl App {
             return;
         }
         let p = PathBuf::from(t);
-        let p = if p.is_relative() { self.cur.join(p) } else { p };
-        if p.is_dir() {
+        let p = if t.eq_ignore_ascii_case("network") { PathBuf::from(explorer_core::NETWORK) } else { p };
+        let p = if p.is_relative() && classify(&p) == Place::Local { self.cur.join(p) } else { p };
+        if matches!(classify(&p), Place::Network | Place::Server(_)) || p.is_dir() {
             self.navigate(p);
         } else if p.exists() {
             if let Err(e) = explorer_sys::open(&p) {
@@ -580,7 +662,7 @@ impl App {
             .iter()
             .map(|&i| &self.entries[i])
             .filter(|e| self.selected.contains(&e.name))
-            .map(|e| self.cur.join(&e.name))
+            .map(|e| self.child(&e.name))
             .collect()
     }
 
@@ -630,7 +712,40 @@ impl App {
         }
     }
 
-    fn begin_new_folder(&mut self) {
+    pub fn begin_map_drive(&mut self) {
+        let letters = explorer_sys::free_drive_letters();
+        let Some(&letter) = letters.last() else {
+            self.status = Some("No free drive letters".into());
+            return;
+        };
+        // Pre-fill with the share being browsed, as Explorer does.
+        let path = match classify(&self.cur) {
+            Place::Unc { .. } => self.share_root().to_string_lossy().into_owned(),
+            _ => r"\\".to_string(),
+        };
+        self.dialog = Some(Dialog::MapDrive(MapDrive { letters, letter, path, persistent: true }));
+    }
+
+    pub fn finish_map_drive(&mut self, m: &MapDrive) {
+        let (letter, remote, persistent) = (m.letter, PathBuf::from(m.path.trim()), m.persistent);
+        self.ops_running += 1;
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        thread::spawn(move || {
+            let r = explorer_sys::map_drive(letter, &remote, persistent, true).map(|()| true);
+            let _ = tx.send(Msg::OpDone(format!("Mapped {letter}: to {}", remote.display()), r));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn unmap(&mut self, letter: char) {
+        self.status = Some(match explorer_sys::unmap_drive(letter) {
+            Ok(()) => format!("Disconnected {letter}:"),
+            Err(e) => format!("Could not disconnect {letter}: {e}"),
+        });
+        self.load_drives();
+    }
+
+    pub fn begin_new_folder(&mut self) {
         self.dialog =
             Some(Dialog::NewFolder { text: unique_name("New folder", &self.entries), error: None, opened: false });
     }
@@ -665,6 +780,7 @@ impl App {
                 }
                 None
             }
+            Dialog::MapDrive(_) => None,
             Dialog::NewFolder { text, .. } => {
                 let name = text.trim_end();
                 if let Err(e) = validate_name(name) {
@@ -686,7 +802,7 @@ impl App {
         }
     }
 
-    fn show_properties(&mut self, path: &Path) {
+    pub fn show_properties(&mut self, path: &Path) {
         if let Err(e) = explorer_sys::properties(path) {
             self.status = Some(format!("Properties: {e}"));
         }
@@ -818,7 +934,7 @@ impl App {
                         self.open_entry(e);
                     } else {
                         for e in sel.iter().filter(|e| !e.is_dir) {
-                            let _ = explorer_sys::open(&self.cur.join(&e.name));
+                            let _ = explorer_sys::open(&self.child(&e.name));
                         }
                     }
                 }

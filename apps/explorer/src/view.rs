@@ -4,10 +4,10 @@ use std::path::PathBuf;
 
 use egui::{Align, Layout, RichText, Sense, Ui};
 use egui_extras::{Column, TableBuilder};
-use explorer_core::{SortKey, breadcrumbs, format_bytes, format_size_kb, format_time, icon_for};
+use explorer_core::{SortKey, format_bytes, format_size_kb, format_time, icon_for, location_crumbs, parent_path};
 use explorer_sys::DriveKind;
 
-use crate::{App, Dialog, IconKey, IconState};
+use crate::{App, Dialog, IconKey, IconState, MapDrive};
 
 pub fn toolbar(app: &mut App, ui: &mut Ui) {
     egui::Panel::top("toolbar").show(ui, |ui| {
@@ -23,13 +23,53 @@ pub fn toolbar(app: &mut App, ui: &mut Ui) {
             {
                 app.forward();
             }
-            if ui.add_enabled(app.cur.parent().is_some(), egui::Button::new("⬆")).on_hover_text("Up (Alt+Up)").clicked() {
+            if ui.add_enabled(parent_path(&app.cur).is_some(), egui::Button::new("⬆")).on_hover_text("Up (Alt+Up)").clicked() {
                 app.up();
             }
             if ui.button("⟳").on_hover_text("Refresh (F5)").clicked() {
                 app.refresh();
                 app.load_drives();
             }
+            ui.menu_button("⋯", |ui| {
+                if ui.button("New folder").clicked() {
+                    app.begin_new_folder();
+                    ui.close();
+                }
+                ui.separator();
+                if ui.button("Map network drive…").clicked() {
+                    app.begin_map_drive();
+                    ui.close();
+                }
+                let mapped: Vec<char> = app
+                    .drives
+                    .iter()
+                    .filter(|d| d.kind == DriveKind::Network)
+                    .filter_map(|d| d.root.to_string_lossy().chars().next())
+                    .collect();
+                if !mapped.is_empty() {
+                    ui.menu_button("Disconnect network drive", |ui| {
+                        for l in mapped {
+                            if ui.button(format!("{l}:")).clicked() {
+                                app.unmap(l);
+                                ui.close();
+                            }
+                        }
+                    });
+                }
+                ui.separator();
+                ui.checkbox(&mut app.show_hidden, "Hidden items");
+                if ui.button("Open in Terminal").clicked() {
+                    if let Err(e) = explorer_sys::open_terminal(&app.cur) {
+                        app.status = Some(format!("Terminal: {e}"));
+                    }
+                    ui.close();
+                }
+                if ui.button("Properties").clicked() {
+                    let c = app.cur.clone();
+                    app.show_properties(&c);
+                    ui.close();
+                }
+            });
 
             // Search box on the right, address bar takes the rest.
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -83,7 +123,7 @@ fn address_bar(app: &mut App, ui: &mut Ui) {
         .show(ui, |ui| {
             ui.set_width(width - 16.0);
             ui.spacing_mut().item_spacing.x = 0.0;
-            let crumbs = breadcrumbs(&app.cur);
+            let crumbs = location_crumbs(&app.cur);
             // Long paths: show the last segments that fit, like Explorer.
             let skip = crumbs.len().saturating_sub(((width / 90.0) as usize).max(2));
             let mut go = None;
@@ -112,6 +152,7 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.add_space(6.0);
             let mut go: Option<PathBuf> = None;
+            let mut unmap: Option<char> = None;
             let place = |ui: &mut Ui, icon: &str, name: &str, path: &PathBuf, cur: &PathBuf| {
                 let selected = path == cur;
                 ui.with_layout(Layout::top_down_justified(Align::LEFT), |ui| {
@@ -157,9 +198,22 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
                     DriveKind::Removable => "💾",
                     _ => "🖴",
                 };
-                let r = place(ui, icon, &label, &d.root, &app.cur);
-                if r {
+                let r = ui
+                    .with_layout(Layout::top_down_justified(Align::LEFT), |ui| {
+                        ui.add(egui::Button::selectable(d.root == app.cur, format!("{icon}  {label}")).min_size(egui::vec2(0.0, 22.0)))
+                    })
+                    .inner;
+                if r.clicked() {
                     go = Some(d.root.clone());
+                }
+                if d.kind == DriveKind::Network {
+                    let letter = letter.chars().next().unwrap_or('Z');
+                    r.context_menu(|ui| {
+                        if ui.button("Disconnect").clicked() {
+                            unmap = Some(letter);
+                            ui.close();
+                        }
+                    });
                 }
                 if d.total > 0 {
                     let used = 1.0 - d.free as f32 / d.total as f32;
@@ -181,6 +235,14 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
                         );
                     });
                 }
+            }
+            ui.add_space(6.0);
+            let network = PathBuf::from(explorer_core::NETWORK);
+            if place(ui, "🖧", "Network", &network, &app.cur) {
+                go = Some(network);
+            }
+            if let Some(l) = unmap {
+                app.unmap(l);
             }
             if let Some(p) = go {
                 app.navigate(p);
@@ -295,6 +357,9 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                 "No items match your search."
             };
             ui.label(RichText::new(msg).weak());
+            if app.needs_sign_in && ui.button("Sign in…").clicked() {
+                app.sign_in();
+            }
         });
     }
 
@@ -378,7 +443,7 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                 } else if resp.secondary_clicked() {
                     action = Some(Action::ContextSelect(pos));
                 }
-                let target = app.cur.join(&e.name);
+                let target = app.child(&e.name);
                 let is_dir = e.is_dir;
                 resp.context_menu(|ui| {
                     if ui.button(RichText::new("Open").strong()).clicked() {
@@ -478,11 +543,56 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
     }
 }
 
+fn map_drive_dialog(app: &mut App, ui: &mut Ui, mut m: MapDrive) {
+    let (mut ok, mut cancel) = (false, false);
+    let modal = egui::Modal::new(egui::Id::new("map-drive")).show(ui.ctx(), |ui| {
+        ui.set_width(420.0);
+        ui.heading("Map network drive");
+        ui.add_space(6.0);
+        egui::Grid::new("map-grid").num_columns(2).spacing([8.0, 8.0]).show(ui, |ui| {
+            ui.label("Drive:");
+            egui::ComboBox::from_id_salt("letter").selected_text(format!("{}:", m.letter)).show_ui(ui, |ui| {
+                for &l in &m.letters {
+                    ui.selectable_value(&mut m.letter, l, format!("{l}:"));
+                }
+            });
+            ui.end_row();
+            ui.label("Folder:");
+            let r = ui.add(egui::TextEdit::singleline(&mut m.path).hint_text(r"\\server\share").desired_width(300.0));
+            if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                ok = true;
+            }
+            ui.end_row();
+        });
+        ui.checkbox(&mut m.persistent, "Reconnect at sign-in");
+        ui.label(RichText::new("Windows asks for a user name and password if the share needs one.").small().weak());
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            let valid = m.path.trim().starts_with(r"\\") && m.path.trim().len() > 3;
+            if ui.add_enabled(valid, egui::Button::new("Finish")).clicked() {
+                ok = true;
+            }
+            if ui.button("Cancel").clicked() {
+                cancel = true;
+            }
+        });
+    });
+    if ok {
+        app.finish_map_drive(&m);
+    } else if !cancel && !modal.should_close() {
+        app.dialog = Some(Dialog::MapDrive(m));
+    }
+}
+
 pub fn dialog(app: &mut App, ui: &mut Ui) {
     let Some(mut d) = app.dialog.take() else { return };
     let (title, text, error, opened) = match &mut d {
         Dialog::Rename { text, error, opened, .. } => ("Rename", text, error, opened),
         Dialog::NewFolder { text, error, opened } => ("New folder", text, error, opened),
+        Dialog::MapDrive(_) => {
+            let Dialog::MapDrive(m) = d else { unreachable!() };
+            return map_drive_dialog(app, ui, m);
+        }
     };
     let mut submit = false;
     let mut cancel = false;
@@ -529,6 +639,7 @@ pub fn dialog(app: &mut App, ui: &mut Ui) {
             None => return,
             Some(e) => match &mut d {
                 Dialog::Rename { error, .. } | Dialog::NewFolder { error, .. } => *error = Some(e),
+                Dialog::MapDrive(_) => {}
             },
         }
     }

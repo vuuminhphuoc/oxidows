@@ -322,6 +322,99 @@ pub fn breadcrumbs(path: &Path) -> Vec<(String, PathBuf)> {
     out
 }
 
+
+/// The virtual "Network" location (computers on the LAN). Not a real path.
+pub const NETWORK: &str = "::network";
+
+/// What kind of location a path is, for the parts that are not plain folders.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Place {
+    /// The list of computers.
+    Network,
+    /// `\\server`: the list of its shares.
+    Server(String),
+    /// `\\server\share\...`
+    Unc { server: String, share: String },
+    /// Anything else: a drive path.
+    Local,
+}
+
+pub fn classify(p: &Path) -> Place {
+    let s = p.to_string_lossy();
+    if s == NETWORK {
+        return Place::Network;
+    }
+    let Some(rest) = s.strip_prefix(r"\\") else { return Place::Local };
+    if rest.starts_with(r"?\") || rest.starts_with(r".\") {
+        return Place::Local; // \\?\C:\... and device paths
+    }
+    let mut parts = rest.split('\\').filter(|x| !x.is_empty());
+    match (parts.next(), parts.next()) {
+        (Some(server), None) => Place::Server(server.to_string()),
+        (Some(server), Some(share)) => Place::Unc { server: server.into(), share: share.into() },
+        _ => Place::Network,
+    }
+}
+
+/// Path of the item `name` inside `cur` (handles the virtual Network and server levels).
+pub fn child_path(cur: &Path, name: &str) -> PathBuf {
+    match classify(cur) {
+        Place::Network => PathBuf::from(format!(r"\\{name}")),
+        Place::Server(server) => PathBuf::from(format!(r"\\{server}\{name}")),
+        _ => cur.join(name),
+    }
+}
+
+/// One level up: share root -> server -> Network; drive root -> none.
+pub fn parent_path(cur: &Path) -> Option<PathBuf> {
+    match classify(cur) {
+        Place::Network => None,
+        Place::Server(_) => Some(PathBuf::from(NETWORK)),
+        Place::Unc { server, share } => {
+            let s = cur.to_string_lossy();
+            let root = format!(r"\\{server}\{share}");
+            if s.trim_end_matches('\\').eq_ignore_ascii_case(&root) {
+                Some(PathBuf::from(format!(r"\\{server}")))
+            } else {
+                let trimmed = s.trim_end_matches('\\');
+                trimmed.rfind('\\').map(|i| PathBuf::from(&trimmed[..i]))
+            }
+        }
+        Place::Local => cur.parent().map(Path::to_path_buf),
+    }
+}
+
+/// Breadcrumbs for any location, network levels included.
+pub fn location_crumbs(cur: &Path) -> Vec<(String, PathBuf)> {
+    match classify(cur) {
+        Place::Network => vec![("Network".into(), PathBuf::from(NETWORK))],
+        Place::Server(server) => vec![
+            ("Network".into(), PathBuf::from(NETWORK)),
+            (server.clone(), PathBuf::from(format!(r"\\{server}"))),
+        ],
+        Place::Unc { server, .. } => {
+            let mut out = vec![
+                ("Network".into(), PathBuf::from(NETWORK)),
+                (server.clone(), PathBuf::from(format!(r"\\{server}"))),
+            ];
+            let s = cur.to_string_lossy();
+            let rest = s.trim_start_matches('\\').trim_end_matches('\\');
+            let mut acc = String::from(r"\\");
+            for (i, seg) in rest.split('\\').enumerate() {
+                if i > 0 {
+                    acc.push('\\');
+                }
+                acc.push_str(seg);
+                if i > 0 {
+                    out.push((seg.to_string(), PathBuf::from(&acc)));
+                }
+            }
+            out
+        }
+        Place::Local => breadcrumbs(cur),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -421,5 +514,25 @@ mod tests {
         let labels: Vec<&str> = c.iter().map(|(l, _)| l.as_str()).collect();
         assert_eq!(labels, ["/", "home", "user", "docs"]);
         assert_eq!(c[2].1, PathBuf::from("/home/user"));
+    }
+
+    #[test]
+    fn network_places() {
+        let n = Path::new(NETWORK);
+        assert_eq!(classify(n), Place::Network);
+        assert_eq!(classify(Path::new(r"\\nas")), Place::Server("nas".into()));
+        assert_eq!(classify(Path::new(r"\\nas\")), Place::Server("nas".into()));
+        assert_eq!(classify(Path::new(r"\\nas\media\x")), Place::Unc { server: "nas".into(), share: "media".into() });
+        assert_eq!(classify(Path::new(r"\\?\C:\long")), Place::Local);
+        assert_eq!(child_path(n, "NAS"), PathBuf::from(r"\\NAS"));
+        assert_eq!(child_path(Path::new(r"\\nas"), "media"), PathBuf::from(r"\\nas\media"));
+        assert_eq!(parent_path(Path::new(r"\\nas\media\films")), Some(PathBuf::from(r"\\nas\media")));
+        assert_eq!(parent_path(Path::new(r"\\nas\media\")), Some(PathBuf::from(r"\\nas")));
+        assert_eq!(parent_path(Path::new(r"\\nas")), Some(PathBuf::from(NETWORK)));
+        assert_eq!(parent_path(n), None);
+        let c = location_crumbs(Path::new(r"\\nas\media\films"));
+        let labels: Vec<&str> = c.iter().map(|(l, _)| l.as_str()).collect();
+        assert_eq!(labels, ["Network", "nas", "media", "films"]);
+        assert_eq!(c[2].1, PathBuf::from(r"\\nas\media"));
     }
 }
