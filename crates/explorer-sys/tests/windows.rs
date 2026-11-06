@@ -115,8 +115,16 @@ fn hidden_attribute_is_read() {
     fs::write(&f, b"x").unwrap();
     let st = std::process::Command::new("attrib").arg("+h").arg(&f).status().unwrap();
     assert!(st.success());
-    assert!(list(&d)[0].hidden);
-    let _ = std::process::Command::new("attrib").arg("-h").arg(&f).status();
+    let st = std::process::Command::new("attrib").arg("+r").arg(&f).status().unwrap();
+    assert!(st.success());
+    let e = &list(&d)[0];
+    assert!(e.hidden);
+    // Attributes column and Date created.
+    let letters = explorer_core::format_attributes(e.attrs);
+    assert!(letters.starts_with("RH") && letters.contains('A'), "attrs {letters} ({:#x})", e.attrs);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    assert!((now - e.created).abs() < 600, "created {} vs now {now}", e.created);
+    let _ = std::process::Command::new("attrib").arg("-h").arg("-r").arg(&f).status();
     fs::remove_dir_all(&d).unwrap();
 }
 
@@ -329,7 +337,10 @@ fn shell_context_menu_has_standard_verbs() {
 fn recycle_bin_list_and_restore() {
     let _g = guard("recycle_bin_list_and_restore");
     let d = scratch("bin");
-    let f = d.join(format!("binned-{}.txt", std::process::id()));
+    // The bin records the long path; %TEMP% on the runner is an 8.3 one (RUNNER~1).
+    let long = fs::canonicalize(&d).unwrap();
+    let long = PathBuf::from(long.to_string_lossy().trim_start_matches(r"\\?\"));
+    let f = long.join(format!("binned-{}.txt", std::process::id()));
     fs::write(&f, b"come back").unwrap();
     let w = watchdog("recycle + list bin", 60);
     assert!(file_op_silent(FileOp::Recycle, std::slice::from_ref(&f), None).unwrap());

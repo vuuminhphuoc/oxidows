@@ -4,7 +4,9 @@ use std::path::PathBuf;
 
 use egui::{Align, Layout, RichText, Sense, Ui};
 use egui_extras::{Column, TableBuilder};
-use explorer_core::{SortKey, format_bytes, format_size_kb, format_time, icon_for, location_crumbs, parent_path};
+use explorer_core::{
+    SortKey, format_attributes, format_bytes, format_size_kb, format_time, icon_for, location_crumbs, parent_path,
+};
 use explorer_sys::DriveKind;
 
 use crate::{App, Dialog, IconKey, IconState, MapDrive, ViewMode};
@@ -121,6 +123,15 @@ pub fn toolbar(app: &mut App, ui: &mut Ui) {
                     ui.label("View:");
                     ui.selectable_value(&mut app.view_mode, ViewMode::Details, "Details");
                     ui.selectable_value(&mut app.view_mode, ViewMode::Icons, "Large icons");
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Pane:");
+                    for (p, label) in [(crate::pane::Pane::Preview, "Preview"), (crate::pane::Pane::Details, "Details")]
+                    {
+                        if ui.selectable_label(app.pane == p, label).clicked() {
+                            app.toggle_pane(p);
+                        }
+                    }
                 });
                 ui.checkbox(&mut app.show_hidden, "Hidden items");
                 ui.checkbox(&mut app.show_extensions, "File name extensions");
@@ -525,14 +536,32 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
 
     let row_h = 22.0;
     let mut sort_click = None;
-    let header = |h: &mut egui_extras::TableRow, key: SortKey, title: &str, app: &App, out: &mut Option<SortKey>| {
-        h.col(|ui| {
-            let arrow = if app.sort == key { if app.ascending { " ⏶" } else { " ⏷" } } else { "" };
-            if ui.add(egui::Button::new(RichText::new(format!("{title}{arrow}")).strong()).frame(false)).clicked() {
-                *out = Some(key);
-            }
-        });
-    };
+    // Right-clicking any header opens the column chooser, as in Explorer.
+    let mut toggle_col: Option<SortKey> = None;
+    let (col_created, col_attrs) = (app.col_created, app.col_attrs);
+    let mut header =
+        |h: &mut egui_extras::TableRow, key: SortKey, title: &str, app: &App, out: &mut Option<SortKey>| {
+            h.col(|ui| {
+                let arrow = if app.sort == key { if app.ascending { " ⏶" } else { " ⏷" } } else { "" };
+                let resp = ui.add(egui::Button::new(RichText::new(format!("{title}{arrow}")).strong()).frame(false));
+                if resp.clicked() {
+                    *out = Some(key);
+                }
+                resp.context_menu(|ui| {
+                    ui.add_enabled(false, egui::Checkbox::new(&mut true, "Name"));
+                    for (k, label, on) in [
+                        (SortKey::Created, "Date created", col_created),
+                        (SortKey::Attributes, "Attributes", col_attrs),
+                    ] {
+                        let mut on = on;
+                        if ui.checkbox(&mut on, label).clicked() {
+                            toggle_col = Some(k);
+                            ui.close();
+                        }
+                    }
+                });
+            });
+        };
     let n = app.view.len();
     let weak = ui.visuals().weak_text_color();
     let mut wanted_icons: Vec<IconKey> = Vec::new();
@@ -544,10 +573,18 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
             .resizable(true)
             .sense(Sense::click())
             .cell_layout(Layout::left_to_right(Align::Center))
-            .column(Column::remainder().at_least(200.0).clip(true))
+            .column(Column::remainder().at_least(120.0).clip(true))
             .column(Column::initial(135.0).at_least(80.0).clip(true))
             .column(Column::initial(160.0).at_least(60.0).clip(true))
             .column(Column::initial(95.0).at_least(60.0));
+        if col_created {
+            table = table.column(Column::initial(135.0).at_least(80.0).clip(true));
+        }
+        if col_attrs {
+            table = table.column(Column::initial(80.0).at_least(40.0).clip(true));
+        }
+        // Column widths are remembered per column set.
+        table = table.id_salt(("details", col_created, col_attrs, app.pane));
         if let Some(pos) = app.scroll_to.take().filter(|&p| p < n) {
             table = table.scroll_to_row(pos, None);
         }
@@ -564,6 +601,12 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                 );
                 header(&mut h, SortKey::Type, if bin { "Original location" } else { "Type" }, app, &mut sort_click);
                 header(&mut h, SortKey::Size, "Size", app, &mut sort_click);
+                if col_created {
+                    header(&mut h, SortKey::Created, "Date created", app, &mut sort_click);
+                }
+                if col_attrs {
+                    header(&mut h, SortKey::Attributes, "Attributes", app, &mut sort_click);
+                }
             })
             .body(|body| {
                 body.rows(row_h, n, |mut row| {
@@ -625,6 +668,22 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                             });
                         }
                     });
+                    if col_created {
+                        row.col(|ui| {
+                            ui.add(
+                                egui::Label::new(RichText::new(format_time(e.created, app.utc_offset)).color(weak))
+                                    .selectable(false),
+                            );
+                        });
+                    }
+                    if col_attrs {
+                        row.col(|ui| {
+                            ui.add(
+                                egui::Label::new(RichText::new(format_attributes(e.attrs)).color(weak))
+                                    .selectable(false),
+                            );
+                        });
+                    }
                     let resp = row.response();
                     if resp.middle_clicked() && e.is_dir {
                         action = Some(Action::OpenInNewTab(pos));
@@ -705,6 +764,11 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
 
     app.request_icons(wanted_icons);
     app.request_thumbs();
+    match toggle_col {
+        Some(SortKey::Created) => app.col_created = !app.col_created,
+        Some(SortKey::Attributes) => app.col_attrs = !app.col_attrs,
+        _ => {}
+    }
     if let Some(k) = sort_click {
         app.set_sort(k);
     }

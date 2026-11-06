@@ -139,6 +139,8 @@ pub fn list_dir(dir: &Path, cancel: &AtomicBool, sink: &mut dyn FnMut(Vec<Entry>
                 is_dir,
                 size: if is_dir { 0 } else { ((fd.nFileSizeHigh as u64) << 32) | fd.nFileSizeLow as u64 },
                 modified: filetime_to_unix(fd.ftLastWriteTime),
+                created: filetime_to_unix(fd.ftCreationTime),
+                attrs: a,
                 hidden: a & FILE_ATTRIBUTE_HIDDEN != 0,
                 system: a & FILE_ATTRIBUTE_SYSTEM != 0 && a & FILE_ATTRIBUTE_HIDDEN != 0,
                 link: a & FILE_ATTRIBUTE_REPARSE_POINT != 0,

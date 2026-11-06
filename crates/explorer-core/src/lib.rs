@@ -18,6 +18,10 @@ pub struct Entry {
     pub size: u64,
     /// Seconds since 1970-01-01 UTC; 0 when unknown.
     pub modified: i64,
+    /// Creation time, same units; 0 when unknown.
+    pub created: i64,
+    /// Win32 `FILE_ATTRIBUTE_*` bits (see [`attr`]).
+    pub attrs: u32,
     pub hidden: bool,
     pub system: bool,
     /// Reparse point (symlink / junction / cloud placeholder).
@@ -131,6 +135,44 @@ pub enum SortKey {
     Modified,
     Type,
     Size,
+    Created,
+    Attributes,
+}
+
+/// Win32 file attribute bits, as `FindFirstFileExW` reports them.
+pub mod attr {
+    pub const READONLY: u32 = 0x1;
+    pub const HIDDEN: u32 = 0x2;
+    pub const SYSTEM: u32 = 0x4;
+    pub const DIRECTORY: u32 = 0x10;
+    pub const ARCHIVE: u32 = 0x20;
+    pub const COMPRESSED: u32 = 0x800;
+    pub const OFFLINE: u32 = 0x1000;
+    pub const NOT_INDEXED: u32 = 0x2000;
+    pub const ENCRYPTED: u32 = 0x4000;
+    pub const REPARSE: u32 = 0x400;
+    pub const PINNED: u32 = 0x80000;
+    pub const UNPINNED: u32 = 0x100000;
+}
+
+/// The Attributes column: one letter per set attribute, in Explorer's order
+/// (R read-only, H hidden, S system, A archive, C compressed, E encrypted, O offline,
+/// N not indexed, L link, P pinned, U unpinned).
+pub fn format_attributes(attrs: u32) -> String {
+    const LETTERS: [(u32, char); 11] = [
+        (attr::READONLY, 'R'),
+        (attr::HIDDEN, 'H'),
+        (attr::SYSTEM, 'S'),
+        (attr::ARCHIVE, 'A'),
+        (attr::COMPRESSED, 'C'),
+        (attr::ENCRYPTED, 'E'),
+        (attr::OFFLINE, 'O'),
+        (attr::NOT_INDEXED, 'N'),
+        (attr::REPARSE, 'L'),
+        (attr::PINNED, 'P'),
+        (attr::UNPINNED, 'U'),
+    ];
+    LETTERS.iter().filter(|(bit, _)| attrs & bit != 0).map(|&(_, c)| c).collect()
 }
 
 /// Natural ("logical") order like Explorer: case-insensitive and "file2" < "file10".
@@ -183,6 +225,8 @@ pub fn sorted_view(entries: &[Entry], filter: &str, show_hidden: bool, key: Sort
             SortKey::Modified => a.modified.cmp(&b.modified),
             SortKey::Type => types[i].cmp(&types[j]),
             SortKey::Size => a.size.cmp(&b.size),
+            SortKey::Created => a.created.cmp(&b.created),
+            SortKey::Attributes => format_attributes(a.attrs).cmp(&format_attributes(b.attrs)),
         }
         .then_with(|| natural_cmp(a.display(), b.display()));
         b.is_dir.cmp(&a.is_dir).then(if ascending { by_key } else { by_key.reverse() })
@@ -434,6 +478,83 @@ pub fn location_crumbs(cur: &Path) -> Vec<(String, PathBuf)> {
     }
 }
 
+/// Extensions the preview pane shows as text.
+pub fn is_text_ext(ext: &str) -> bool {
+    matches!(
+        ext,
+        "txt"
+            | "md"
+            | "log"
+            | "ini"
+            | "cfg"
+            | "conf"
+            | "csv"
+            | "tsv"
+            | "json"
+            | "xml"
+            | "yaml"
+            | "yml"
+            | "toml"
+            | "rs"
+            | "c"
+            | "h"
+            | "cpp"
+            | "hpp"
+            | "cs"
+            | "java"
+            | "kt"
+            | "go"
+            | "py"
+            | "rb"
+            | "js"
+            | "ts"
+            | "tsx"
+            | "jsx"
+            | "css"
+            | "html"
+            | "htm"
+            | "sql"
+            | "sh"
+            | "ps1"
+            | "psm1"
+            | "bat"
+            | "cmd"
+            | "reg"
+            | "gitignore"
+            | "editorconfig"
+            | "lock"
+            | "vbs"
+            | "lua"
+            | "php"
+            | "swift"
+            | "srt"
+    )
+}
+
+/// Text for the preview pane from the first bytes of a file: UTF-8 (with or without BOM) or
+/// UTF-16 with a BOM. `None` for binary data. A cut-off last character is dropped.
+pub fn decode_text(bytes: &[u8]) -> Option<String> {
+    if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
+        let units: Vec<u16> = rest.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        return Some(String::from_utf16_lossy(&units));
+    }
+    if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
+        let units: Vec<u16> = rest.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+        return Some(String::from_utf16_lossy(&units));
+    }
+    let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
+    if bytes.contains(&0) {
+        return None;
+    }
+    match std::str::from_utf8(bytes) {
+        Ok(s) => Some(s.to_owned()),
+        // Cut in the middle of a character at the end of the read.
+        Err(e) if e.error_len().is_none() => Some(String::from_utf8_lossy(&bytes[..e.valid_up_to()]).into_owned()),
+        // Not UTF-8: probably a legacy code page; show it lossily like Notepad would garble it.
+        Err(_) => Some(String::from_utf8_lossy(bytes).into_owned()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -553,5 +674,24 @@ mod tests {
         let labels: Vec<&str> = c.iter().map(|(l, _)| l.as_str()).collect();
         assert_eq!(labels, ["Network", "nas", "media", "films"]);
         assert_eq!(c[2].1, PathBuf::from(r"\\nas\media"));
+    }
+
+    #[test]
+    fn attribute_letters() {
+        assert_eq!(format_attributes(0), "");
+        assert_eq!(format_attributes(attr::ARCHIVE), "A");
+        assert_eq!(format_attributes(attr::HIDDEN | attr::SYSTEM | attr::ARCHIVE | attr::DIRECTORY), "HSA");
+        assert_eq!(format_attributes(attr::READONLY | attr::REPARSE), "RL");
+    }
+
+    #[test]
+    fn text_preview_decoding() {
+        assert_eq!(decode_text(b"hello").as_deref(), Some("hello"));
+        assert_eq!(decode_text(b"\xEF\xBB\xBFhi").as_deref(), Some("hi"));
+        assert_eq!(decode_text(&[0xFF, 0xFE, b'h', 0, b'i', 0]).as_deref(), Some("hi"));
+        assert_eq!(decode_text(b"MZ\x90\0\x03"), None);
+        // "é" is C3 A9; a read that stops after C3 drops it.
+        assert_eq!(decode_text(b"caf\xC3").as_deref(), Some("caf"));
+        assert!(is_text_ext("rs") && !is_text_ext("exe"));
     }
 }

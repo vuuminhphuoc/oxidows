@@ -2,6 +2,7 @@
 // Release builds on Windows run without a console window.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod pane;
 mod view;
 
 use std::collections::{HashMap, HashSet};
@@ -33,6 +34,7 @@ enum Msg {
     Thumb(PathBuf, Option<explorer_sys::IconImage>),
     /// Subfolder names for the navigation tree.
     Tree(PathBuf, Vec<String>),
+    Preview(PathBuf, pane::PreviewData),
 }
 
 /// Icons are cached per extension; only files that carry their own icon get one each.
@@ -134,6 +136,11 @@ struct App {
     ascending: bool,
     show_hidden: bool,
     pub show_extensions: bool,
+    /// Optional Details columns (right-click the header to choose).
+    pub col_created: bool,
+    pub col_attrs: bool,
+    pub pane: pane::Pane,
+    preview: Option<(PathBuf, pane::PreviewState)>,
 
     /// Selected names (names survive refreshes; indices don't).
     selected: HashSet<String>,
@@ -207,6 +214,10 @@ impl App {
             ascending: true,
             show_hidden: false,
             show_extensions: true,
+            col_created: false,
+            col_attrs: false,
+            pane: pane::Pane::None,
+            preview: None,
             selected: HashSet::new(),
             cursor: None,
             anchor: None,
@@ -584,6 +595,7 @@ impl App {
                         self.thumbs.insert(p, state);
                     }
                 }
+                Msg::Preview(p, data) => self.preview_loaded(p, data),
                 Msg::Tree(dir, names) => {
                     self.tree_pending.remove(&dir);
                     self.tree.insert(dir, names);
@@ -1137,7 +1149,7 @@ impl App {
         } else {
             self.sort = key;
             // Names and types read best A→Z; dates and sizes newest/biggest first.
-            self.ascending = matches!(key, SortKey::Name | SortKey::Type);
+            self.ascending = matches!(key, SortKey::Name | SortKey::Type | SortKey::Attributes);
         }
     }
 
@@ -1158,12 +1170,20 @@ impl App {
         if details_view {
             self.view_mode = ViewMode::Details;
         }
-        let (new_tab, close_tab, next_tab, prev_tab) = ui.input_mut(|i| {
+        // Shift first: egui matches Alt+P "logically", so it would also eat Alt+Shift+P.
+        let (details_pane, preview_pane) =
+            ui.input_mut(|i| (i.consume_key(alt | Modifiers::SHIFT, Key::P), i.consume_key(alt, Key::P)));
+        if details_pane {
+            self.toggle_pane(pane::Pane::Details);
+        } else if preview_pane {
+            self.toggle_pane(pane::Pane::Preview);
+        }
+        let (new_tab, close_tab, prev_tab, next_tab) = ui.input_mut(|i| {
             (
                 i.consume_key(ctrl, Key::T),
                 i.consume_key(ctrl, Key::W),
-                i.consume_key(ctrl, Key::Tab),
                 i.consume_key(ctrl | Modifiers::SHIFT, Key::Tab),
+                i.consume_key(ctrl, Key::Tab),
             )
         });
         if new_tab {
@@ -1399,6 +1419,7 @@ impl eframe::App for App {
         view::toolbar(self, ui);
         view::status_bar(self, ui);
         view::sidebar(self, ui);
+        pane::show(self, ui);
         egui::CentralPanel::default().show(ui, |ui| view::file_list(self, ui));
         view::dialog(self, ui);
     }

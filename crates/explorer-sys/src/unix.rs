@@ -23,20 +23,32 @@ pub fn list_dir(dir: &Path, cancel: &AtomicBool, sink: &mut dyn FnMut(Vec<Entry>
         let name = de.file_name().to_string_lossy().into_owned();
         let link = de.file_type().is_ok_and(|t| t.is_symlink());
         let md = std::fs::metadata(de.path()).or_else(|_| de.metadata());
-        let (is_dir, size, modified) = match md {
+        let secs = |t: io::Result<std::time::SystemTime>| {
+            t.ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs() as i64)
+        };
+        let (is_dir, size, modified, created, readonly) = match md {
             Ok(m) => (
                 m.is_dir(),
                 if m.is_dir() { 0 } else { m.len() },
-                m.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs() as i64),
+                secs(m.modified()),
+                secs(m.created()),
+                m.permissions().readonly(),
             ),
-            Err(_) => (false, 0, 0),
+            Err(_) => (false, 0, 0, 0, false),
         };
+        use explorer_core::attr;
+        let attrs = if is_dir { attr::DIRECTORY } else { attr::ARCHIVE }
+            | if readonly { attr::READONLY } else { 0 }
+            | if name.starts_with('.') { attr::HIDDEN } else { 0 }
+            | if link { attr::REPARSE } else { 0 };
         batch.push(Entry {
             hidden: name.starts_with('.'),
             name,
             is_dir,
             size,
             modified,
+            created,
+            attrs,
             system: false,
             link,
             label: None,
