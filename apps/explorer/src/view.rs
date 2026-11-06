@@ -9,6 +9,41 @@ use explorer_sys::DriveKind;
 
 use crate::{App, Dialog, IconKey, IconState, MapDrive};
 
+pub fn tab_bar(app: &mut App, ui: &mut Ui) {
+    egui::Panel::top("tabs").show(ui, |ui| {
+        ui.add_space(3.0);
+        ui.horizontal(|ui| {
+            let (mut switch, mut close) = (None, None);
+            for i in 0..app.tabs.len() {
+                let title = app.tab_title(i);
+                let active = i == app.active_tab;
+                let short: String = if title.chars().count() > 24 { title.chars().take(22).chain(Some('…')).collect() } else { title.clone() };
+                let r = ui.add(egui::Button::selectable(active, short).min_size(egui::vec2(90.0, 22.0))).on_hover_text(&title);
+                if r.clicked() {
+                    switch = Some(i);
+                }
+                if r.middle_clicked() {
+                    close = Some(i);
+                }
+                if ui.add(egui::Button::new(RichText::new("×").weak()).frame(false)).on_hover_text("Close tab (Ctrl+W)").clicked() {
+                    close = Some(i);
+                }
+                ui.add_space(4.0);
+            }
+            if ui.button("+").on_hover_text("New tab (Ctrl+T)").clicked() {
+                let home = app.home.clone();
+                app.new_tab(home, true);
+            }
+            if let Some(i) = switch {
+                app.switch_tab(i);
+            } else if let Some(i) = close {
+                app.close_tab(i);
+            }
+        });
+        ui.add_space(1.0);
+    });
+}
+
 pub fn toolbar(app: &mut App, ui: &mut Ui) {
     egui::Panel::top("toolbar").show(ui, |ui| {
         ui.add_space(4.0);
@@ -30,7 +65,7 @@ pub fn toolbar(app: &mut App, ui: &mut Ui) {
                 app.refresh();
                 app.load_drives();
             }
-            ui.menu_button("⋯", |ui| {
+            ui.menu_button("…", |ui| {
                 if ui.button("New folder").clicked() {
                     app.begin_new_folder();
                     ui.close();
@@ -68,6 +103,7 @@ pub fn toolbar(app: &mut App, ui: &mut Ui) {
                 }
                 ui.separator();
                 ui.checkbox(&mut app.show_hidden, "Hidden items");
+                ui.checkbox(&mut app.show_extensions, "File name extensions");
                 if ui.button("Open in Terminal").clicked() {
                     if let Err(e) = explorer_sys::open_terminal(&app.cur) {
                         app.status = Some(format!("Terminal: {e}"));
@@ -319,6 +355,7 @@ enum Action {
     ShellMenu(Option<usize>),
     Restore,
     EmptyBin,
+    OpenInNewTab(usize),
     Copy(bool),
     Paste(PathBuf),
     CopyPath,
@@ -443,7 +480,13 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                 let e = &app.entries[app.view[pos]];
                 row.set_selected(app.selected.contains(&e.name));
                 let dim = e.hidden || e.system;
-                let name_text = if dim { RichText::new(e.display()).color(weak) } else { RichText::new(e.display()) };
+                let shown = if app.show_extensions || e.is_dir {
+                    e.display()
+                } else {
+                    let d = e.display();
+                    d.rfind('.').filter(|&i| i > 0).map_or(d, |i| &d[..i])
+                };
+                let name_text = if dim { RichText::new(shown).color(weak) } else { RichText::new(shown) };
                 row.col(|ui| {
                     let key = IconKey::for_entry(e, &app.cur);
                     match app.icons.get(&key) {
@@ -482,7 +525,9 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                     }
                 });
                 let resp = row.response();
-                if resp.double_clicked() {
+                if resp.middle_clicked() && e.is_dir {
+                    action = Some(Action::OpenInNewTab(pos));
+                } else if resp.double_clicked() {
                     action = Some(Action::Open(pos));
                 } else if resp.clicked() {
                     action = Some(Action::Click(pos, resp.ctx.input(|i| i.modifiers)));
@@ -510,6 +555,10 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                 resp.context_menu(|ui| {
                     if ui.button(RichText::new("Open").strong()).clicked() {
                         action = Some(Action::Open(pos));
+                        ui.close();
+                    }
+                    if is_dir && ui.button("Open in new tab").clicked() {
+                        action = Some(Action::OpenInNewTab(pos));
                         ui.close();
                     }
                     ui.separator();
@@ -599,6 +648,12 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
         }
         Some(Action::Rename) => app.begin_rename(),
         Some(Action::Restore) => app.restore_selection(),
+        Some(Action::OpenInNewTab(pos)) => {
+            if let Some(e) = app.entry_at(pos).cloned() {
+                let p = app.child(&e.name);
+                app.new_tab(p, false);
+            }
+        }
         Some(Action::EmptyBin) => app.empty_bin(),
         Some(Action::Delete(permanent)) => app.delete_selection(permanent),
         Some(Action::Properties(p)) => app.show_properties(&p),

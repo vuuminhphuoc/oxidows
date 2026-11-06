@@ -18,7 +18,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Navigation pane: folder tree (expand/collapse) | ❌ | |
 | Pin / unpin to Quick access | ❌ | |
 | This PC page (drives as tiles) | ❌ | |
-| Tabs (Ctrl+T, Ctrl+W, Ctrl+Tab, drag tab out) | ❌ | |
+| Tabs (Ctrl+T, Ctrl+W, Ctrl+Tab, drag tab out) | 🟡 | new/close/switch, middle-click a folder or tab; no drag-out yet |
 | Open in new window (Ctrl+N) | ❌ | |
 | Command-line argument opens a folder | ✅ | `oxi-explorer.exe <folder>` |
 
@@ -30,7 +30,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Mapped network drives listed | ✅ | |
 | `\\server` lists its shares | ✅ | `NetShareEnum`; tested against a real share on CI |
 | Login prompt when a share needs credentials (remember password) | ✅ | Windows' own credential dialog, asked once per share, plus a Sign in button |
-| Map / disconnect network drive | ✅ | ⋯ menu, sidebar right-click; reconnect at sign-in |
+| Map / disconnect network drive | ✅ | … menu, sidebar right-click; reconnect at sign-in |
 | Network page: computers on the LAN | 🟡 | `WNetOpenEnum` browse list; WSD-only devices not found yet |
 | Network media devices (DLNA), WSD printers | ➖ | not file locations |
 
@@ -48,7 +48,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | System file icons | ✅ | `SHGetFileInfoW`, cached per extension |
 | Overlay icons (shortcut arrow, OneDrive status) | ❌ | |
 | Show/hide hidden items | ✅ | |
-| Show/hide file name extensions | ❌ | |
+| Show/hide file name extensions | ✅ | … menu |
 | Show protected OS files | ❌ | hidden+system shown with "Hidden items" |
 | Compact mode | ➖ | |
 | Preview pane | ❌ | |

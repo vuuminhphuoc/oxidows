@@ -74,6 +74,17 @@ pub struct MapDrive {
     pub persistent: bool,
 }
 
+/// A tab that is not on screen: just enough to bring it back (the listing is re-read, which
+/// takes milliseconds, rather than kept in memory).
+pub struct TabSnap {
+    pub cur: PathBuf,
+    history: History,
+    selected: HashSet<String>,
+    filter: String,
+    sort: SortKey,
+    ascending: bool,
+}
+
 /// What the cached sorted view was computed from; recomputed only when this changes, so a
 /// 100 000-item folder is not re-sorted every frame.
 #[derive(PartialEq, Clone)]
@@ -113,6 +124,7 @@ struct App {
     sort: SortKey,
     ascending: bool,
     show_hidden: bool,
+    pub show_extensions: bool,
 
     /// Selected names (names survive refreshes; indices don't).
     selected: HashSet<String>,
@@ -146,6 +158,9 @@ struct App {
     title: String,
     /// Main window handle (Windows), for the shell's menus and dialogs; 0 if unknown.
     pub hwnd: isize,
+    /// All tabs; the active one's slot is stale while it is shown (its state lives in `App`).
+    pub tabs: Vec<TabSnap>,
+    pub active_tab: usize,
 }
 
 impl App {
@@ -174,6 +189,7 @@ impl App {
             sort: SortKey::Name,
             ascending: true,
             show_hidden: false,
+            show_extensions: true,
             selected: HashSet::new(),
             cursor: None,
             anchor: None,
@@ -199,7 +215,11 @@ impl App {
             was_focused: true,
             title: String::new(),
             hwnd: 0,
+            tabs: Vec::new(),
+            active_tab: 0,
         };
+        let first = app.snapshot();
+        app.tabs.push(first);
         app.start_listing(false);
         app.start_watch();
         app.start_icon_loader();
@@ -508,6 +528,75 @@ impl App {
         let from = std::mem::replace(&mut self.cur, to);
         self.history.visit(from);
         self.entered_new_folder(None);
+    }
+
+    // ---- tabs ------------------------------------------------------------------------------
+
+    fn snapshot(&mut self) -> TabSnap {
+        TabSnap {
+            cur: self.cur.clone(),
+            history: std::mem::take(&mut self.history),
+            selected: std::mem::take(&mut self.selected),
+            filter: std::mem::take(&mut self.filter),
+            sort: self.sort,
+            ascending: self.ascending,
+        }
+    }
+
+    fn load_tab(&mut self, t: TabSnap) {
+        self.cur = t.cur;
+        self.history = t.history;
+        self.sort = t.sort;
+        self.ascending = t.ascending;
+        self.entered_new_folder(None);
+        self.selected = t.selected;
+        self.filter = t.filter;
+    }
+
+    pub fn switch_tab(&mut self, i: usize) {
+        if i == self.active_tab || i >= self.tabs.len() {
+            return;
+        }
+        let snap = self.snapshot();
+        self.tabs[self.active_tab] = snap;
+        let target = std::mem::replace(
+            &mut self.tabs[i],
+            TabSnap { cur: PathBuf::new(), history: History::default(), selected: HashSet::new(), filter: String::new(), sort: SortKey::Name, ascending: true },
+        );
+        self.active_tab = i;
+        self.load_tab(target);
+        self.tabs[i].cur = self.cur.clone();
+    }
+
+    /// Opens `path` in a new tab after the current one; `focus` switches to it.
+    pub fn new_tab(&mut self, path: PathBuf, focus: bool) {
+        let t = TabSnap { cur: path, history: History::default(), selected: HashSet::new(), filter: String::new(), sort: self.sort, ascending: self.ascending };
+        let at = self.active_tab + 1;
+        self.tabs.insert(at, t);
+        if focus {
+            // The active tab shifted nothing (inserted after it), so switching is safe.
+            self.switch_tab(at);
+        }
+    }
+
+    pub fn close_tab(&mut self, i: usize) {
+        if self.tabs.len() <= 1 {
+            self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
+        if i == self.active_tab {
+            let next = if i + 1 < self.tabs.len() { i + 1 } else { i - 1 };
+            self.switch_tab(next);
+        }
+        self.tabs.remove(i);
+        if self.active_tab > i {
+            self.active_tab -= 1;
+        }
+    }
+
+    pub fn tab_title(&self, i: usize) -> String {
+        let p = if i == self.active_tab { &self.cur } else { &self.tabs[i].cur };
+        explorer_core::location_crumbs(p).last().map_or_else(|| p.to_string_lossy().into_owned(), |(l, _)| l.clone())
     }
 
     fn entered_new_folder(&mut self, select: Option<String>) {
@@ -945,6 +1034,26 @@ impl App {
         let ctrl = Modifiers::COMMAND;
 
         // These work everywhere, even while typing in the search box.
+        let (new_tab, close_tab, next_tab, prev_tab) = ui.input_mut(|i| {
+            (
+                i.consume_key(ctrl, Key::T),
+                i.consume_key(ctrl, Key::W),
+                i.consume_key(ctrl, Key::Tab),
+                i.consume_key(ctrl | Modifiers::SHIFT, Key::Tab),
+            )
+        });
+        if new_tab {
+            let home = self.home.clone();
+            self.new_tab(home, true);
+        }
+        if close_tab {
+            self.close_tab(self.active_tab);
+        }
+        if next_tab || prev_tab {
+            let n = self.tabs.len();
+            let to = if next_tab { (self.active_tab + 1) % n } else { (self.active_tab + n - 1) % n };
+            self.switch_tab(to);
+        }
         let (back, fwd, up, f5, addr, find, newdir) = ui.input_mut(|i| {
             (
                 i.consume_key(alt, Key::ArrowLeft) || i.pointer.button_pressed(egui::PointerButton::Extra1),
@@ -1144,6 +1253,9 @@ impl eframe::App for App {
         }
         self.update_view();
 
+        if let Some(t) = self.tabs.get_mut(self.active_tab) {
+            t.cur.clone_from(&self.cur);
+        }
         let title = match self.cur.file_name() {
             Some(n) => n.to_string_lossy().into_owned(),
             None => self.cur.to_string_lossy().into_owned(),
@@ -1153,6 +1265,7 @@ impl eframe::App for App {
             self.title = title;
         }
 
+        view::tab_bar(self, ui);
         view::toolbar(self, ui);
         view::status_bar(self, ui);
         view::sidebar(self, ui);
