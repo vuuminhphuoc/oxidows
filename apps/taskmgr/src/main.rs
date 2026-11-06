@@ -227,8 +227,14 @@ fn spawn_sampler(ctx: egui::Context, tx: Sender<Result<Arc<Snapshot>, String>>) 
                                 .map(|p| format!("{} {:.0} B/s", p.name, p.net_bps))
                                 .collect();
                             let suspended = s.processes.iter().filter(|p| p.suspended).count();
-                            let gpus: Vec<String> =
-                                s.system.gpus.iter().map(|g| format!("{} {:.0}%", g.name, g.util)).collect();
+                            let gpus: Vec<String> = s
+                                .system
+                                .gpus
+                                .iter()
+                                .map(|g| {
+                                    format!("{} {:.0}% driver {} dx {}", g.name, g.util, g.driver_version, g.directx)
+                                })
+                                .collect();
                             eprintln!("gpus: [{}]", gpus.join(", "));
                             if let Some(a) = s.system.adapters.first() {
                                 eprintln!("adapter {}: {:?}", a.name, taskmgr_sys::adapter_info(&a.name));

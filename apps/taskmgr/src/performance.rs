@@ -264,7 +264,16 @@ impl State {
             let summary = match self.selected {
                 Res::Cpu => self.cpu_view(ui, snap, w, big),
                 Res::Memory => {
-                    let m = self.memory.get_or_insert_with(taskmgr_sys::memory_info).clone();
+                    let m = self
+                        .memory
+                        .get_or_insert_with(|| {
+                            let m = taskmgr_sys::memory_info();
+                            if std::env::var_os("OXI_TASKMGR_TIMING").is_some() {
+                                eprintln!("memory info: {m:?}");
+                            }
+                            m
+                        })
+                        .clone();
                     header(ui, "Memory", &format_bytes(s.mem_total as f64));
                     ui.label(RichText::new("Memory usage over 60 seconds").small().weak());
                     graph::area(ui, big, &h.mem_pct, 100.0, MEM, true);
@@ -307,7 +316,16 @@ impl State {
                         let letters: Vec<String> = parts.map(|l| l.to_uppercase()).collect();
                         let info = number
                             .and_then(|n| {
-                                self.disk_info.entry(n).or_insert_with(|| taskmgr_sys::disk_info(n).ok()).clone()
+                                self.disk_info
+                                    .entry(n)
+                                    .or_insert_with(|| {
+                                        let i = taskmgr_sys::disk_info(n);
+                                        if std::env::var_os("OXI_TASKMGR_TIMING").is_some() {
+                                            eprintln!("disk info {n}: {i:?}");
+                                        }
+                                        i.ok()
+                                    })
+                                    .clone()
                             })
                             .unwrap_or_default();
                         header(ui, &format!("Disk {}", d.name), &info.model);
