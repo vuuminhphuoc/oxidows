@@ -1,6 +1,8 @@
 //! Windows reader: NT native API for processes and per-core CPU, Win32 for memory and network,
 //! PDH for disk and GPU rates.
 
+mod adapters;
+mod gpu;
 mod hw;
 mod net;
 mod procinfo;
@@ -8,6 +10,7 @@ mod services;
 mod sessions;
 mod startup;
 
+pub use adapters::adapter_info;
 pub use hw::cpu_info;
 pub use procinfo::{
     affinity, create_dump, efficiency_mode, is_elevated, is_running, open_url, restart_elevated, run_new_task,
@@ -287,6 +290,7 @@ pub struct Collector {
     base_mhz: u32,
     /// The ETW network session is running.
     net: bool,
+    gpus: Vec<taskmgr_core::GpuAdapter>,
 }
 
 // The PDH handles are only ever used from the thread that owns the collector.
@@ -328,6 +332,7 @@ impl Collector {
             pdh: Pdh::open(),
             base_mhz: hw::base_mhz(),
             net: procinfo::is_elevated() && net::start(),
+            gpus: gpu::gpu_adapters(),
         })
     }
 
@@ -482,17 +487,24 @@ impl Collector {
                 sys.disk_active_pct = Pdh::value(pdh.disk_time).map(|v| v as f32);
                 sys.disk_read_bps = Pdh::value(pdh.disk_read);
                 sys.disk_write_bps = Pdh::value(pdh.disk_write);
-                let gpu = pdh.gpu;
+                let (gpu, ded, shared) = (pdh.gpu, pdh.gpu_dedicated, pdh.gpu_shared);
+                let ded_items = pdh.items(ded);
+                let shared_items = pdh.items(shared);
+                sys.gpu_dedicated_used = ded_items.as_ref().map(|v| v.iter().map(|(_, b)| *b as u64).sum());
+                sys.gpu_shared_used = shared_items.as_ref().map(|v| v.iter().map(|(_, b)| *b as u64).sum());
                 if let Some(engines) = pdh.items(gpu) {
+                    sys.gpus = taskmgr_core::split_gpus(
+                        &self.gpus,
+                        &engines,
+                        ded_items.as_deref().unwrap_or_default(),
+                        shared_items.as_deref().unwrap_or_default(),
+                    );
                     let taskmgr_core::GpuUsage { total, per_pid, engines: by_engine } =
                         taskmgr_core::gpu_from_engines(&engines);
                     sys.gpu_pct = Some(total);
                     sys.gpu_per_pid = per_pid;
                     sys.gpu_engines = by_engine;
                 }
-                let (ded, shared) = (pdh.gpu_dedicated, pdh.gpu_shared);
-                sys.gpu_dedicated_used = pdh.items(ded).map(|v| v.iter().map(|(_, b)| *b as u64).sum());
-                sys.gpu_shared_used = pdh.items(shared).map(|v| v.iter().map(|(_, b)| *b as u64).sum());
                 if self.base_mhz > 0 {
                     sys.cpu_mhz = Pdh::value(pdh.cpu_perf).map(|p| (p * f64::from(self.base_mhz) / 100.0) as f32);
                 }

@@ -96,6 +96,11 @@ impl Collector {
     }
 }
 
+/// IP addresses, DNS suffix and Wi-Fi SSID of the adapter named `name` (its alias).
+pub fn adapter_info(name: &str) -> taskmgr_core::AdapterInfo {
+    imp::adapter_info(name)
+}
+
 /// Stops background work (the ETW network trace on Windows). Call on exit.
 pub fn shutdown() {
     imp::shutdown();

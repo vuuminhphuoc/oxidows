@@ -300,3 +300,6 @@ pub fn is_running(name: &str) -> bool {
         .any(|e| std::fs::read_to_string(e.path().join("comm")).is_ok_and(|c| c.trim().eq_ignore_ascii_case(name)))
 }
 pub fn shutdown() {}
+pub fn adapter_info(_name: &str) -> taskmgr_core::AdapterInfo {
+    taskmgr_core::AdapterInfo::default()
+}

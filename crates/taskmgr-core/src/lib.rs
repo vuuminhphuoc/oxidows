@@ -100,6 +100,8 @@ pub struct RawSystem {
     pub gpu_engines: Vec<(String, f32)>,
     pub gpu_dedicated_used: Option<u64>,
     pub gpu_shared_used: Option<u64>,
+    /// One entry per adapter with GPU engine counters.
+    pub gpus: Vec<GpuStats>,
     pub uptime: Duration,
     /// Current clock in MHz, when the OS reports it.
     pub cpu_mhz: Option<f32>,
@@ -147,6 +149,16 @@ pub struct AdapterRates {
     pub link_bps: u64,
 }
 
+/// Addresses and network name of one adapter, read on demand.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AdapterInfo {
+    pub ipv4: Vec<String>,
+    pub ipv6: Vec<String>,
+    pub dns_suffix: String,
+    /// Wi-Fi network name, for wireless adapters.
+    pub ssid: Option<String>,
+}
+
 /// Facts about the processor that do not change while running.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CpuInfo {
@@ -170,6 +182,76 @@ pub struct GpuUsage {
     pub total: f32,
     pub per_pid: Vec<(u32, f32)>,
     pub engines: Vec<(String, f32)>,
+}
+
+/// A display adapter as DXGI reports it. `luid` is formatted as in PDH instance names:
+/// `0xHIGHPART_0xLOWPART`, eight hex digits each.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GpuAdapter {
+    pub luid: String,
+    pub name: String,
+    pub dedicated_total: u64,
+    pub shared_total: u64,
+}
+
+/// One GPU's figures for a sample.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GpuStats {
+    pub name: String,
+    /// Busiest engine type, percent.
+    pub util: f32,
+    pub engines: Vec<(String, f32)>,
+    pub dedicated_used: Option<u64>,
+    pub shared_used: Option<u64>,
+    pub dedicated_total: u64,
+    pub shared_total: u64,
+}
+
+fn luid_of(instance: &str) -> Option<&str> {
+    let rest = &instance[instance.find("luid_")? + 5..];
+    rest.get(..21)
+}
+
+/// Splits PDH GPU counters by adapter. Adapters without engine counters (such as the
+/// software "Basic Render Driver") are left out; unknown LUIDs get a numbered name.
+pub fn split_gpus(
+    adapters: &[GpuAdapter],
+    engines: &[(String, f64)],
+    dedicated: &[(String, f64)],
+    shared: &[(String, f64)],
+) -> Vec<GpuStats> {
+    let mut luids: Vec<&str> = Vec::new();
+    for (n, _) in engines {
+        if let Some(l) = luid_of(n)
+            && !luids.contains(&l)
+        {
+            luids.push(l);
+        }
+    }
+    let rank = |l: &str| adapters.iter().position(|a| a.luid.eq_ignore_ascii_case(l)).unwrap_or(usize::MAX);
+    luids.sort_by_key(|l| (rank(l), l.to_string()));
+    let sum = |items: &[(String, f64)], l: &str| {
+        let v: Vec<f64> = items.iter().filter(|(n, _)| luid_of(n) == Some(l)).map(|(_, b)| *b).collect();
+        (!v.is_empty()).then(|| v.iter().sum::<f64>() as u64)
+    };
+    luids
+        .iter()
+        .enumerate()
+        .map(|(i, l)| {
+            let mine: Vec<(String, f64)> = engines.iter().filter(|(n, _)| luid_of(n) == Some(*l)).cloned().collect();
+            let usage = gpu_from_engines(&mine);
+            let a = adapters.iter().find(|a| a.luid.eq_ignore_ascii_case(l));
+            GpuStats {
+                name: a.map_or_else(|| format!("GPU {i}"), |a| a.name.clone()),
+                util: usage.total,
+                engines: usage.engines,
+                dedicated_used: sum(dedicated, l),
+                shared_used: sum(shared, l),
+                dedicated_total: a.map_or(0, |a| a.dedicated_total),
+                shared_total: a.map_or(0, |a| a.shared_total),
+            }
+        })
+        .collect()
 }
 
 pub fn gpu_from_engines(items: &[(String, f64)]) -> GpuUsage {
@@ -250,6 +332,7 @@ pub struct SystemRates {
     pub gpu_engines: Vec<(String, f32)>,
     pub gpu_dedicated_used: Option<u64>,
     pub gpu_shared_used: Option<u64>,
+    pub gpus: Vec<GpuStats>,
     pub uptime: Duration,
     pub cpu_mhz: Option<f32>,
     pub mem_cached: Option<u64>,
@@ -472,6 +555,8 @@ pub struct History {
     pub disks: Vec<Ring>,
     /// Per adapter: (receive, send) bytes per second.
     pub adapters: Vec<(Ring, Ring)>,
+    /// Per GPU: utilization %.
+    pub gpus: Vec<Ring>,
 }
 
 impl History {
@@ -490,6 +575,12 @@ impl History {
         self.net_rx_bps.push(s.net_rx_bps as f32);
         self.net_tx_bps.push(s.net_tx_bps as f32);
         self.gpu_pct.push(s.gpu_pct.unwrap_or(0.0));
+        if self.gpus.len() != s.gpus.len() {
+            self.gpus = vec![Ring::default(); s.gpus.len()];
+        }
+        for (ring, g) in self.gpus.iter_mut().zip(&s.gpus) {
+            ring.push(g.util);
+        }
         if self.disks.len() != s.disks.len() {
             self.disks = vec![Ring::default(); s.disks.len()];
         }
@@ -642,6 +733,7 @@ impl Sampler {
             gpu_engines: sys.gpu_engines.clone(),
             gpu_dedicated_used: sys.gpu_dedicated_used,
             gpu_shared_used: sys.gpu_shared_used,
+            gpus: sys.gpus.clone(),
             uptime: sys.uptime,
             cpu_mhz: sys.cpu_mhz,
             mem_cached: sys.mem_cached,
@@ -794,6 +886,32 @@ pub fn format_uptime(d: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gpus_split_by_luid() {
+        let l1 = "luid_0x00000000_0x0000D1B2_phys_0";
+        let l2 = "luid_0x00000000_0x0000E000_phys_0";
+        let engines = vec![
+            (format!("pid_10_{l1}_eng_0_engtype_3D"), 40.0),
+            (format!("pid_11_{l1}_eng_0_engtype_3D"), 20.0),
+            (format!("pid_10_{l2}_eng_1_engtype_VideoDecode"), 5.0),
+        ];
+        let adapters = vec![GpuAdapter {
+            luid: "0x00000000_0x0000E000".into(),
+            name: "Intel".into(),
+            dedicated_total: 128,
+            shared_total: 0,
+        }];
+        let dedicated = vec![(l1.to_string(), 1000.0)];
+        let g = split_gpus(&adapters, &engines, &dedicated, &[]);
+        assert_eq!(g.len(), 2);
+        assert_eq!(g[0].name, "Intel");
+        assert!((g[0].util - 5.0).abs() < 0.01);
+        assert_eq!(g[1].name, "GPU 1");
+        assert!((g[1].util - 60.0).abs() < 0.01);
+        assert_eq!(g[1].dedicated_used, Some(1000));
+        assert_eq!(g[0].dedicated_used, None);
+    }
 
     fn proc(pid: u32, cpu_time: u64, io: u64) -> RawProcess {
         RawProcess {

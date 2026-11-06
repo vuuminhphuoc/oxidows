@@ -2,7 +2,9 @@
 //! each network adapter, GPU), the selected one large on the right with its figures underneath.
 
 use egui::{Color32, RichText, Ui, Vec2};
-use taskmgr_core::{CpuInfo, Ring, Snapshot, format_bits_per_sec, format_bytes, format_uptime};
+use std::time::{Duration, Instant};
+
+use taskmgr_core::{AdapterInfo, CpuInfo, Ring, Snapshot, format_bits_per_sec, format_bytes, format_uptime};
 
 use crate::graph;
 
@@ -21,18 +23,31 @@ enum Res {
     /// Index into `disks`; `usize::MAX` = the combined figure when PDH has no per-disk data.
     Disk(usize),
     Adapter(usize),
-    Gpu,
+    /// Index into `gpus`; `usize::MAX` = the combined figure when GPUs cannot be told apart.
+    Gpu(usize),
 }
 
 pub struct State {
     selected: Res,
     per_core: bool,
     cpu: CpuInfo,
+    /// Addresses of the shown adapter, re-read every few seconds.
+    adapter: Option<(String, Instant, AdapterInfo)>,
 }
 
 impl Default for State {
     fn default() -> Self {
-        Self { selected: Res::Cpu, per_core: false, cpu: taskmgr_sys::cpu_info() }
+        // OXI_TASKMGR_RES picks the page shown first: memory, disk0, net0, gpu0... (used by smoke tests).
+        let v = std::env::var("OXI_TASKMGR_RES").unwrap_or_default().to_lowercase();
+        let n = |p: &str| v.strip_prefix(p).and_then(|r| r.parse::<usize>().ok()).unwrap_or(0);
+        let selected = match v.as_str() {
+            "memory" => Res::Memory,
+            _ if v.starts_with("disk") => Res::Disk(n("disk")),
+            _ if v.starts_with("net") => Res::Adapter(n("net")),
+            _ if v.starts_with("gpu") => Res::Gpu(n("gpu")),
+            _ => Res::Cpu,
+        };
+        Self { selected, per_core: false, cpu: taskmgr_sys::cpu_info(), adapter: None }
     }
 }
 
@@ -139,14 +154,28 @@ impl State {
                 });
             }
         }
-        entries.push(Entry {
-            res: Res::Gpu,
-            title: "GPU".into(),
-            value: s.gpu_pct.map_or("n/a".to_string(), |g| format!("{g:.0}%")),
-            ring: &h.gpu_pct,
-            max: 100.0,
-            color: GPU,
-        });
+        if s.gpus.is_empty() {
+            entries.push(Entry {
+                res: Res::Gpu(usize::MAX),
+                title: "GPU".into(),
+                value: s.gpu_pct.map_or("n/a".to_string(), |g| format!("{g:.0}%")),
+                ring: &h.gpu_pct,
+                max: 100.0,
+                color: GPU,
+            });
+        }
+        for (i, g) in s.gpus.iter().enumerate() {
+            if let Some(ring) = h.gpus.get(i) {
+                entries.push(Entry {
+                    res: Res::Gpu(i),
+                    title: format!("GPU {i}"),
+                    value: format!("{}\n{:.0}%", g.name, g.util),
+                    ring,
+                    max: 100.0,
+                    color: GPU,
+                });
+            }
+        }
         if !entries.iter().any(|e| e.res == self.selected) {
             self.selected = Res::Cpu;
         }
@@ -251,6 +280,14 @@ impl State {
                     }
                 },
                 Res::Adapter(i) => {
+                    let alias = s.adapters.get(i).map(|a| a.name.clone()).unwrap_or_default();
+                    let stale = self
+                        .adapter
+                        .as_ref()
+                        .is_none_or(|(n, at, _)| *n != alias || at.elapsed() > Duration::from_secs(10));
+                    if stale && !alias.is_empty() {
+                        self.adapter = Some((alias.clone(), Instant::now(), taskmgr_sys::adapter_info(&alias)));
+                    }
                     let (name, desc, rx, tx, link, rings) = match s.adapters.get(i) {
                         Some(a) => (
                             format!("{} ({})", a.kind, a.name),
@@ -279,26 +316,58 @@ impl State {
                         );
                         graph::multi(ui, big, &[(r, NET), (t, NET_TX)], max);
                     }
-                    stats(
-                        ui,
-                        &[
-                            ("Send", format_bits_per_sec(tx)),
-                            ("Receive", format_bits_per_sec(rx)),
-                            ("Link speed", if link == 0 { "-".into() } else { format_bits_per_sec(link as f64 / 8.0) }),
-                        ],
-                    )
-                }
-                Res::Gpu => {
-                    header(ui, "GPU", "");
-                    ui.label(RichText::new("Busiest engine over 60 seconds").small().weak());
-                    graph::area(ui, big, &h.gpu_pct, 100.0, GPU, true);
                     let mut items = vec![
-                        ("Utilization", s.gpu_pct.map_or("n/a".into(), |g| format!("{g:.0}%"))),
-                        ("Dedicated GPU memory", opt_bytes(s.gpu_dedicated_used)),
-                        ("Shared GPU memory", opt_bytes(s.gpu_shared_used)),
+                        ("Send", format_bits_per_sec(tx)),
+                        ("Receive", format_bits_per_sec(rx)),
+                        ("Link speed", if link == 0 { "-".into() } else { format_bits_per_sec(link as f64 / 8.0) }),
                     ];
+                    if let Some((n, _, info)) = &self.adapter
+                        && *n == alias
+                    {
+                        if let Some(ssid) = &info.ssid {
+                            items.push(("SSID", ssid.clone()));
+                        }
+                        if !info.dns_suffix.is_empty() {
+                            items.push(("DNS name", info.dns_suffix.clone()));
+                        }
+                        if !info.ipv4.is_empty() {
+                            items.push(("IPv4 address", info.ipv4.join(", ")));
+                        }
+                        if !info.ipv6.is_empty() {
+                            items.push(("IPv6 address", info.ipv6.join(", ")));
+                        }
+                    }
+                    stats(ui, &items)
+                }
+                Res::Gpu(i) => {
+                    let one = s.gpus.get(i);
+                    let ring = h.gpus.get(i).unwrap_or(&h.gpu_pct);
+                    let title = if one.is_some() { format!("GPU {i}") } else { "GPU".into() };
+                    header(ui, &title, one.map_or("", |g| g.name.as_str()));
+                    ui.label(RichText::new("Busiest engine over 60 seconds").small().weak());
+                    graph::area(ui, big, ring, 100.0, GPU, true);
+                    let of_total = |used: Option<u64>, total: u64| match (used, total) {
+                        (Some(u), t) if t > 0 => format!("{} / {}", format_bytes(u as f64), format_bytes(t as f64)),
+                        (u, _) => opt_bytes(u),
+                    };
+                    let (util, ded, shared, engines) = match one {
+                        Some(g) => (
+                            format!("{:.0}%", g.util),
+                            of_total(g.dedicated_used, g.dedicated_total),
+                            of_total(g.shared_used, g.shared_total),
+                            &g.engines,
+                        ),
+                        None => (
+                            s.gpu_pct.map_or("n/a".into(), |g| format!("{g:.0}%")),
+                            opt_bytes(s.gpu_dedicated_used),
+                            opt_bytes(s.gpu_shared_used),
+                            &s.gpu_engines,
+                        ),
+                    };
+                    let mut items =
+                        vec![("Utilization", util), ("Dedicated GPU memory", ded), ("Shared GPU memory", shared)];
                     let engines: Vec<(String, String)> =
-                        s.gpu_engines.iter().map(|(n, v)| (n.clone(), format!("{v:.0}%"))).collect();
+                        engines.iter().map(|(n, v)| (n.clone(), format!("{v:.0}%"))).collect();
                     items.extend(engines.iter().map(|(n, v)| (n.as_str(), v.clone())));
                     stats(ui, &items)
                 }
