@@ -97,12 +97,19 @@ pub fn adapter_info(name: &str) -> AdapterInfo {
                 break;
             }
         }
+        let debug = std::env::var_os("OXI_TASKMGR_TIMING").is_some();
         if r != 0 {
+            if debug {
+                eprintln!("GetAdaptersAddresses failed: {r}");
+            }
             return info;
         }
         let mut a = buf.as_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
         while !a.is_null() {
             let ad = &*a;
+            if debug {
+                eprintln!("  GAA adapter: {:?} / {:?}", pwstr(ad.FriendlyName), pwstr(ad.Description));
+            }
             if pwstr(ad.FriendlyName) == name {
                 info.dns_suffix = pwstr(ad.DnsSuffix);
                 let description = pwstr(ad.Description);

@@ -13,7 +13,6 @@ unsafe extern "system" {
 }
 
 const IID_IDXGI_FACTORY1: GUID = GUID::from_u128(0x770aae78_f26f_4dba_a829_253c83d1b387);
-const DXGI_ADAPTER_FLAG_SOFTWARE: u32 = 2;
 
 #[repr(C)]
 struct AdapterDesc1 {
@@ -63,7 +62,8 @@ pub fn gpu_adapters() -> Vec<GpuAdapter> {
             }
             let get_desc: GetDesc1 = slot(adapter, 10);
             let mut d: AdapterDesc1 = std::mem::zeroed();
-            if get_desc(adapter, &mut d) >= 0 && d.flags & DXGI_ADAPTER_FLAG_SOFTWARE == 0 {
+            // Software adapters stay in the list so a VM's "Basic Render Driver" still gets its name.
+            if get_desc(adapter, &mut d) >= 0 {
                 let n = d.description.iter().position(|c| *c == 0).unwrap_or(128);
                 out.push(GpuAdapter {
                     luid: format!("0x{:08X}_0x{:08X}", d.luid_high as u32, d.luid_low),

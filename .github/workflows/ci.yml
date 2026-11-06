@@ -25,6 +25,14 @@ jobs:
         env:
           OXI_TASKMGR_TIMING: "1"
         run: ./scripts/smoke-all.ps1 -OutDir smoke
+      # Temporary: idle CPU with per-process network (ETW) off, to measure its cost.
+      - name: Idle CPU without ETW
+        shell: pwsh
+        continue-on-error: true
+        env:
+          OXI_TASKMGR_TIMING: "1"
+          OXI_TASKMGR_NO_NET: "1"
+        run: ./scripts/smoke.ps1 -Exe target/release/oxi-taskmgr.exe -Name taskmgr-no-etw -OutDir smoke-diag
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -333,7 +333,8 @@ impl Collector {
             cores: NtBuffer::new(4096),
             pdh: Pdh::open(),
             base_mhz: hw::base_mhz(),
-            net: procinfo::is_elevated() && net::start(),
+            // OXI_TASKMGR_NO_NET=1 turns per-process network off (diagnostics).
+            net: std::env::var_os("OXI_TASKMGR_NO_NET").is_none() && procinfo::is_elevated() && net::start(),
             gpus: gpu::gpu_adapters(),
         })
     }
