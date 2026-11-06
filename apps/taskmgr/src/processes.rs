@@ -22,6 +22,8 @@ pub struct State {
     collapsed: [bool; 3],
     /// Apps whose child processes are shown.
     expanded: HashSet<u32>,
+    /// Memory, Disk and Network as a share of the machine instead of absolute values.
+    pub percent: bool,
     windir: String,
     status: Status,
 }
@@ -236,8 +238,9 @@ fn heat(ui: &Ui, fraction: f32) -> Color32 {
 }
 
 impl State {
-    pub fn new(status: Status, group: bool) -> Self {
+    pub fn new(status: Status, group: bool, percent: bool) -> Self {
         Self {
+            percent,
             filter: String::new(),
             sort: SortKey::default(),
             ascending: false,
@@ -314,6 +317,15 @@ impl State {
         };
         let mem_total = snap.system.mem_total.max(1) as f32;
         let net_on = snap.system.per_process_net;
+        let sys = &snap.system;
+        let disk_total = sys.disk_read_bps + sys.disk_write_bps;
+        // A process's share of disk activity, scaled to how busy the disks are (as Task Manager does).
+        let disk_pct = |bps: f64| {
+            if disk_total <= 0.0 { 0.0 } else { bps / disk_total * sys.disk_active_pct.unwrap_or(100.0) as f64 }
+        };
+        let link_bps: f64 = sys.adapters.iter().map(|a| a.link_bps as f64).sum();
+        let net_pct = |bps: f64| if link_bps <= 0.0 { 0.0 } else { bps * 8.0 * 100.0 / link_bps };
+        let percent = self.percent;
         let row_h = 22.0;
 
         let mut clicked_sort = None;
@@ -421,16 +433,28 @@ impl State {
                     });
                     row.col(|ui| {
                         ui.painter().rect_filled(ui.max_rect(), 0.0, heat(ui, p.memory as f32 / mem_total * 8.0));
-                        ui.label(format_bytes(p.memory as f64));
+                        ui.label(if percent {
+                            format!("{:.1}%", p.memory as f32 * 100.0 / mem_total)
+                        } else {
+                            format_bytes(p.memory as f64)
+                        });
                     });
                     row.col(|ui| {
                         ui.painter().rect_filled(ui.max_rect(), 0.0, heat(ui, (p.disk_bps / 10e6) as f32));
-                        ui.label(format!("{}/s", format_bytes(p.disk_bps)));
+                        ui.label(if percent {
+                            format!("{:.1}%", disk_pct(p.disk_bps))
+                        } else {
+                            format!("{}/s", format_bytes(p.disk_bps))
+                        });
                     });
                     row.col(|ui| {
                         if net_on {
                             ui.painter().rect_filled(ui.max_rect(), 0.0, heat(ui, (p.net_bps * 8.0 / 10e6) as f32));
-                            ui.label(format_bits_per_sec(p.net_bps));
+                            ui.label(if percent {
+                                format!("{:.1}%", net_pct(p.net_bps))
+                            } else {
+                                format_bits_per_sec(p.net_bps)
+                            });
                         } else {
                             ui.label(RichText::new("-").weak()).on_hover_text(NET_HINT);
                         }

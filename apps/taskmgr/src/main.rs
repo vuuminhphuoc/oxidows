@@ -284,7 +284,7 @@ impl App {
             error: None,
             tab,
             elevated: taskmgr_sys::is_elevated(),
-            processes: processes::State::new(status.clone(), settings.group_by_type),
+            processes: processes::State::new(status.clone(), settings.group_by_type, settings.values_pct),
             performance: performance::State::default(),
             history: history::State::new(cc.egui_ctx.clone()),
             details: details::State::new(status.clone(), details::parse_columns(&settings.details_columns)),
@@ -581,6 +581,7 @@ impl eframe::App for App {
                     }
                     INTERVAL_MS.store(s.interval_ms, Ordering::Relaxed);
                     self.processes.set_group(s.group_by_type);
+                    self.processes.percent = s.values_pct;
                     self.save_settings();
                 }
             }

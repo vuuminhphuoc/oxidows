@@ -27,6 +27,8 @@ pub struct Settings {
     pub minimize_on_use: bool,
     pub theme: Theme,
     pub group_by_type: bool,
+    /// Memory, Disk and Network on the Processes page as percentages.
+    pub values_pct: bool,
     /// Visible Details columns, as keys (see `details::Col::key`).
     pub details_columns: String,
 }
@@ -41,6 +43,7 @@ impl Default for Settings {
             minimize_on_use: false,
             theme: Theme::System,
             group_by_type: true,
+            values_pct: false,
             details_columns: crate::details::columns_text(&crate::details::Col::DEFAULT),
         }
     }
@@ -67,6 +70,7 @@ impl Settings {
                 "hide_when_minimized" => s.hide_when_minimized = v == "true",
                 "minimize_on_use" => s.minimize_on_use = v == "true",
                 "group_by_type" => s.group_by_type = v != "false",
+                "values_pct" => s.values_pct = v == "true",
                 "details_columns" => s.details_columns = v.to_string(),
                 "theme" => {
                     s.theme = match v {
@@ -88,13 +92,14 @@ impl Settings {
             Theme::Dark => "dark",
         };
         format!(
-            "default_tab={}\ninterval_ms={}\nalways_on_top={}\nhide_when_minimized={}\nminimize_on_use={}\ntheme={theme}\ngroup_by_type={}\ndetails_columns={}\n",
+            "default_tab={}\ninterval_ms={}\nalways_on_top={}\nhide_when_minimized={}\nminimize_on_use={}\ntheme={theme}\ngroup_by_type={}\nvalues_pct={}\ndetails_columns={}\n",
             self.default_tab,
             self.interval_ms,
             self.always_on_top,
             self.hide_when_minimized,
             self.minimize_on_use,
             self.group_by_type,
+            self.values_pct,
             self.details_columns
         )
     }
@@ -174,7 +179,11 @@ pub fn show(ui: &mut Ui, s: &mut Settings, tabs: &[&str], status: &Status, repla
         ui.end_row();
 
         ui.label("Processes page");
-        ui.checkbox(&mut s.group_by_type, "Group by type");
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut s.group_by_type, "Group by type");
+            ui.checkbox(&mut s.values_pct, "Resource values as percentages")
+                .on_hover_text("Memory, Disk and Network as a share of the machine's total");
+        });
         ui.end_row();
 
         ui.label("Ctrl+Shift+Esc");
@@ -223,6 +232,7 @@ mod tests {
             minimize_on_use: true,
             theme: Theme::Dark,
             group_by_type: false,
+            values_pct: true,
             details_columns: "name,pid,cmdline".into(),
         };
         assert_eq!(Settings::parse(&s.to_text()), s);
