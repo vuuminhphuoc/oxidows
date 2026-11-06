@@ -132,6 +132,10 @@ Stop-Process -Id $p.Id -Force
 if ($ScreenshotOnly) {
     if (-not $shot) { throw "${Name}: screenshot failed" }
     Write-Host "${Name}: screenshot saved"
+    # Lines other than the periodic timing ones (for example a view's own result or an error).
+    Get-Content $stderr -ErrorAction SilentlyContinue |
+        Where-Object { $_ -notmatch '^(sampler|ui|gpus|adapter|per-process|first process|renderer|  available)' } |
+        ForEach-Object { Write-Host "  $_" }
     return
 }
 

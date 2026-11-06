@@ -323,3 +323,9 @@ pub fn switch_to(_pid: u32) -> io::Result<()> {
 pub fn file_properties(_path: &str) -> io::Result<()> {
     unsupported()
 }
+pub fn disk_info(_number: u32) -> io::Result<taskmgr_core::DiskInfo> {
+    unsupported()
+}
+pub fn memory_info() -> taskmgr_core::MemoryInfo {
+    taskmgr_core::MemoryInfo::default()
+}

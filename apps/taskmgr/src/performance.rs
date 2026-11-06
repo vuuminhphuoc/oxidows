@@ -4,7 +4,9 @@
 use egui::{Color32, RichText, Ui, Vec2};
 use std::time::{Duration, Instant};
 
-use taskmgr_core::{AdapterInfo, CpuInfo, Ring, Snapshot, format_bits_per_sec, format_bytes, format_uptime};
+use taskmgr_core::{
+    AdapterInfo, CpuInfo, DiskInfo, MemoryInfo, Ring, Snapshot, format_bits_per_sec, format_bytes, format_uptime,
+};
 
 use crate::graph;
 
@@ -35,6 +37,10 @@ pub struct State {
     cpu: CpuInfo,
     /// Addresses of the shown adapter, re-read every few seconds.
     adapter: Option<(String, Instant, AdapterInfo)>,
+    /// Model, capacity and type per disk number, read once.
+    disk_info: std::collections::HashMap<u32, Option<DiskInfo>>,
+    /// Speed and slots from SMBIOS, read once.
+    memory: Option<MemoryInfo>,
 }
 
 impl Default for State {
@@ -49,7 +55,15 @@ impl Default for State {
             _ if v.starts_with("gpu") => Res::Gpu(n("gpu")),
             _ => Res::Cpu,
         };
-        Self { selected, per_core: false, kernel: false, cpu: taskmgr_sys::cpu_info(), adapter: None }
+        Self {
+            selected,
+            per_core: false,
+            kernel: false,
+            cpu: taskmgr_sys::cpu_info(),
+            adapter: None,
+            disk_info: Default::default(),
+            memory: None,
+        }
     }
 }
 
@@ -227,6 +241,7 @@ impl State {
             let summary = match self.selected {
                 Res::Cpu => self.cpu_view(ui, snap, w, big),
                 Res::Memory => {
+                    let m = self.memory.get_or_insert_with(taskmgr_sys::memory_info).clone();
                     header(ui, "Memory", &format_bytes(s.mem_total as f64));
                     ui.label(RichText::new("Memory usage over 60 seconds").small().weak());
                     graph::area(ui, big, &h.mem_pct, 100.0, MEM, true);
@@ -248,16 +263,40 @@ impl State {
                             ("Paged pool", opt_bytes(s.mem_paged_pool)),
                             ("Non-paged pool", opt_bytes(s.mem_nonpaged_pool)),
                             ("Hardware reserved", opt_bytes(s.mem_hw_reserved)),
+                            ("Speed", if m.speed_mts == 0 { "-".into() } else { format!("{} MT/s", m.speed_mts) }),
+                            (
+                                "Slots used",
+                                if m.slots_total == 0 {
+                                    "-".into()
+                                } else {
+                                    format!("{} of {}", m.slots_used, m.slots_total)
+                                },
+                            ),
+                            ("Form factor", if m.form_factor.is_empty() { "-".into() } else { m.form_factor }),
                         ],
                     )
                 }
                 Res::Disk(i) => match s.disks.get(i) {
                     Some(d) => {
-                        header(ui, &format!("Disk {}", d.name), "");
+                        // PDH names a disk "0 C: D:": the number, then its volumes.
+                        let mut parts = d.name.split_whitespace();
+                        let number = parts.next().and_then(|n| n.parse::<u32>().ok());
+                        let letters: Vec<String> = parts.map(|l| l.to_uppercase()).collect();
+                        let info = number
+                            .and_then(|n| {
+                                self.disk_info.entry(n).or_insert_with(|| taskmgr_sys::disk_info(n).ok()).clone()
+                            })
+                            .unwrap_or_default();
+                        header(ui, &format!("Disk {}", d.name), &info.model);
                         ui.label(RichText::new("Active time over 60 seconds").small().weak());
                         if let Some(ring) = h.disks.get(i) {
                             graph::area(ui, big, ring, 100.0, DISK, true);
                         }
+                        let sys = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into()).to_uppercase();
+                        let is_sys = letters.contains(&sys);
+                        let pagefile =
+                            letters.iter().any(|l| std::path::Path::new(&format!("{l}\\pagefile.sys")).exists());
+                        let yes_no = |b: bool| if b { "Yes" } else { "No" }.to_string();
                         stats(
                             ui,
                             &[
@@ -265,6 +304,21 @@ impl State {
                                 ("Average response time", format!("{:.1} ms", d.response_ms)),
                                 ("Read speed", format!("{}/s", format_bytes(d.read_bps))),
                                 ("Write speed", format!("{}/s", format_bytes(d.write_bps))),
+                                (
+                                    "Capacity",
+                                    if info.capacity == 0 { "-".into() } else { format_bytes(info.capacity as f64) },
+                                ),
+                                (
+                                    "Type",
+                                    match (info.kind.is_empty(), info.bus.is_empty()) {
+                                        (true, true) => "-".into(),
+                                        (false, true) => info.kind.clone(),
+                                        (true, false) => info.bus.clone(),
+                                        (false, false) => format!("{} ({})", info.kind, info.bus),
+                                    },
+                                ),
+                                ("System disk", yes_no(is_sys)),
+                                ("Page file", yes_no(pagefile)),
                             ],
                         )
                     }

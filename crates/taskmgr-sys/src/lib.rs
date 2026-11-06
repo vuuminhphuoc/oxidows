@@ -133,6 +133,16 @@ pub fn file_properties(path: &str) -> io::Result<()> {
     imp::file_properties(path)
 }
 
+/// Model, capacity, SSD / HDD and bus of physical disk `number`.
+pub fn disk_info(number: u32) -> io::Result<taskmgr_core::DiskInfo> {
+    imp::disk_info(number)
+}
+
+/// Memory speed, slots and form factor from the firmware tables.
+pub fn memory_info() -> taskmgr_core::MemoryInfo {
+    imp::memory_info()
+}
+
 /// Stops background work (the ETW network trace on Windows). Call on exit.
 pub fn shutdown() {
     imp::shutdown();

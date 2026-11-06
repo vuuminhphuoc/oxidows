@@ -188,6 +188,27 @@ pub struct AdapterRates {
     pub link_bps: u64,
 }
 
+/// Facts about one physical disk, read on demand.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DiskInfo {
+    pub model: String,
+    pub capacity: u64,
+    /// "SSD" or "HDD", empty when unknown.
+    pub kind: String,
+    /// "NVMe", "SATA", "USB"...
+    pub bus: String,
+}
+
+/// Memory modules from the firmware (SMBIOS).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MemoryInfo {
+    /// MT/s; 0 when unknown.
+    pub speed_mts: u32,
+    pub slots_used: u32,
+    pub slots_total: u32,
+    pub form_factor: String,
+}
+
 /// One app's totals in App history.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AppUsage {

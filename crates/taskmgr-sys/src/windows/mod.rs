@@ -13,7 +13,7 @@ mod startup;
 pub mod tray;
 
 pub use adapters::adapter_info;
-pub use hw::cpu_info;
+pub use hw::{cpu_info, disk_info, memory_info};
 
 pub fn app_history() -> io::Result<taskmgr_core::AppHistory> {
     srum::app_history(f64::from(hw::base_mhz()) * 1e6)
