@@ -9,8 +9,8 @@ mod startup;
 
 pub use hw::cpu_info;
 pub use procinfo::{
-    affinity, create_dump, efficiency_mode, is_elevated, open_url, restart_elevated, run_new_task, set_affinity,
-    set_efficiency_mode, set_priority, static_info,
+    affinity, create_dump, efficiency_mode, is_elevated, is_running, open_url, restart_elevated, run_new_task,
+    set_affinity, set_efficiency_mode, set_priority, static_info,
 };
 pub use services::{list_services, service_control};
 pub use sessions::{disconnect_session, list_sessions, logoff_session};

@@ -20,6 +20,12 @@ impl State {
         Self { filter: String::new(), selected: None, status, ctx }
     }
 
+    /// "Go to service(s)": show the services hosted by `pid`.
+    pub fn show_pid(&mut self, pid: u32) {
+        self.filter = pid.to_string();
+        self.selected = None;
+    }
+
     fn run(&self, name: String, action: ServiceAction) {
         let status = self.status.clone();
         let ctx = self.ctx.clone();
@@ -47,7 +53,9 @@ impl State {
         let sel = self.selected.as_ref().and_then(|n| services.iter().find(|s| &s.name == n));
         ui.horizontal(|ui| {
             ui.label("Search:");
-            ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("name or description").desired_width(240.0));
+            ui.add(
+                egui::TextEdit::singleline(&mut self.filter).hint_text("name, description or PID").desired_width(240.0),
+            );
             let stopped = sel.is_some_and(|s| s.state == ServiceState::Stopped);
             let running = sel.is_some_and(|s| s.state == ServiceState::Running);
             if ui.add_enabled(stopped, egui::Button::new("Start")).clicked()
@@ -78,7 +86,10 @@ impl State {
         let view: Vec<_> = services
             .iter()
             .filter(|s| {
-                f.is_empty() || s.name.to_lowercase().contains(&f) || s.display_name.to_lowercase().contains(&f)
+                f.is_empty()
+                    || s.name.to_lowercase().contains(&f)
+                    || s.display_name.to_lowercase().contains(&f)
+                    || s.pid.to_string() == f
             })
             .collect();
         let mut action = None;

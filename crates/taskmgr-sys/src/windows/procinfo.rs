@@ -379,3 +379,33 @@ pub fn version_strings(path: &str) -> (String, String) {
         (query("FileDescription"), query("CompanyName"))
     }
 }
+
+use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+};
+
+/// True if a process with this image name (case-insensitive) is running.
+pub fn is_running(name: &str) -> bool {
+    // SAFETY: snapshot handle closed below; entry sized as the API requires.
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snap == INVALID_HANDLE_VALUE {
+            return false;
+        }
+        let mut e: PROCESSENTRY32W = zeroed();
+        e.dwSize = size_of::<PROCESSENTRY32W>() as u32;
+        let mut found = false;
+        let mut ok = Process32FirstW(snap, &mut e) != 0;
+        while ok {
+            let n = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(e.szExeFile.len());
+            if String::from_utf16_lossy(&e.szExeFile[..n]).eq_ignore_ascii_case(name) {
+                found = true;
+                break;
+            }
+            ok = Process32NextW(snap, &mut e) != 0;
+        }
+        CloseHandle(snap);
+        found
+    }
+}
