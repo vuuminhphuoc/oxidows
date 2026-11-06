@@ -37,7 +37,7 @@ use windows_sys::Win32::UI::Shell::{
     FOF_WANTNUKEWARNING, FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Music,
     FOLDERID_Pictures, FOLDERID_Profile, FOLDERID_Videos, SEE_MASK_INVOKEIDLIST, SHELLEXECUTEINFOW, SHFILEINFOW, SHGFI_ICON, SHGFI_SMALLICON, SHGFI_USEFILEATTRIBUTES,
     SHGetFileInfoW,
-    SHFILEOPSTRUCTW, SHFileOperationW, SHGetKnownFolderPath, ShellExecuteExW, ShellExecuteW,
+    SHEmptyRecycleBinW, SHERB_NOCONFIRMATION, SHFILEOPSTRUCTW, SHFileOperationW, SHGetKnownFolderPath, ShellExecuteExW, ShellExecuteW,
 };
 use windows_sys::Win32::Graphics::Gdi::{
     BI_RGB, BITMAP, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, DeleteObject, GetDC, GetDIBits, GetObjectW, HBITMAP,
@@ -49,7 +49,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 use windows_sys::core::GUID;
 
-use crate::{BATCH, Drive, DriveKind, FileOp, IconImage, Share};
+use crate::{BATCH, BinItem, Drive, DriveKind, FileOp, IconImage, Share};
 
 const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
 const FILE_ATTRIBUTE_SYSTEM: u32 = 0x4;
@@ -140,6 +140,8 @@ pub fn list_dir(dir: &Path, cancel: &AtomicBool, sink: &mut dyn FnMut(Vec<Entry>
                 hidden: a & FILE_ATTRIBUTE_HIDDEN != 0,
                 system: a & FILE_ATTRIBUTE_SYSTEM != 0 && a & FILE_ATTRIBUTE_HIDDEN != 0,
                 link: a & FILE_ATTRIBUTE_REPARSE_POINT != 0,
+                label: None,
+                note: None,
             });
             if batch.len() >= BATCH {
                 sink(std::mem::replace(&mut batch, Vec::with_capacity(BATCH)));
@@ -667,4 +669,35 @@ pub fn free_drive_letters() -> Vec<char> {
     let used = unsafe { GetLogicalDrives() };
     // A and B are left out, as Explorer does.
     (2..26u32).filter(|i| used & (1 << i) == 0).map(|i| (b'A' + i as u8) as char).collect()
+}
+
+pub fn recycle_bin_items() -> Vec<BinItem> {
+    let mut out = Vec::new();
+    for d in drives().into_iter().filter(|d| d.kind == DriveKind::Fixed) {
+        let bin = d.root.join("$Recycle.Bin");
+        let Ok(users) = std::fs::read_dir(&bin) else { continue };
+        // Other users' folders are not readable; ours is (the SID folder of this account).
+        for user in users.flatten() {
+            let Ok(files) = std::fs::read_dir(user.path()) else { continue };
+            for f in files.flatten() {
+                let name = f.file_name().to_string_lossy().into_owned();
+                let Some(id) = name.strip_prefix("$I") else { continue };
+                let data = user.path().join(format!("$R{id}"));
+                let Ok(md) = std::fs::symlink_metadata(&data) else { continue };
+                let Some((size, deleted, original)) = std::fs::read(f.path()).ok().and_then(|b| crate::parse_bin_info(&b)) else {
+                    continue;
+                };
+                out.push(BinItem { original, deleted, size, is_dir: md.is_dir(), data, info: f.path() });
+            }
+        }
+    }
+    out.sort_by_key(|i| std::cmp::Reverse(i.deleted));
+    out
+}
+
+pub fn empty_recycle_bin(confirm: bool) -> io::Result<()> {
+    com_init();
+    let hr = unsafe { SHEmptyRecycleBinW(null_mut(), null(), if confirm { 0 } else { SHERB_NOCONFIRMATION }) };
+    // S_OK, or E_UNEXPECTED when it was already empty.
+    if hr >= 0 || hr == 0x8000_FFFF_u32 as i32 { Ok(()) } else { Err(io::Error::from_raw_os_error(hr)) }
 }

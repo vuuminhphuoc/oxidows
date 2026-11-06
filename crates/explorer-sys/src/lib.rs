@@ -244,3 +244,90 @@ pub fn shell_menu_verbs(dir: &Path, items: &[PathBuf]) -> io::Result<Vec<String>
         Err(io::Error::new(io::ErrorKind::Unsupported, "shell menu is Windows-only"))
     }
 }
+
+// ---- Recycle Bin ---------------------------------------------------------------------------
+
+/// One deleted item. Windows keeps `$R…` (the data) and `$I…` (where it came from, when) side
+/// by side in `X:\$Recycle.Bin\<user SID>\`; that is all a restore needs.
+#[derive(Clone, Debug)]
+pub struct BinItem {
+    /// Where it was deleted from, full path.
+    pub original: PathBuf,
+    /// Seconds since 1970 UTC.
+    pub deleted: i64,
+    pub size: u64,
+    pub is_dir: bool,
+    /// The `$R…` data file or folder.
+    pub data: PathBuf,
+    /// The `$I…` record.
+    pub info: PathBuf,
+}
+
+/// Everything in the current user's Recycle Bin on every fixed drive, newest first.
+pub fn recycle_bin_items() -> Vec<BinItem> {
+    imp::recycle_bin_items()
+}
+
+/// Puts an item back where it was deleted from (fails if something is there now).
+pub fn restore(item: &BinItem) -> io::Result<()> {
+    if item.original.exists() {
+        return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("{} already exists", item.original.display())));
+    }
+    if let Some(parent) = item.original.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::rename(&item.data, &item.original)?;
+    let _ = std::fs::remove_file(&item.info);
+    Ok(())
+}
+
+/// Deletes an item from the bin for good.
+pub fn purge(item: &BinItem) -> io::Result<()> {
+    if item.is_dir { std::fs::remove_dir_all(&item.data)? } else { std::fs::remove_file(&item.data)? }
+    let _ = std::fs::remove_file(&item.info);
+    Ok(())
+}
+
+/// Empties the bin on all drives; with `confirm`, Windows asks first.
+pub fn empty_recycle_bin(confirm: bool) -> io::Result<()> {
+    imp::empty_recycle_bin(confirm)
+}
+
+/// Parses a `$I` record: version 1 (Vista–8.1, fixed 260-char path) or 2 (Windows 10+).
+pub fn parse_bin_info(bytes: &[u8]) -> Option<(u64, i64, PathBuf)> {
+    let u64_at = |o: usize| bytes.get(o..o + 8).map(|b| u64::from_le_bytes(b.try_into().unwrap()));
+    let version = u64_at(0)?;
+    let size = u64_at(8)?;
+    let ft = u64_at(16)? as i64;
+    let deleted = if ft == 0 { 0 } else { (ft - 116_444_736_000_000_000) / 10_000_000 };
+    let wide: &[u8] = match version {
+        1 => bytes.get(24..24 + 520)?,
+        2 => {
+            let n = u32::from_le_bytes(bytes.get(24..28)?.try_into().ok()?) as usize;
+            bytes.get(28..28 + n * 2)?
+        }
+        _ => return None,
+    };
+    let units: Vec<u16> = wide.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).take_while(|&c| c != 0).collect();
+    Some((size, deleted, PathBuf::from(String::from_utf16_lossy(&units))))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn bin_info_v2() {
+        let path: Vec<u16> = "C:\\Users\\a\\x.txt".encode_utf16().chain(Some(0)).collect();
+        let mut b = Vec::new();
+        b.extend(2u64.to_le_bytes());
+        b.extend(1234u64.to_le_bytes());
+        b.extend((116_444_736_000_000_000u64 + 10_000_000 * 1_700_000_000).to_le_bytes());
+        b.extend((path.len() as u32).to_le_bytes());
+        for c in &path {
+            b.extend(c.to_le_bytes());
+        }
+        let (size, deleted, p) = super::parse_bin_info(&b).unwrap();
+        assert_eq!((size, deleted), (1234, 1_700_000_000));
+        assert_eq!(p.to_string_lossy(), "C:\\Users\\a\\x.txt");
+        assert!(super::parse_bin_info(&b[..10]).is_none());
+    }
+}

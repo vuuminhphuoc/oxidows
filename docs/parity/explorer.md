@@ -104,7 +104,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| Recycle Bin (browse, restore, empty) | ❌ | |
+| Recycle Bin (browse, restore, empty) | ✅ | reads `$Recycle.Bin` `$I` records; original location and date deleted columns |
 | Home / Recent files | ❌ | |
 | Libraries, Gallery | ❌ | |
 | OneDrive status | ❌ | |

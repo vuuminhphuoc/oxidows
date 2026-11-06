@@ -22,16 +22,26 @@ pub struct Entry {
     pub system: bool,
     /// Reparse point (symlink / junction / cloud placeholder).
     pub link: bool,
+    /// Shown instead of `name` when set (Recycle Bin items: the original name).
+    pub label: Option<String>,
+    /// Extra text for the third column where it isn't the type (Recycle Bin: original folder).
+    pub note: Option<String>,
 }
 
 impl Entry {
+    /// The name the user sees.
+    pub fn display(&self) -> &str {
+        self.label.as_deref().unwrap_or(&self.name)
+    }
+
     /// Lowercase extension without the dot, "" for folders and extension-less files.
     pub fn extension(&self) -> String {
         if self.is_dir {
             return String::new();
         }
-        match self.name.rfind('.') {
-            Some(i) if i > 0 && i + 1 < self.name.len() => self.name[i + 1..].to_ascii_lowercase(),
+        let name = self.display();
+        match name.rfind('.') {
+            Some(i) if i > 0 && i + 1 < name.len() => name[i + 1..].to_ascii_lowercase(),
             _ => String::new(),
         }
     }
@@ -160,7 +170,7 @@ pub fn sorted_view(entries: &[Entry], filter: &str, show_hidden: bool, key: Sort
         .iter()
         .enumerate()
         .filter(|(_, e)| show_hidden || !(e.hidden || e.system))
-        .filter(|(_, e)| needle.is_empty() || e.name.to_lowercase().contains(&needle))
+        .filter(|(_, e)| needle.is_empty() || e.display().to_lowercase().contains(&needle))
         .map(|(i, _)| i)
         .collect();
     // Type names are computed once per entry, not once per comparison.
@@ -174,7 +184,7 @@ pub fn sorted_view(entries: &[Entry], filter: &str, show_hidden: bool, key: Sort
             SortKey::Type => types[i].cmp(&types[j]),
             SortKey::Size => a.size.cmp(&b.size),
         }
-        .then_with(|| natural_cmp(&a.name, &b.name));
+        .then_with(|| natural_cmp(a.display(), b.display()));
         b.is_dir.cmp(&a.is_dir).then(if ascending { by_key } else { by_key.reverse() })
     });
     idx
@@ -326,11 +336,15 @@ pub fn breadcrumbs(path: &Path) -> Vec<(String, PathBuf)> {
 /// The virtual "Network" location (computers on the LAN). Not a real path.
 pub const NETWORK: &str = "::network";
 
+/// The virtual Recycle Bin location.
+pub const RECYCLE_BIN: &str = "::recycle-bin";
+
 /// What kind of location a path is, for the parts that are not plain folders.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Place {
     /// The list of computers.
     Network,
+    RecycleBin,
     /// `\\server`: the list of its shares.
     Server(String),
     /// `\\server\share\...`
@@ -343,6 +357,9 @@ pub fn classify(p: &Path) -> Place {
     let s = p.to_string_lossy();
     if s == NETWORK {
         return Place::Network;
+    }
+    if s == RECYCLE_BIN {
+        return Place::RecycleBin;
     }
     let Some(rest) = s.strip_prefix(r"\\") else { return Place::Local };
     if rest.starts_with(r"?\") || rest.starts_with(r".\") {
@@ -368,7 +385,7 @@ pub fn child_path(cur: &Path, name: &str) -> PathBuf {
 /// One level up: share root -> server -> Network; drive root -> none.
 pub fn parent_path(cur: &Path) -> Option<PathBuf> {
     match classify(cur) {
-        Place::Network => None,
+        Place::Network | Place::RecycleBin => None,
         Place::Server(_) => Some(PathBuf::from(NETWORK)),
         Place::Unc { server, share } => {
             let s = cur.to_string_lossy();
@@ -388,6 +405,7 @@ pub fn parent_path(cur: &Path) -> Option<PathBuf> {
 pub fn location_crumbs(cur: &Path) -> Vec<(String, PathBuf)> {
     match classify(cur) {
         Place::Network => vec![("Network".into(), PathBuf::from(NETWORK))],
+        Place::RecycleBin => vec![("Recycle Bin".into(), PathBuf::from(RECYCLE_BIN))],
         Place::Server(server) => vec![
             ("Network".into(), PathBuf::from(NETWORK)),
             (server.clone(), PathBuf::from(format!(r"\\{server}"))),

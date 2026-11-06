@@ -35,6 +35,16 @@ pub fn toolbar(app: &mut App, ui: &mut Ui) {
                     app.begin_new_folder();
                     ui.close();
                 }
+                if app.in_recycle_bin() {
+                    if ui.add_enabled(!app.selected.is_empty(), egui::Button::new("Restore selected items")).clicked() {
+                        app.restore_selection();
+                        ui.close();
+                    }
+                    if ui.button("Empty Recycle Bin").clicked() {
+                        app.empty_bin();
+                        ui.close();
+                    }
+                }
                 ui.separator();
                 if ui.button("Map network drive…").clicked() {
                     app.begin_map_drive();
@@ -241,6 +251,10 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
             if place(ui, "🖧", "Network", &network, &app.cur) {
                 go = Some(network);
             }
+            let bin = PathBuf::from(explorer_core::RECYCLE_BIN);
+            if place(ui, "🗑", "Recycle Bin", &bin, &app.cur) {
+                go = Some(bin);
+            }
             if let Some(l) = unmap {
                 app.unmap(l);
             }
@@ -303,6 +317,8 @@ enum Action {
     ContextSelect(usize),
     /// The shell's menu for the clicked row (selecting it first), or the folder background.
     ShellMenu(Option<usize>),
+    Restore,
+    EmptyBin,
     Copy(bool),
     Paste(PathBuf),
     CopyPath,
@@ -326,9 +342,23 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
     let cur = app.cur.clone();
     // On Windows the shell's own menus are used (all installed handlers); egui menus are the
     // fallback for the virtual Network page and for non-Windows builds.
-    let shell_menus = app.hwnd != 0 && !matches!(explorer_core::classify(&app.cur), explorer_core::Place::Network);
+    let shell_menus = app.hwnd != 0
+        && !matches!(explorer_core::classify(&app.cur), explorer_core::Place::Network | explorer_core::Place::RecycleBin);
+    let in_bin = app.in_recycle_bin();
     if shell_menus && bg.secondary_clicked() {
         action = Some(Action::ShellMenu(None));
+    }
+    if in_bin {
+        bg.context_menu(|ui| {
+            if ui.button("Empty Recycle Bin").clicked() {
+                action = Some(Action::EmptyBin);
+                ui.close();
+            }
+            if ui.button("Refresh    F5").clicked() {
+                action = Some(Action::Refresh);
+                ui.close();
+            }
+        });
     }
     let bg_menu = |ui: &mut Ui, action: &mut Option<Action>| {
         if ui.button("New folder    Ctrl+Shift+N").clicked() {
@@ -353,7 +383,7 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
             ui.close();
         }
     };
-    if !shell_menus {
+    if !shell_menus && !in_bin {
         bg.context_menu(|ui| bg_menu(ui, &mut action));
     }
 
@@ -402,8 +432,9 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
     table
         .header(row_h, |mut h| {
             header(&mut h, SortKey::Name, "Name", app, &mut sort_click);
-            header(&mut h, SortKey::Modified, "Date modified", app, &mut sort_click);
-            header(&mut h, SortKey::Type, "Type", app, &mut sort_click);
+            let bin = app.in_recycle_bin();
+            header(&mut h, SortKey::Modified, if bin { "Date deleted" } else { "Date modified" }, app, &mut sort_click);
+            header(&mut h, SortKey::Type, if bin { "Original location" } else { "Type" }, app, &mut sort_click);
             header(&mut h, SortKey::Size, "Size", app, &mut sort_click);
         })
         .body(|body| {
@@ -412,7 +443,7 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                 let e = &app.entries[app.view[pos]];
                 row.set_selected(app.selected.contains(&e.name));
                 let dim = e.hidden || e.system;
-                let name_text = if dim { RichText::new(&e.name).color(weak) } else { RichText::new(&e.name) };
+                let name_text = if dim { RichText::new(e.display()).color(weak) } else { RichText::new(e.display()) };
                 row.col(|ui| {
                     let key = IconKey::for_entry(e, &app.cur);
                     match app.icons.get(&key) {
@@ -437,7 +468,11 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                     ui.add(egui::Label::new(RichText::new(format_time(e.modified, app.utc_offset)).color(weak)).selectable(false));
                 });
                 row.col(|ui| {
-                    ui.add(egui::Label::new(RichText::new(e.type_name()).color(weak)).selectable(false));
+                    let third = match &e.note {
+                        Some(n) => n.clone(),
+                        None => e.type_name(),
+                    };
+                    ui.add(egui::Label::new(RichText::new(third).color(weak)).selectable(false));
                 });
                 row.col(|ui| {
                     if !e.is_dir {
@@ -457,6 +492,19 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                 let target = app.child(&e.name);
                 let is_dir = e.is_dir;
                 if shell_menus {
+                    return;
+                }
+                if in_bin {
+                    resp.context_menu(|ui| {
+                        if ui.button(RichText::new("Restore").strong()).clicked() {
+                            action = Some(Action::Restore);
+                            ui.close();
+                        }
+                        if ui.button("Delete permanently    Del").clicked() {
+                            action = Some(Action::Delete(true));
+                            ui.close();
+                        }
+                    });
                     return;
                 }
                 resp.context_menu(|ui| {
@@ -550,6 +598,8 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
             ui.ctx().copy_text(text);
         }
         Some(Action::Rename) => app.begin_rename(),
+        Some(Action::Restore) => app.restore_selection(),
+        Some(Action::EmptyBin) => app.empty_bin(),
         Some(Action::Delete(permanent)) => app.delete_selection(permanent),
         Some(Action::Properties(p)) => app.show_properties(&p),
         Some(Action::NewFolder) => app.begin_new_folder(),
@@ -617,6 +667,30 @@ pub fn dialog(app: &mut App, ui: &mut Ui) {
             let Dialog::MapDrive(m) = d else { unreachable!() };
             return map_drive_dialog(app, ui, m);
         }
+        Dialog::ConfirmPurge(items) => {
+            let (mut yes, mut no) = (false, false);
+            let modal = egui::Modal::new(egui::Id::new("purge")).show(ui.ctx(), |ui| {
+                ui.set_width(380.0);
+                ui.heading("Delete permanently");
+                ui.add_space(6.0);
+                ui.label(match items.as_slice() {
+                    [one] => format!("Are you sure you want to permanently delete \"{}\"?", one.display()),
+                    many => format!("Are you sure you want to permanently delete these {} items?", many.len()),
+                });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    yes = ui.button("Yes").clicked();
+                    no = ui.button("No").clicked();
+                });
+            });
+            if yes {
+                let items = std::mem::take(items);
+                app.purge_items(&items);
+            } else if !no && !modal.should_close() {
+                app.dialog = Some(d);
+            }
+            return;
+        }
     };
     let mut submit = false;
     let mut cancel = false;
@@ -663,7 +737,7 @@ pub fn dialog(app: &mut App, ui: &mut Ui) {
             None => return,
             Some(e) => match &mut d {
                 Dialog::Rename { error, .. } | Dialog::NewFolder { error, .. } => *error = Some(e),
-                Dialog::MapDrive(_) => {}
+                Dialog::MapDrive(_) | Dialog::ConfirmPurge(_) => {}
             },
         }
     }

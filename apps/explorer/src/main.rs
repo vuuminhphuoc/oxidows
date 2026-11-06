@@ -64,6 +64,7 @@ enum Dialog {
     Rename { original: String, text: String, error: Option<&'static str>, opened: bool },
     NewFolder { text: String, error: Option<&'static str>, opened: bool },
     MapDrive(MapDrive),
+    ConfirmPurge(Vec<Entry>),
 }
 
 pub struct MapDrive {
@@ -299,6 +300,23 @@ impl App {
                         let _ = tx.send(Msg::Batch(generation, batch));
                         Ok(())
                     }
+                    // Name = the `$R` data path (unique), label = original name, note = its folder.
+                    Place::RecycleBin => {
+                        let batch = explorer_sys::recycle_bin_items()
+                            .into_iter()
+                            .map(|it| Entry {
+                                name: it.data.to_string_lossy().into_owned(),
+                                label: it.original.file_name().map(|n| n.to_string_lossy().into_owned()),
+                                note: it.original.parent().map(|p| p.to_string_lossy().into_owned()),
+                                is_dir: it.is_dir,
+                                size: it.size,
+                                modified: it.deleted,
+                                ..Default::default()
+                            })
+                            .collect();
+                        let _ = tx.send(Msg::Batch(generation, batch));
+                        Ok(())
+                    }
                     Place::Server(server) => explorer_sys::list_shares(&server).map(|shares| {
                         let batch = shares.into_iter().map(|s| Entry { name: s.name, is_dir: true, ..Default::default() }).collect();
                         let _ = tx.send(Msg::Batch(generation, batch));
@@ -319,7 +337,7 @@ impl App {
     fn start_watch(&mut self) {
         self.watch_cancel.store(true, Ordering::Relaxed);
         self.watch_cancel = Arc::new(AtomicBool::new(false));
-        if matches!(classify(&self.cur), Place::Network | Place::Server(_)) {
+        if matches!(classify(&self.cur), Place::Network | Place::Server(_) | Place::RecycleBin) {
             return;
         }
         let (dir, cancel, tx, ctx) = (self.cur.clone(), self.watch_cancel.clone(), self.tx.clone(), self.ctx.clone());
@@ -569,7 +587,74 @@ impl App {
         }
     }
 
+    pub fn in_recycle_bin(&self) -> bool {
+        classify(&self.cur) == Place::RecycleBin
+    }
+
+    fn bin_item(e: &Entry) -> explorer_sys::BinItem {
+        let data = PathBuf::from(&e.name);
+        let id = data.file_name().map(|n| n.to_string_lossy().replacen("$R", "$I", 1)).unwrap_or_default();
+        explorer_sys::BinItem {
+            original: Path::new(e.note.as_deref().unwrap_or("")).join(e.display()),
+            deleted: e.modified,
+            size: e.size,
+            is_dir: e.is_dir,
+            info: data.with_file_name(id),
+            data,
+        }
+    }
+
+    /// Restores the selected Recycle Bin items to where they were deleted from.
+    pub fn restore_selection(&mut self) {
+        let sel = self.selected_entries();
+        let mut done = 0;
+        for e in &sel {
+            match explorer_sys::restore(&Self::bin_item(e)) {
+                Ok(()) => done += 1,
+                Err(err) => self.status = Some(format!("Could not restore {}: {err}", e.display())),
+            }
+        }
+        if done > 0 {
+            self.status = Some(format!("Restored {done} item(s)"));
+        }
+        self.refresh();
+    }
+
+    pub fn purge_selection(&mut self) {
+        let sel = self.selected_entries();
+        if sel.is_empty() {
+            return;
+        }
+        self.dialog = Some(Dialog::ConfirmPurge(sel));
+    }
+
+    pub fn purge_items(&mut self, items: &[Entry]) {
+        let mut done = 0;
+        for e in items {
+            match explorer_sys::purge(&Self::bin_item(e)) {
+                Ok(()) => done += 1,
+                Err(err) => self.status = Some(format!("Could not delete {}: {err}", e.display())),
+            }
+        }
+        if done > 0 {
+            self.status = Some(format!("Permanently deleted {done} item(s)"));
+        }
+        self.refresh();
+    }
+
+    pub fn empty_bin(&mut self) {
+        if let Err(e) = explorer_sys::empty_recycle_bin(true) {
+            self.status = Some(format!("Could not empty the Recycle Bin: {e}"));
+        }
+        if self.in_recycle_bin() {
+            self.refresh();
+        }
+    }
+
     fn open_entry(&mut self, e: &Entry) {
+        if self.in_recycle_bin() {
+            return; // as in Explorer, items in the bin must be restored first
+        }
         let path = self.child(&e.name);
         if e.is_dir {
             self.navigate(path);
@@ -676,6 +761,9 @@ impl App {
     // ---- commands ------------------------------------------------------------------------
 
     fn copy_selection(&mut self, cut: bool) {
+        if self.in_recycle_bin() {
+            return;
+        }
         let paths = self.selected_paths();
         if paths.is_empty() {
             return;
@@ -702,11 +790,17 @@ impl App {
     }
 
     fn delete_selection(&mut self, permanently: bool) {
+        if self.in_recycle_bin() {
+            return self.purge_selection();
+        }
         let paths = self.selected_paths();
         self.run_op(if permanently { FileOp::Delete } else { FileOp::Recycle }, paths, None);
     }
 
-    fn begin_rename(&mut self) {
+    pub fn begin_rename(&mut self) {
+        if self.in_recycle_bin() {
+            return;
+        }
         let sel = self.selected_entries();
         if let [e] = sel.as_slice() {
             // In search results `name` is a relative path; only its last part is edited.
@@ -805,7 +899,7 @@ impl App {
                 }
                 None
             }
-            Dialog::MapDrive(_) => None,
+            Dialog::MapDrive(_) | Dialog::ConfirmPurge(_) => None,
             Dialog::NewFolder { text, .. } => {
                 let name = text.trim_end();
                 if let Err(e) = validate_name(name) {
@@ -995,7 +1089,7 @@ impl App {
                     let start = self.cursor.map_or(0, |c| if prefix.chars().count() == 1 { c + 1 } else { c });
                     let hit = (0..n)
                         .map(|k| (start + k) % n.max(1))
-                        .find(|&p| self.entry_at(p).is_some_and(|e| e.name.to_lowercase().starts_with(&prefix)));
+                        .find(|&p| self.entry_at(p).is_some_and(|e| e.display().to_lowercase().starts_with(&prefix)));
                     if let Some(p) = hit {
                         self.select_only(p);
                         self.scroll_to = Some(p);

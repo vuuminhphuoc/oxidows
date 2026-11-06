@@ -9,7 +9,7 @@ use std::time::UNIX_EPOCH;
 
 use explorer_core::Entry;
 
-use crate::{BATCH, Drive, DriveKind, FileOp, IconImage, Share};
+use crate::{BATCH, BinItem, Drive, DriveKind, FileOp, IconImage, Share};
 
 static CLIPBOARD: Mutex<Option<(Vec<PathBuf>, bool)>> = Mutex::new(None);
 
@@ -31,7 +31,7 @@ pub fn list_dir(dir: &Path, cancel: &AtomicBool, sink: &mut dyn FnMut(Vec<Entry>
             ),
             Err(_) => (false, 0, 0),
         };
-        batch.push(Entry { hidden: name.starts_with('.'), name, is_dir, size, modified, system: false, link });
+        batch.push(Entry { hidden: name.starts_with('.'), name, is_dir, size, modified, system: false, link, label: None, note: None });
         if batch.len() >= BATCH {
             sink(std::mem::replace(&mut batch, Vec::with_capacity(BATCH)));
         }
@@ -165,4 +165,11 @@ pub fn network_computers() -> Vec<String> {
 }
 pub fn free_drive_letters() -> Vec<char> {
     Vec::new()
+}
+
+pub fn recycle_bin_items() -> Vec<BinItem> {
+    Vec::new()
+}
+pub fn empty_recycle_bin(_confirm: bool) -> io::Result<()> {
+    Err(no_smb())
 }

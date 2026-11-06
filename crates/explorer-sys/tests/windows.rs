@@ -237,3 +237,27 @@ fn shell_context_menu_has_standard_verbs() {
     assert!(bg.iter().any(|x| x == "properties"), "{bg:?}");
     fs::remove_dir_all(&d).unwrap();
 }
+
+#[test]
+fn recycle_bin_list_and_restore() {
+    let d = scratch("bin");
+    let f = d.join(format!("binned-{}.txt", std::process::id()));
+    fs::write(&f, b"come back").unwrap();
+    assert!(file_op_silent(FileOp::Recycle, std::slice::from_ref(&f), None).unwrap());
+    assert!(!f.exists());
+    let items = explorer_sys::recycle_bin_items();
+    let it = items.iter().find(|i| i.original == f).unwrap_or_else(|| panic!("{f:?} not in bin: {items:?}"));
+    assert_eq!(it.size, 9);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    assert!((it.deleted - now).abs() < 600);
+    explorer_sys::restore(it).unwrap();
+    assert_eq!(fs::read(&f).unwrap(), b"come back");
+
+    // Recycle again and purge it for good.
+    assert!(file_op_silent(FileOp::Recycle, std::slice::from_ref(&f), None).unwrap());
+    let items = explorer_sys::recycle_bin_items();
+    let it = items.iter().find(|i| i.original == f).unwrap();
+    explorer_sys::purge(it).unwrap();
+    assert!(!explorer_sys::recycle_bin_items().iter().any(|i| i.original == f));
+    fs::remove_dir_all(&d).unwrap();
+}
