@@ -158,11 +158,12 @@ pub fn toolbar(app: &mut App, ui: &mut Ui) {
                     ui.close();
                 }
                 ui.separator();
-                ui.horizontal(|ui| {
-                    ui.label("View:");
-                    ui.selectable_value(&mut app.view_mode, ViewMode::Details, "Details");
-                    ui.selectable_value(&mut app.view_mode, ViewMode::Icons, "Large icons");
-                });
+                ui.label("View:");
+                for (m, label, keys) in ViewMode::ALL {
+                    if ui.selectable_label(app.view_mode == m, label).on_hover_text(keys).clicked() {
+                        app.view_mode = m;
+                    }
+                }
                 ui.horizontal(|ui| {
                     ui.label("Pane:");
                     for (p, label) in [(crate::pane::Pane::Preview, "Preview"), (crate::pane::Pane::Details, "Details")]
@@ -287,7 +288,7 @@ struct TreeOut {
 }
 
 /// Marks `resp` as the drop target when a drag is over it.
-fn drop_hover(resp: &egui::Response, dragging: bool, path: &Path, out: &mut Option<PathBuf>) {
+pub fn drop_hover(resp: &egui::Response, dragging: bool, path: &Path, out: &mut Option<PathBuf>) {
     if dragging && resp.contains_pointer() {
         *out = Some(path.to_path_buf());
         let stroke = egui::Stroke::new(1.5, resp.ctx.global_style().visuals.selection.stroke.color);
@@ -508,7 +509,7 @@ pub fn status_bar(app: &mut App, ui: &mut Ui) {
 }
 
 /// What a row click or menu asked for; applied after the table so `app` is not borrowed twice.
-enum Action {
+pub enum Action {
     Click(usize, egui::Modifiers),
     Open(usize),
     ContextSelect(usize),
@@ -642,8 +643,8 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
     let dragging = app.drag.is_some();
     let mut drag_start: Option<String> = None;
     let mut hover_target: Option<PathBuf> = None;
-    if app.view_mode == ViewMode::Icons {
-        icon_grid(app, ui, &mut action, &mut wanted_icons, shell_menus, in_bin);
+    if app.view_mode != ViewMode::Details {
+        crate::grid::show(app, ui, &mut action, &mut wanted_icons, shell_menus, in_bin);
     } else {
         let mut table = TableBuilder::new(ui)
             .striped(true)
@@ -1051,138 +1052,5 @@ pub fn dialog(app: &mut App, ui: &mut Ui) {
     }
     if !cancel {
         app.dialog = Some(d);
-    }
-}
-
-/// Large icons view: a virtualised grid of tiles with shell thumbnails.
-fn icon_grid(
-    app: &mut App,
-    ui: &mut Ui,
-    action: &mut Option<Action>,
-    wanted_icons: &mut Vec<IconKey>,
-    shell_menus: bool,
-    in_bin: bool,
-) {
-    let (tile_w, tile_h, img) = (112.0_f32, 124.0_f32, 96.0_f32);
-    let dragging = app.drag.is_some();
-    let mut drag_start: Option<String> = None;
-    let mut hover_target: Option<PathBuf> = None;
-    let n = app.view.len();
-    let cols = ((ui.available_width() / tile_w).floor() as usize).max(1);
-    let rows = n.div_ceil(cols);
-    let mut scroll = egui::ScrollArea::vertical().auto_shrink([false, false]);
-    if let Some(pos) = app.scroll_to.take().filter(|&p| p < n) {
-        scroll = scroll.vertical_scroll_offset((pos / cols) as f32 * tile_h);
-    }
-    let weak = ui.visuals().weak_text_color();
-    let sel_fill = ui.visuals().selection.bg_fill.gamma_multiply(0.6);
-    let hover_fill = ui.visuals().widgets.hovered.weak_bg_fill;
-    scroll.show_rows(ui, tile_h, rows, |ui, range| {
-        for r in range {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                for c in 0..cols {
-                    let pos = r * cols + c;
-                    if pos >= n {
-                        break;
-                    }
-                    let e = &app.entries[app.view[pos]];
-                    let (rect, resp) = ui.allocate_exact_size(egui::vec2(tile_w, tile_h), Sense::click_and_drag());
-                    if resp.drag_started() && !in_bin {
-                        drag_start = Some(e.name.clone());
-                    }
-                    let selected = app.selected.contains(&e.name);
-                    if selected {
-                        ui.painter().rect_filled(rect.shrink(2.0), 4.0, sel_fill);
-                    } else if resp.hovered() {
-                        ui.painter().rect_filled(rect.shrink(2.0), 4.0, hover_fill);
-                    }
-                    let img_rect = egui::Rect::from_center_size(
-                        egui::pos2(rect.center().x, rect.top() + 6.0 + img / 2.0),
-                        egui::vec2(img, img),
-                    );
-                    let path = app.child(&e.name);
-                    if e.is_dir && !app.is_dragged(&e.name) {
-                        drop_hover(&resp, dragging, &path, &mut hover_target);
-                    }
-                    let thumb = if e.is_dir || in_bin { None } else { app.thumbs.get(&path) };
-                    match thumb {
-                        Some(IconState::Ready(tex)) => {
-                            let s = tex.size_vec2();
-                            let k = (img / s.x.max(s.y)).min(1.0);
-                            let r = egui::Rect::from_center_size(img_rect.center(), s * k);
-                            ui.painter().image(
-                                tex.id(),
-                                r,
-                                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                                egui::Color32::WHITE,
-                            );
-                        }
-                        other => {
-                            if other.is_none() && !e.is_dir && !in_bin {
-                                app.thumb_wanted.push(path.clone());
-                            }
-                            let key = IconKey::for_entry(e, &app.cur);
-                            match app.icons.get(&key) {
-                                Some(IconState::Ready(tex)) => {
-                                    let r = egui::Rect::from_center_size(img_rect.center(), egui::vec2(48.0, 48.0));
-                                    ui.painter().image(
-                                        tex.id(),
-                                        r,
-                                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                                        egui::Color32::WHITE,
-                                    );
-                                }
-                                state => {
-                                    if state.is_none() {
-                                        wanted_icons.push(key);
-                                    }
-                                    let color = if e.is_dir {
-                                        egui::Color32::from_rgb(230, 180, 60)
-                                    } else {
-                                        ui.visuals().text_color()
-                                    };
-                                    ui.painter().text(
-                                        img_rect.center(),
-                                        egui::Align2::CENTER_CENTER,
-                                        icon_for(e),
-                                        egui::FontId::proportional(44.0),
-                                        color,
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    let mut job = egui::text::LayoutJob::simple(
-                        e.display().to_string(),
-                        egui::FontId::proportional(12.5),
-                        if e.hidden || e.system { weak } else { ui.visuals().text_color() },
-                        tile_w - 8.0,
-                    );
-                    job.wrap.max_rows = 2;
-                    job.halign = Align::Center;
-                    let galley = ui.fonts_mut(|f| f.layout_job(job));
-                    let text_pos = egui::pos2(rect.center().x, img_rect.bottom() + 4.0);
-                    ui.painter().galley(text_pos, galley, ui.visuals().text_color());
-
-                    if resp.middle_clicked() && e.is_dir {
-                        *action = Some(Action::OpenInNewTab(pos));
-                    } else if resp.double_clicked() {
-                        *action = Some(Action::Open(pos));
-                    } else if resp.clicked() {
-                        *action = Some(Action::Click(pos, resp.ctx.input(|i| i.modifiers)));
-                    } else if resp.secondary_clicked() {
-                        *action =
-                            Some(if shell_menus { Action::ShellMenu(Some(pos)) } else { Action::ContextSelect(pos) });
-                    }
-                }
-            });
-        }
-    });
-    if let Some(n) = drag_start {
-        app.drag_source(&n);
-    }
-    if let Some(t) = hover_target {
-        app.drop_target = Some(t);
     }
 }

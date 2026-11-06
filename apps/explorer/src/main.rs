@@ -3,6 +3,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod dnd;
+mod grid;
 mod pane;
 mod settings;
 mod undo;
@@ -65,8 +66,42 @@ impl IconKey {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ViewMode {
+    ExtraLarge,
+    Large,
+    Medium,
+    Small,
+    List,
     Details,
-    Icons,
+    Tiles,
+}
+
+impl ViewMode {
+    /// In Explorer's order, with their Ctrl+Shift+number shortcuts.
+    pub const ALL: [(ViewMode, &'static str, &'static str); 7] = [
+        (ViewMode::ExtraLarge, "Extra large icons", "Ctrl+Shift+1"),
+        (ViewMode::Large, "Large icons", "Ctrl+Shift+2"),
+        (ViewMode::Medium, "Medium icons", "Ctrl+Shift+3"),
+        (ViewMode::Small, "Small icons", "Ctrl+Shift+4"),
+        (ViewMode::List, "List", "Ctrl+Shift+5"),
+        (ViewMode::Details, "Details", "Ctrl+Shift+6"),
+        (ViewMode::Tiles, "Tiles", "Ctrl+Shift+7"),
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            ViewMode::ExtraLarge => "extralarge",
+            ViewMode::Large => "icons",
+            ViewMode::Medium => "medium",
+            ViewMode::Small => "small",
+            ViewMode::List => "list",
+            ViewMode::Details => "details",
+            ViewMode::Tiles => "tiles",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.iter().map(|a| a.0).find(|m| m.name() == s)
+    }
 }
 
 pub enum IconState {
@@ -178,7 +213,9 @@ struct App {
     /// Thumbnails for the Icons view, per file; cleared when leaving a folder.
     pub thumbs: HashMap<PathBuf, IconState>,
     pub thumb_wanted: Vec<PathBuf>,
-    thumb_tx: Option<Sender<PathBuf>>,
+    thumb_tx: Option<Sender<(PathBuf, u32)>>,
+    /// Size the cached thumbnails were made at.
+    thumb_px: u32,
     icon_tx: Option<Sender<IconKey>>,
     drives: Vec<Drive>,
     places: Vec<(&'static str, PathBuf)>,
@@ -255,6 +292,7 @@ impl App {
             thumbs: HashMap::new(),
             thumb_wanted: Vec::new(),
             thumb_tx: None,
+            thumb_px: 96,
             icon_tx: None,
             drives: Vec::new(),
             places: explorer_sys::known_folders(),
@@ -461,13 +499,13 @@ impl App {
             .expect("spawn icon thread");
         self.icon_tx = Some(req_tx);
 
-        let (thumb_tx, thumb_rx) = channel::<PathBuf>();
+        let (thumb_tx, thumb_rx) = channel::<(PathBuf, u32)>();
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         thread::Builder::new()
             .name("thumbs".into())
             .spawn(move || {
-                while let Ok(p) = thumb_rx.recv() {
-                    let img = explorer_sys::thumbnail(&p, 96);
+                while let Ok((p, px)) = thumb_rx.recv() {
+                    let img = explorer_sys::thumbnail(&p, px);
                     if tx.send(Msg::Thumb(p, img)).is_err() {
                         return;
                     }
@@ -479,11 +517,16 @@ impl App {
     }
 
     pub fn request_thumbs(&mut self) {
+        let px = grid::thumb_px(self.view_mode);
+        if px != self.thumb_px {
+            self.thumbs.clear();
+            self.thumb_px = px;
+        }
         let wanted = std::mem::take(&mut self.thumb_wanted);
         let Some(tx) = &self.thumb_tx else { return };
         for p in wanted {
             if let std::collections::hash_map::Entry::Vacant(slot) = self.thumbs.entry(p) {
-                let _ = tx.send(slot.key().clone());
+                let _ = tx.send((slot.key().clone(), px));
                 slot.insert(IconState::Pending);
             }
         }
@@ -1228,14 +1271,9 @@ impl App {
         let ctrl = Modifiers::COMMAND;
 
         // These work everywhere, even while typing in the search box.
-        let (icons_view, details_view) = ui.input_mut(|i| {
-            (i.consume_key(ctrl | Modifiers::SHIFT, Key::Num2), i.consume_key(ctrl | Modifiers::SHIFT, Key::Num6))
-        });
-        if icons_view {
-            self.view_mode = ViewMode::Icons;
-        }
-        if details_view {
-            self.view_mode = ViewMode::Details;
+        let keys = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7];
+        if let Some(k) = ui.input_mut(|i| keys.iter().position(|&k| i.consume_key(ctrl | Modifiers::SHIFT, k))) {
+            self.view_mode = ViewMode::ALL[k].0;
         }
         // Shift first: egui matches Alt+P "logically", so it would also eat Alt+Shift+P.
         let (details_pane, preview_pane) =

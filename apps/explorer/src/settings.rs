@@ -88,17 +88,13 @@ fn parse_sort(s: &str) -> Option<SortKey> {
 impl FolderView {
     /// "icons,size,desc"
     fn to_text(self) -> String {
-        let view = if self.view == ViewMode::Icons { "icons" } else { "details" };
+        let view = self.view.name();
         format!("{view},{},{}", sort_name(self.sort), if self.ascending { "asc" } else { "desc" })
     }
 
     fn parse(s: &str) -> Option<Self> {
         let mut it = s.split(',');
-        let view = match it.next()? {
-            "icons" => ViewMode::Icons,
-            "details" => ViewMode::Details,
-            _ => return None,
-        };
+        let view = ViewMode::parse(it.next()?)?;
         let sort = parse_sort(it.next()?)?;
         let ascending = it.next()? != "desc";
         Some(Self { view, sort, ascending })
@@ -328,7 +324,7 @@ mod tests {
         let mut s = Settings {
             size: [1200.0, 700.0],
             maximized: true,
-            folder: FolderView { view: ViewMode::Icons, sort: SortKey::Size, ascending: false },
+            folder: FolderView { view: ViewMode::Large, sort: SortKey::Size, ascending: false },
             show_hidden: true,
             show_extensions: false,
             col_created: true,
@@ -339,7 +335,7 @@ mod tests {
         };
         s.remember_folder(
             r"c:\users\a\pictures".into(),
-            FolderView { view: ViewMode::Icons, sort: SortKey::Modified, ascending: false },
+            FolderView { view: ViewMode::Large, sort: SortKey::Modified, ascending: false },
         );
         assert_eq!(Settings::parse(&s.to_text()), s);
         assert_eq!(Settings::parse("garbage\nwidth=abc\nview=nope"), Settings::default());
