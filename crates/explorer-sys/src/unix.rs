@@ -195,3 +195,15 @@ pub fn recycle_bin_items() -> Vec<BinItem> {
 pub fn empty_recycle_bin(_confirm: bool) -> io::Result<()> {
     Err(no_smb())
 }
+
+/// One file or folder's entry. Development stand-in: lists the parent.
+pub fn stat(path: &Path) -> Option<Entry> {
+    let (parent, name) = (path.parent()?, path.file_name()?.to_string_lossy().into_owned());
+    let mut out = None;
+    let _ = list_dir(parent, &AtomicBool::new(false), &mut |batch| {
+        if out.is_none() {
+            out = batch.into_iter().find(|e| e.name == name);
+        }
+    });
+    out
+}

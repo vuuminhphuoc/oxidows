@@ -23,6 +23,8 @@ use windows as imp;
 #[cfg(windows)]
 mod preview;
 #[cfg(windows)]
+mod search;
+#[cfg(windows)]
 mod shell_menu;
 #[cfg(windows)]
 mod thumbs;
@@ -59,6 +61,24 @@ use unix as imp;
 
 /// Entries are handed over in batches of this many so a huge folder shows up progressively.
 pub const BATCH: usize = 2048;
+
+/// One file or folder's entry; its `name` is the last path component.
+pub fn stat(path: &Path) -> Option<Entry> {
+    imp::stat(path)
+}
+
+/// Searches `root` (and below) through the Windows shell: the Windows Search index where the
+/// location is indexed (file contents and every property included), a crawl otherwise. Calls
+/// `found` with each result's path. Elsewhere: `Unsupported`, and the app's own search runs.
+pub fn shell_search(root: &Path, query: &str, cancel: &AtomicBool, found: &mut dyn FnMut(PathBuf)) -> io::Result<()> {
+    #[cfg(windows)]
+    return search::shell_search(root, query, cancel, found);
+    #[cfg(not(windows))]
+    {
+        let _ = (root, query, cancel, found);
+        Err(io::Error::new(io::ErrorKind::Unsupported, "shell search needs Windows"))
+    }
+}
 
 /// Reads `dir` and calls `sink` with batches of entries ("." and ".." skipped). Stops early,
 /// returning `Ok`, once `cancel` is set (the user navigated elsewhere).

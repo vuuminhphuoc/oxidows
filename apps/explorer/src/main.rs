@@ -344,9 +344,14 @@ impl App {
 
     // ---- workers -------------------------------------------------------------------------
 
-    /// Searches `cur` and everything below it for names containing `query`. Results keep their
-    /// path relative to `cur` as the name ("sub\\file.txt"), so opening, copying and deleting
-    /// them works unchanged. Links/junctions are not followed (no loops).
+    /// Searches `cur` and everything below it. Results keep their path relative to `cur` as
+    /// the name ("sub\\file.txt"), so opening, copying and deleting them works unchanged.
+    ///
+    /// On Windows the query goes to the shell first, exactly as Explorer's search box sends it:
+    /// Windows Search answers from its index (contents and properties included) or crawls.
+    /// Without it, the folder tree is walked here and the query's Advanced Query Syntax subset
+    /// (`kind:`, `date:`, `size:`, `ext:`, `content:`, wildcards) is applied to each item.
+    /// Links/junctions are not followed (no loops).
     pub fn start_deep_search(&mut self, query: String) {
         self.cancel.store(true, Ordering::Relaxed);
         self.cancel = Arc::new(AtomicBool::new(false));
@@ -360,42 +365,29 @@ impl App {
         self.deep_search = Some(query.clone());
         let (root, generation, cancel, tx, ctx) =
             (self.cur.clone(), self.generation, self.cancel.clone(), self.tx.clone(), self.ctx.clone());
+        let offset = self.utc_offset;
         thread::Builder::new()
             .name("search".into())
             .spawn(move || {
                 let t = Instant::now();
-                let needle = query.to_lowercase();
-                let mut queue = std::collections::VecDeque::from([PathBuf::new()]);
-                let mut found = Vec::new();
-                let mut last_send = Instant::now();
-                while let Some(rel) = queue.pop_front() {
-                    if cancel.load(Ordering::Relaxed) {
-                        return;
-                    }
-                    // Unreadable folders (access denied) are skipped, as Explorer does.
-                    let _ = explorer_sys::list_dir(&root.join(&rel), &cancel, &mut |batch| {
-                        for mut e in batch {
-                            let rel_name = rel.join(&e.name);
-                            if e.is_dir && !e.link {
-                                queue.push_back(rel_name.clone());
-                            }
-                            if e.name.to_lowercase().contains(&needle) {
-                                e.name = rel_name.to_string_lossy().into_owned();
-                                found.push(e);
-                            }
-                        }
-                    });
-                    if !found.is_empty()
-                        && (found.len() >= explorer_sys::BATCH || last_send.elapsed().as_millis() > 100)
+                let mut out =
+                    SearchOut { found: Vec::new(), last_send: Instant::now(), tx: &tx, ctx: &ctx, generation };
+                let shell = explorer_sys::shell_search(&root, &query, &cancel, &mut |p| {
+                    if let Ok(rel) = p.strip_prefix(&root)
+                        && !rel.as_os_str().is_empty()
+                        && let Some(mut e) = explorer_sys::stat(&p)
                     {
-                        let _ = tx.send(Msg::Batch(generation, std::mem::take(&mut found)));
-                        ctx.request_repaint();
-                        last_send = Instant::now();
+                        e.name = rel.to_string_lossy().into_owned();
+                        out.push(e);
                     }
+                });
+                if shell.is_err() && !cancel.load(Ordering::Relaxed) {
+                    walk_search(&root, &query, offset, &cancel, &mut out);
                 }
-                if !found.is_empty() {
-                    let _ = tx.send(Msg::Batch(generation, found));
+                if cancel.load(Ordering::Relaxed) {
+                    return;
                 }
+                out.flush();
                 let _ = tx.send(Msg::Done(generation, Ok(()), t.elapsed()));
                 ctx.request_repaint();
             })
@@ -1105,9 +1097,11 @@ impl App {
         if self.view_key.as_ref() == Some(&key) {
             return;
         }
+        // Search results already match the query (which may be `kind:…`, not a name).
+        let searched = self.deep_search.as_deref().is_some_and(|q| q == self.filter.trim());
         self.view = explorer_core::sorted_view_with(
             &self.entries,
-            &self.filter,
+            if searched { "" } else { &self.filter },
             self.show_hidden,
             self.show_protected,
             self.sort,
@@ -1729,6 +1723,76 @@ impl eframe::App for App {
 
 /// The newest `max` files in Windows' Recent folder (shortcuts to what was opened), resolved
 /// to their targets; missing targets and folders are skipped.
+/// Search results on their way to the UI, sent in batches at most every 100 ms.
+struct SearchOut<'a> {
+    found: Vec<Entry>,
+    last_send: Instant,
+    tx: &'a Sender<Msg>,
+    ctx: &'a egui::Context,
+    generation: u64,
+}
+
+impl SearchOut<'_> {
+    fn push(&mut self, e: Entry) {
+        self.found.push(e);
+        if self.found.len() >= explorer_sys::BATCH || self.last_send.elapsed().as_millis() > 100 {
+            self.flush();
+        }
+    }
+
+    fn flush(&mut self) {
+        if !self.found.is_empty() {
+            let _ = self.tx.send(Msg::Batch(self.generation, std::mem::take(&mut self.found)));
+            self.ctx.request_repaint();
+        }
+        self.last_send = Instant::now();
+    }
+}
+
+/// Files bigger than this aren't read for `content:`.
+const CONTENT_LIMIT: u64 = 32 << 20;
+
+/// The search without Windows Search: walks `root` breadth first. Unreadable folders (access
+/// denied) are skipped, as Explorer does.
+fn walk_search(root: &Path, query: &str, offset: i64, cancel: &AtomicBool, out: &mut SearchOut) {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+    let q = explorer_core::Query::parse(query, (now + offset).div_euclid(86_400));
+    let contains = |path: &Path, needle: &str| {
+        std::fs::metadata(path).is_ok_and(|m| m.len() <= CONTENT_LIMIT)
+            && std::fs::read(path)
+                .ok()
+                .and_then(|b| explorer_core::decode_text(&b))
+                .is_some_and(|t| t.to_lowercase().contains(needle))
+    };
+    let mut queue = std::collections::VecDeque::from([PathBuf::new()]);
+    while let Some(rel) = queue.pop_front() {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        let mut hits = Vec::new();
+        let _ = explorer_sys::list_dir(&root.join(&rel), cancel, &mut |batch| {
+            for e in batch {
+                let rel_name = rel.join(&e.name);
+                if e.is_dir && !e.link {
+                    queue.push_back(rel_name.clone());
+                }
+                if q.matches(&e, offset) {
+                    hits.push((rel_name, e));
+                }
+            }
+        });
+        for (rel_name, mut e) in hits {
+            if let Some(needle) = &q.content
+                && !contains(&root.join(&rel_name), needle)
+            {
+                continue;
+            }
+            e.name = rel_name.to_string_lossy().into_owned();
+            out.push(e);
+        }
+    }
+}
+
 fn recent_files(max: usize) -> Vec<Entry> {
     let Some(dir) = explorer_core::shell_folder_template("recent")
         .map(|t| PathBuf::from(explorer_core::expand_env(t, |k| std::env::var(k).ok())))

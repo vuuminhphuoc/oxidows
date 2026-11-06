@@ -437,3 +437,27 @@ fn preview_handler_hosts_a_font() {
     unsafe { DestroyWindow(parent) };
     fs::remove_dir_all(&d).unwrap();
 }
+
+#[test]
+fn shell_search_finds_by_name_and_stat_reads_entries() {
+    let _g = guard("shell_search_finds_by_name_and_stat_reads_entries");
+    let d = scratch("search");
+    let long = fs::canonicalize(&d).unwrap();
+    let d = PathBuf::from(long.to_string_lossy().trim_start_matches(r"\\?\"));
+    fs::create_dir_all(d.join("sub")).unwrap();
+    fs::write(d.join("sub").join("needle-oxi.txt"), b"hello").unwrap();
+    fs::write(d.join("other.txt"), b"x").unwrap();
+    let e = explorer_sys::stat(&d.join("sub").join("needle-oxi.txt")).expect("stat");
+    assert_eq!((e.name.as_str(), e.size, e.is_dir), ("needle-oxi.txt", 5, false));
+    assert!(explorer_sys::stat(&d.join("missing")).is_none());
+    let w = watchdog("shell search", 90);
+    let mut found = Vec::new();
+    let r = explorer_sys::shell_search(&d, "needle-oxi", &AtomicBool::new(false), &mut |p| found.push(p));
+    w.store(true, Ordering::Relaxed);
+    println!("shell search: {r:?} {found:?}");
+    r.expect("shell search");
+    let same = |a: &Path, b: &Path| fs::canonicalize(a).ok() == fs::canonicalize(b).ok();
+    assert!(found.iter().any(|p| same(p, &d.join("sub").join("needle-oxi.txt"))), "{found:?}");
+    assert!(!found.iter().any(|p| same(p, &d.join("other.txt"))));
+    fs::remove_dir_all(&d).unwrap();
+}

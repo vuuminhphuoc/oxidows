@@ -9,6 +9,9 @@
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 
+pub mod query;
+pub use query::Query;
+
 /// One item in a folder listing.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Entry {

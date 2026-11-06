@@ -109,6 +109,45 @@ pub(crate) fn com_init() {
     });
 }
 
+fn entry_from(fd: &WIN32_FIND_DATAW) -> Entry {
+    let a = fd.dwFileAttributes;
+    let is_dir = a & FILE_ATTRIBUTE_DIRECTORY != 0;
+    Entry {
+        name: from_wide(&fd.cFileName).to_string_lossy().into_owned(),
+        is_dir,
+        size: if is_dir { 0 } else { ((fd.nFileSizeHigh as u64) << 32) | fd.nFileSizeLow as u64 },
+        modified: filetime_to_unix(fd.ftLastWriteTime),
+        created: filetime_to_unix(fd.ftCreationTime),
+        attrs: a,
+        hidden: a & FILE_ATTRIBUTE_HIDDEN != 0,
+        system: a & FILE_ATTRIBUTE_SYSTEM != 0 && a & FILE_ATTRIBUTE_HIDDEN != 0,
+        link: a & FILE_ATTRIBUTE_REPARSE_POINT != 0,
+        label: None,
+        note: None,
+    }
+}
+
+/// One file or folder's entry (its name is the last path component).
+pub fn stat(path: &Path) -> Option<Entry> {
+    let p = wide(long_path(path));
+    let mut fd: WIN32_FIND_DATAW = unsafe { zeroed() };
+    let h = unsafe {
+        FindFirstFileExW(
+            p.as_ptr(),
+            FindExInfoBasic,
+            (&mut fd as *mut WIN32_FIND_DATAW).cast::<c_void>(),
+            FindExSearchNameMatch,
+            null(),
+            0,
+        )
+    };
+    if h == INVALID_HANDLE_VALUE {
+        return None;
+    }
+    unsafe { FindClose(h) };
+    Some(entry_from(&fd))
+}
+
 pub fn list_dir(dir: &Path, cancel: &AtomicBool, sink: &mut dyn FnMut(Vec<Entry>)) -> io::Result<()> {
     let pattern = wide(long_path(&dir.join("*")));
     let mut fd: WIN32_FIND_DATAW = unsafe { zeroed() };
@@ -132,21 +171,7 @@ pub fn list_dir(dir: &Path, cancel: &AtomicBool, sink: &mut dyn FnMut(Vec<Entry>
         let name = &fd.cFileName;
         let dot = name[0] == '.' as u16 && (name[1] == 0 || (name[1] == '.' as u16 && name[2] == 0));
         if !dot {
-            let a = fd.dwFileAttributes;
-            let is_dir = a & FILE_ATTRIBUTE_DIRECTORY != 0;
-            batch.push(Entry {
-                name: from_wide(name).to_string_lossy().into_owned(),
-                is_dir,
-                size: if is_dir { 0 } else { ((fd.nFileSizeHigh as u64) << 32) | fd.nFileSizeLow as u64 },
-                modified: filetime_to_unix(fd.ftLastWriteTime),
-                created: filetime_to_unix(fd.ftCreationTime),
-                attrs: a,
-                hidden: a & FILE_ATTRIBUTE_HIDDEN != 0,
-                system: a & FILE_ATTRIBUTE_SYSTEM != 0 && a & FILE_ATTRIBUTE_HIDDEN != 0,
-                link: a & FILE_ATTRIBUTE_REPARSE_POINT != 0,
-                label: None,
-                note: None,
-            });
+            batch.push(entry_from(&fd));
             if batch.len() >= BATCH {
                 sink(std::mem::replace(&mut batch, Vec::with_capacity(BATCH)));
             }
