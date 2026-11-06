@@ -1,0 +1,9 @@
+[package]
+name = "explorer-core"
+description = "File Explorer logic: sorting, filtering, formatting, history (no OS calls)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true

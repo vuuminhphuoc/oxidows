@@ -25,6 +25,7 @@ jobs:
         shell: pwsh
         env:
           OXI_TASKMGR_TIMING: "1"
+          OXI_EXPLORER_TIMING: "1"
         run: |
           $exes = Get-ChildItem target/release -Filter "oxi-*.exe"
           if (-not $exes) { throw "no oxi-*.exe built" }

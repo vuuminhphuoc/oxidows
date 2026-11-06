@@ -1,0 +1,137 @@
+//! OS layer for the File Explorer.
+//!
+//! Windows is the real target. A folder is read with one `FindFirstFileExW(FindExInfoBasic,
+//! FIND_FIRST_EX_LARGE_FETCH)` pass: name, size, time and attributes come with each record, so
+//! there is no per-file stat and no 8.3 short-name lookup. Copy, move and delete go through
+//! `SHFileOperationW`, which gives the standard progress, conflict and Recycle Bin behaviour.
+//! The clipboard uses `CF_HDROP`, so copy/paste works both ways with the built-in Explorer.
+//!
+//! The Unix module exists only so the app can be developed and screenshotted off Windows.
+//! All `unsafe` in the explorer lives in this crate.
+
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
+
+pub use explorer_core::Entry;
+
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+use windows as imp;
+
+#[cfg(not(windows))]
+mod unix;
+#[cfg(not(windows))]
+use unix as imp;
+
+/// Entries are handed over in batches of this many so a huge folder shows up progressively.
+pub const BATCH: usize = 2048;
+
+/// Reads `dir` and calls `sink` with batches of entries ("." and ".." skipped). Stops early,
+/// returning `Ok`, once `cancel` is set (the user navigated elsewhere).
+pub fn list_dir(dir: &Path, cancel: &AtomicBool, sink: &mut dyn FnMut(Vec<Entry>)) -> io::Result<()> {
+    imp::list_dir(dir, cancel, sink)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DriveKind {
+    Fixed,
+    Removable,
+    Network,
+    Optical,
+    Other,
+}
+
+#[derive(Clone, Debug)]
+pub struct Drive {
+    /// "C:\" on Windows, a mount point elsewhere.
+    pub root: PathBuf,
+    /// Volume label ("Windows", "Data"); may be empty.
+    pub label: String,
+    pub kind: DriveKind,
+    pub total: u64,
+    pub free: u64,
+}
+
+/// Mounted drives with label and free space. Network and optical drives are not queried for
+/// size (that can block for seconds on a sleeping share or empty tray).
+pub fn drives() -> Vec<Drive> {
+    imp::drives()
+}
+
+/// Quick-access places (Desktop, Downloads, Documents, …) that exist on this machine.
+pub fn known_folders() -> Vec<(&'static str, PathBuf)> {
+    imp::known_folders()
+}
+
+pub fn home_dir() -> PathBuf {
+    imp::home_dir()
+}
+
+/// Seconds to add to UTC for local time (current offset, including daylight saving).
+pub fn utc_offset_secs() -> i64 {
+    imp::utc_offset_secs()
+}
+
+/// Opens a file with its default program, or runs it (`ShellExecuteW` "open").
+pub fn open(path: &Path) -> io::Result<()> {
+    imp::open(path)
+}
+
+/// The shell's Properties dialog for a file or folder.
+pub fn properties(path: &Path) -> io::Result<()> {
+    imp::properties(path)
+}
+
+/// Opens a terminal (Windows Terminal if installed, else cmd) in `dir`.
+pub fn open_terminal(dir: &Path) -> io::Result<()> {
+    imp::open_terminal(dir)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileOp {
+    Copy,
+    Move,
+    /// To the Recycle Bin.
+    Recycle,
+    /// Permanently, after the shell's own warning.
+    Delete,
+}
+
+/// Runs a shell file operation and blocks until it finishes (call from a worker thread).
+/// Windows shows its own progress and "replace or skip" dialogs. Returns `Ok(false)` when the
+/// user cancelled part of it.
+pub fn file_op(op: FileOp, sources: &[PathBuf], dest: Option<&Path>) -> io::Result<bool> {
+    imp::file_op(op, sources, dest, true)
+}
+
+/// Like [`file_op`] but never shows UI: no progress, no confirmation, existing targets are
+/// overwritten. For tests and scripted use.
+pub fn file_op_silent(op: FileOp, sources: &[PathBuf], dest: Option<&Path>) -> io::Result<bool> {
+    imp::file_op(op, sources, dest, false)
+}
+
+/// Blocks until `dir`'s contents change (a file or folder added, removed, renamed, resized or
+/// written), calling `on_change` each time, until `cancel` is set. Windows uses
+/// `FindFirstChangeNotificationW`; the wait costs no CPU.
+pub fn watch_dir(dir: &Path, cancel: &AtomicBool, on_change: &mut dyn FnMut()) -> io::Result<()> {
+    imp::watch_dir(dir, cancel, on_change)
+}
+
+/// Ctrl+V held right now. egui only reports Ctrl+V when the clipboard holds text, so pasting
+/// files needs this (Windows `GetKeyState`; always false elsewhere).
+pub fn ctrl_v_down() -> bool {
+    imp::ctrl_v_down()
+}
+
+/// Puts paths on the system clipboard as files (`CF_HDROP` + "Preferred DropEffect"), so the
+/// built-in Explorer can paste them too. `cut` marks them to be moved.
+pub fn clipboard_set_files(paths: &[PathBuf], cut: bool) -> io::Result<()> {
+    imp::clipboard_set_files(paths, cut)
+}
+
+/// Files on the system clipboard and whether they were cut (move) rather than copied.
+pub fn clipboard_get_files() -> Option<(Vec<PathBuf>, bool)> {
+    imp::clipboard_get_files()
+}

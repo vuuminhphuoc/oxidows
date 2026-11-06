@@ -654,6 +654,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "explorer-core"
+version = "0.1.0"
+
+[[package]]
+name = "explorer-sys"
+version = "0.1.0"
+dependencies = [
+ "explorer-core",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "fax"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1594,6 +1606,17 @@ checksum = "5df339f526ea9a60e371768d50efc2f2508c7203290731565d1f7a6f71d21747"
 dependencies = [
  "libc",
  "libredox",
+]
+
+[[package]]
+name = "oxi-explorer"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "egui",
+ "egui_extras",
+ "explorer-core",
+ "explorer-sys",
 ]
 
 [[package]]

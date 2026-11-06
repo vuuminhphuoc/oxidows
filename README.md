@@ -6,10 +6,11 @@ Clean-room: behaviour is matched by observation; no Microsoft code, icons or res
 | App | Status | Path |
 | --- | --- | --- |
 | Task Manager | v0.1: Processes + Performance tabs | [`apps/taskmgr`](apps/taskmgr) |
+| File Explorer | v0.1: browse, search, copy/move/delete, clipboard shared with Windows | [`apps/explorer`](apps/explorer) |
 
 ## Download
 
-Get `oxi-taskmgr.exe` from the [latest release](https://github.com/vuuminhphuoc/oxidows/releases/latest)
+Get `oxi-taskmgr.exe` and `oxi-explorer.exe` from the [latest release](https://github.com/vuuminhphuoc/oxidows/releases/latest)
 (Windows 10/11 x64, no installer). The exe is not code-signed yet, so SmartScreen may ask you to
 confirm on first run. Run it as administrator to see and end elevated processes.
 
@@ -30,6 +31,7 @@ confirm on first run. Run it as administrator to see and end elevated processes.
 ```sh
 cargo test --workspace
 cargo build --release -p oxi-taskmgr
+cargo build --release -p oxi-explorer
 ```
 
 CI (`.github/workflows/ci.yml`) runs clippy, tests and a release build on `windows-latest`, then

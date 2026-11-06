@@ -1,0 +1,425 @@
+#![forbid(unsafe_code)]
+
+//! Platform-independent part of the File Explorer.
+//!
+//! `explorer-sys` fills [`Entry`] values straight from the OS (one `FindFirstFileExW` pass on Windows,
+//! no extra stat per file). Everything here — sorting, filtering, size/date/type text, the
+//! back/forward history — touches no OS API and is unit-tested on any platform.
+
+use std::cmp::Ordering;
+use std::path::{Path, PathBuf};
+
+/// One item in a folder listing.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Entry {
+    pub name: String,
+    pub is_dir: bool,
+    /// Bytes; 0 for folders.
+    pub size: u64,
+    /// Seconds since 1970-01-01 UTC; 0 when unknown.
+    pub modified: i64,
+    pub hidden: bool,
+    pub system: bool,
+    /// Reparse point (symlink / junction / cloud placeholder).
+    pub link: bool,
+}
+
+impl Entry {
+    /// Lowercase extension without the dot, "" for folders and extension-less files.
+    pub fn extension(&self) -> String {
+        if self.is_dir {
+            return String::new();
+        }
+        match self.name.rfind('.') {
+            Some(i) if i > 0 && i + 1 < self.name.len() => self.name[i + 1..].to_ascii_lowercase(),
+            _ => String::new(),
+        }
+    }
+
+    /// Text for the "Type" column.
+    pub fn type_name(&self) -> String {
+        if self.is_dir {
+            return "File folder".into();
+        }
+        type_name_for_ext(&self.extension())
+    }
+}
+
+/// Short type names for common extensions; others become "XYZ File", as Explorer does when no
+/// application registered a friendly name. Reading the registry for every row would cost more
+/// than the whole listing, so this is a static table.
+pub fn type_name_for_ext(ext: &str) -> String {
+    let known = match ext {
+        "" => return "File".into(),
+        "txt" | "log" => "Text Document",
+        "md" => "Markdown File",
+        "pdf" => "PDF Document",
+        "doc" | "docx" => "Word Document",
+        "xls" | "xlsx" => "Excel Worksheet",
+        "ppt" | "pptx" => "PowerPoint Presentation",
+        "csv" => "CSV File",
+        "exe" => "Application",
+        "msi" => "Windows Installer Package",
+        "dll" => "Application extension",
+        "bat" | "cmd" => "Windows Batch File",
+        "ps1" => "PowerShell Script",
+        "lnk" => "Shortcut",
+        "url" => "Internet Shortcut",
+        "zip" => "Compressed (zipped) Folder",
+        "7z" | "rar" | "tar" | "gz" | "xz" | "zst" => "Archive",
+        "iso" => "Disc Image File",
+        "jpg" | "jpeg" => "JPEG Image",
+        "png" => "PNG Image",
+        "gif" => "GIF Image",
+        "bmp" => "Bitmap Image",
+        "webp" => "WebP Image",
+        "svg" => "SVG Image",
+        "ico" => "Icon",
+        "mp3" => "MP3 Audio",
+        "wav" => "WAV Audio",
+        "flac" => "FLAC Audio",
+        "mp4" => "MP4 Video",
+        "mkv" => "MKV Video",
+        "avi" => "AVI Video",
+        "mov" => "QuickTime Movie",
+        "html" | "htm" => "HTML Document",
+        "json" => "JSON File",
+        "xml" => "XML Document",
+        "ini" | "cfg" | "conf" => "Configuration Settings",
+        "rs" => "Rust Source File",
+        "py" => "Python File",
+        "js" => "JavaScript File",
+        "ts" => "TypeScript File",
+        "c" | "h" | "cpp" | "hpp" => "C/C++ Source File",
+        "ttf" | "otf" => "Font File",
+        "sys" => "System file",
+        _ => return format!("{} File", ext.to_ascii_uppercase()),
+    };
+    known.into()
+}
+
+/// Glyph for the name column (egui's bundled emoji font has these).
+pub fn icon_for(e: &Entry) -> &'static str {
+    if e.is_dir {
+        return "📁";
+    }
+    match e.extension().as_str() {
+        "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "svg" | "ico" => "🖼",
+        "mp3" | "wav" | "flac" | "ogg" | "m4a" => "🎵",
+        "mp4" | "mkv" | "avi" | "mov" | "webm" => "🎞",
+        "zip" | "7z" | "rar" | "tar" | "gz" | "xz" | "zst" => "📦",
+        "exe" | "msi" | "bat" | "cmd" | "ps1" => "⚙",
+        "lnk" | "url" => "🔗",
+        _ => "📄",
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SortKey {
+    #[default]
+    Name,
+    Modified,
+    Type,
+    Size,
+}
+
+/// Natural ("logical") order like Explorer: case-insensitive and "file2" < "file10".
+pub fn natural_cmp(a: &str, b: &str) -> Ordering {
+    let (mut a, mut b) = (a.chars().peekable(), b.chars().peekable());
+    loop {
+        match (a.peek().copied(), b.peek().copied()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(x), Some(y)) if x.is_ascii_digit() && y.is_ascii_digit() => {
+                let na: String = std::iter::from_fn(|| a.next_if(|c| c.is_ascii_digit())).collect();
+                let nb: String = std::iter::from_fn(|| b.next_if(|c| c.is_ascii_digit())).collect();
+                let (ta, tb) = (na.trim_start_matches('0'), nb.trim_start_matches('0'));
+                let ord = ta.len().cmp(&tb.len()).then_with(|| ta.cmp(tb)).then_with(|| na.len().cmp(&nb.len()));
+                if ord != Ordering::Equal {
+                    return ord;
+                }
+            }
+            (Some(x), Some(y)) => {
+                let ord = x.to_lowercase().cmp(y.to_lowercase());
+                if ord != Ordering::Equal {
+                    return ord;
+                }
+                a.next();
+                b.next();
+            }
+        }
+    }
+}
+
+/// Indices into `entries`: filtered by `filter` (case-insensitive substring), hidden items
+/// dropped unless `show_hidden`, folders always first, then sorted by `key`.
+pub fn sorted_view(entries: &[Entry], filter: &str, show_hidden: bool, key: SortKey, ascending: bool) -> Vec<usize> {
+    let needle = filter.trim().to_lowercase();
+    let mut idx: Vec<usize> = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| show_hidden || !(e.hidden || e.system))
+        .filter(|(_, e)| needle.is_empty() || e.name.to_lowercase().contains(&needle))
+        .map(|(i, _)| i)
+        .collect();
+    // Type names are computed once per entry, not once per comparison.
+    let types: Vec<String> =
+        if key == SortKey::Type { entries.iter().map(Entry::type_name).collect() } else { Vec::new() };
+    idx.sort_by(|&i, &j| {
+        let (a, b) = (&entries[i], &entries[j]);
+        let by_key = match key {
+            SortKey::Name => Ordering::Equal,
+            SortKey::Modified => a.modified.cmp(&b.modified),
+            SortKey::Type => types[i].cmp(&types[j]),
+            SortKey::Size => a.size.cmp(&b.size),
+        }
+        .then_with(|| natural_cmp(&a.name, &b.name));
+        b.is_dir.cmp(&a.is_dir).then(if ascending { by_key } else { by_key.reverse() })
+    });
+    idx
+}
+
+/// Explorer's Size column: always whole KB with thousands separators ("1 KB" minimum for a
+/// non-empty file), "0 KB" for empty files.
+pub fn format_size_kb(bytes: u64) -> String {
+    let kb = bytes.div_ceil(1024);
+    format!("{} KB", group_thousands(kb))
+}
+
+/// Short human size for the status bar and drives ("12.4 GB").
+pub fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["bytes", "KB", "MB", "GB", "TB"];
+    let mut v = bytes as f64;
+    let mut u = 0;
+    while v >= 1024.0 && u < UNITS.len() - 1 {
+        v /= 1024.0;
+        u += 1;
+    }
+    if u == 0 {
+        format!("{bytes} bytes")
+    } else if v >= 100.0 {
+        format!("{v:.0} {}", UNITS[u])
+    } else {
+        format!("{v:.1} {}", UNITS[u])
+    }
+}
+
+pub fn group_thousands(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// "2026-11-06 16:41" in local time. `utc_offset_secs` comes from `explorer-sys`.
+pub fn format_time(unix_secs: i64, utc_offset_secs: i64) -> String {
+    if unix_secs <= 0 {
+        return String::new();
+    }
+    let t = unix_secs + utc_offset_secs;
+    let days = t.div_euclid(86_400);
+    let secs = t.rem_euclid(86_400);
+    let (y, m, d) = civil_from_days(days);
+    format!("{y:04}-{m:02}-{d:02} {:02}:{:02}", secs / 3600, secs % 3600 / 60)
+}
+
+/// Days since 1970-01-01 to (year, month, day). Howard Hinnant's algorithm.
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (yoe + era * 400 + i64::from(m <= 2), m, d)
+}
+
+/// A name the user typed for a new or renamed item: rejects what Windows rejects.
+pub fn validate_name(name: &str) -> Result<(), &'static str> {
+    let n = name.trim_end_matches([' ', '.']);
+    if n.is_empty() {
+        return Err("Name cannot be empty");
+    }
+    if name.chars().any(|c| matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') || (c as u32) < 32) {
+        return Err(r#"A name can't contain any of: \ / : * ? " < > |"#);
+    }
+    let stem = n.split('.').next().unwrap_or("").to_ascii_uppercase();
+    let reserved = ["CON", "PRN", "AUX", "NUL"].contains(&stem.as_str())
+        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.len() == 4
+            && stem.as_bytes()[3].is_ascii_digit()
+            && stem.as_bytes()[3] != b'0');
+    if reserved {
+        return Err("This name is reserved by Windows");
+    }
+    Ok(())
+}
+
+/// "New folder", "New folder (2)", … — the first name not in `existing` (case-insensitive).
+pub fn unique_name(base: &str, existing: &[Entry]) -> String {
+    let taken = |n: &str| existing.iter().any(|e| e.name.eq_ignore_ascii_case(n));
+    if !taken(base) {
+        return base.into();
+    }
+    (2..).map(|i| format!("{base} ({i})")).find(|n| !taken(n)).expect("unbounded")
+}
+
+/// Browser-style back/forward over visited folders.
+#[derive(Debug, Default)]
+pub struct History {
+    back: Vec<PathBuf>,
+    forward: Vec<PathBuf>,
+}
+
+impl History {
+    /// Record leaving `from` for a new place (clears forward).
+    pub fn visit(&mut self, from: PathBuf) {
+        if self.back.last() != Some(&from) {
+            self.back.push(from);
+        }
+        self.forward.clear();
+    }
+    pub fn back(&mut self, current: PathBuf) -> Option<PathBuf> {
+        let to = self.back.pop()?;
+        self.forward.push(current);
+        Some(to)
+    }
+    pub fn forward(&mut self, current: PathBuf) -> Option<PathBuf> {
+        let to = self.forward.pop()?;
+        self.back.push(current);
+        Some(to)
+    }
+    pub fn can_back(&self) -> bool {
+        !self.back.is_empty()
+    }
+    pub fn can_forward(&self) -> bool {
+        !self.forward.is_empty()
+    }
+}
+
+/// Breadcrumb segments: (label, full path) from the root down to `path`.
+pub fn breadcrumbs(path: &Path) -> Vec<(String, PathBuf)> {
+    let mut out: Vec<(String, PathBuf)> = path
+        .ancestors()
+        .map(|p| {
+            let label = match p.file_name() {
+                Some(n) => n.to_string_lossy().into_owned(),
+                None => p.to_string_lossy().trim_end_matches(['\\', '/']).to_string(),
+            };
+            let label = if label.is_empty() { p.to_string_lossy().into_owned() } else { label };
+            (label, p.to_path_buf())
+        })
+        .collect();
+    out.reverse();
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn f(name: &str, size: u64) -> Entry {
+        Entry { name: name.into(), size, ..Default::default() }
+    }
+    fn d(name: &str) -> Entry {
+        Entry { name: name.into(), is_dir: true, ..Default::default() }
+    }
+
+    #[test]
+    fn natural_order() {
+        let mut v = vec!["file10", "File2", "file1", "a", "file02"];
+        v.sort_by(|a, b| natural_cmp(a, b));
+        assert_eq!(v, ["a", "file1", "File2", "file02", "file10"]);
+    }
+
+    #[test]
+    fn folders_first_and_sort_by_size_desc() {
+        let e = vec![f("b.txt", 10), d("zeta"), f("a.txt", 500), d("alpha")];
+        let v = sorted_view(&e, "", true, SortKey::Size, false);
+        let names: Vec<&str> = v.iter().map(|&i| e[i].name.as_str()).collect();
+        assert_eq!(names, ["zeta", "alpha", "a.txt", "b.txt"]);
+        let v = sorted_view(&e, "", true, SortKey::Name, true);
+        let names: Vec<&str> = v.iter().map(|&i| e[i].name.as_str()).collect();
+        assert_eq!(names, ["alpha", "zeta", "a.txt", "b.txt"]);
+    }
+
+    #[test]
+    fn filter_and_hidden() {
+        let mut h = f("secret.TXT", 1);
+        h.hidden = true;
+        let e = vec![f("Report.txt", 1), h, f("photo.png", 1)];
+        assert_eq!(sorted_view(&e, "TXT", false, SortKey::Name, true), [0]);
+        assert_eq!(sorted_view(&e, "txt", true, SortKey::Name, true).len(), 2);
+    }
+
+    #[test]
+    fn sizes() {
+        assert_eq!(format_size_kb(0), "0 KB");
+        assert_eq!(format_size_kb(1), "1 KB");
+        assert_eq!(format_size_kb(1024), "1 KB");
+        assert_eq!(format_size_kb(1025), "2 KB");
+        assert_eq!(format_size_kb(5_000_000_000), "4,882,813 KB");
+        assert_eq!(format_bytes(512), "512 bytes");
+        assert_eq!(format_bytes(1536), "1.5 KB");
+        assert_eq!(format_bytes(500 * 1024 * 1024 * 1024), "500 GB");
+    }
+
+    #[test]
+    fn times() {
+        assert_eq!(format_time(0, 0), "");
+        assert_eq!(format_time(1_793_981_287, 0), "2026-11-06 16:08");
+        assert_eq!(format_time(1_793_981_287, 7 * 3600), "2026-11-06 23:08");
+        assert_eq!(format_time(951_782_400, 0), "2000-02-29 00:00");
+    }
+
+    #[test]
+    fn types_and_ext() {
+        assert_eq!(f("a.TXT", 1).type_name(), "Text Document");
+        assert_eq!(f("a.foo", 1).type_name(), "FOO File");
+        assert_eq!(f(".gitignore", 1).type_name(), "File");
+        assert_eq!(f("noext", 1).type_name(), "File");
+        assert_eq!(d("x.txt").type_name(), "File folder");
+    }
+
+    #[test]
+    fn names() {
+        assert!(validate_name("ok name.txt").is_ok());
+        assert!(validate_name("a:b").is_err());
+        assert!(validate_name("   ").is_err());
+        assert!(validate_name("con.txt").is_err());
+        assert!(validate_name("COM1").is_err());
+        assert!(validate_name("COM0").is_ok());
+        assert!(validate_name("console").is_ok());
+        let e = vec![d("New folder"), d("new folder (2)")];
+        assert_eq!(unique_name("New folder", &e), "New folder (3)");
+        assert_eq!(unique_name("Other", &e), "Other");
+    }
+
+    #[test]
+    fn history() {
+        let mut h = History::default();
+        h.visit("/a".into());
+        h.visit("/b".into());
+        assert_eq!(h.back("/c".into()), Some("/b".into()));
+        assert_eq!(h.forward("/b".into()), Some("/c".into()));
+        assert!(h.can_back());
+        h.visit("/c".into());
+        assert!(!h.can_forward());
+    }
+
+    #[test]
+    fn crumbs() {
+        let c = breadcrumbs(Path::new("/home/user/docs"));
+        let labels: Vec<&str> = c.iter().map(|(l, _)| l.as_str()).collect();
+        assert_eq!(labels, ["/", "home", "user", "docs"]);
+        assert_eq!(c[2].1, PathBuf::from("/home/user"));
+    }
+}

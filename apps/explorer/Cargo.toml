@@ -1,0 +1,16 @@
+[package]
+name = "oxi-explorer"
+description = "A fast File Explorer written in Rust"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+explorer-core = { workspace = true }
+explorer-sys = { workspace = true }
+egui = { workspace = true }
+egui_extras = { workspace = true }
+eframe = { workspace = true, features = ["default_fonts", "glow", "x11", "wayland"] }
