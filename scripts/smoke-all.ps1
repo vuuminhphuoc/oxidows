@@ -13,13 +13,14 @@ foreach ($e in $exes) {
     $cfg = Join-Path "apps/$name" "smoke.json"
     if (-not (Test-Path $cfg)) { continue }
     foreach ($v in (Get-Content $cfg -Raw | ConvertFrom-Json).views) {
+        $settle = if ($v.settle) { [int]$v.settle } else { 3 }
         $saved = @{}
         foreach ($kv in $v.env.PSObject.Properties) {
             $saved[$kv.Name] = [Environment]::GetEnvironmentVariable($kv.Name)
             [Environment]::SetEnvironmentVariable($kv.Name, [string]$kv.Value)
         }
         try {
-            & "$PSScriptRoot/smoke.ps1" -Exe $e.FullName -Name "$name-$($v.name)" -OutDir $OutDir -SettleSeconds 3 -ScreenshotOnly
+            & "$PSScriptRoot/smoke.ps1" -Exe $e.FullName -Name "$name-$($v.name)" -OutDir $OutDir -SettleSeconds $settle -ScreenshotOnly
         } finally {
             foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) }
         }

@@ -8,11 +8,16 @@ mod net;
 mod procinfo;
 mod services;
 mod sessions;
+mod srum;
 mod startup;
 pub mod tray;
 
 pub use adapters::adapter_info;
 pub use hw::cpu_info;
+
+pub fn app_history() -> io::Result<taskmgr_core::AppHistory> {
+    srum::app_history(f64::from(hw::base_mhz()) * 1e6)
+}
 pub use procinfo::{
     affinity, create_dump, efficiency_mode, is_elevated, is_running, open_url, restart_elevated, run_new_task,
     set_affinity, set_efficiency_mode, set_priority, static_info,

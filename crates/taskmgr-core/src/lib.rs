@@ -149,6 +149,40 @@ pub struct AdapterRates {
     pub link_bps: u64,
 }
 
+/// One app's totals in App history.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AppUsage {
+    pub name: String,
+    pub cpu_cycles: u64,
+    /// CPU time from cycles at the base clock, in 100 ns units.
+    pub cpu_time_100ns: u64,
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+}
+
+/// App history as Windows records it (SRUM), from the oldest record kept.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AppHistory {
+    /// Oldest record, as an OLE automation date (days since 1899-12-30).
+    pub since_ole_date: Option<f64>,
+    pub apps: Vec<AppUsage>,
+}
+
+/// An OLE automation date as `YYYY-MM-DD`.
+pub fn format_ole_date(d: f64) -> String {
+    // Days since 1970-01-01, then the civil-from-days algorithm (Howard Hinnant).
+    let z = (d.floor() as i64) - 25569 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
 /// Addresses and network name of one adapter, read on demand.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AdapterInfo {
@@ -886,6 +920,13 @@ pub fn format_uptime(d: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ole_dates() {
+        assert_eq!(format_ole_date(25569.0), "1970-01-01");
+        assert_eq!(format_ole_date(46_000.75), "2025-12-09");
+        assert_eq!(format_ole_date(36_526.0), "2000-01-01");
+    }
 
     #[test]
     fn gpus_split_by_luid() {

@@ -28,6 +28,13 @@
       }
     },
     {
+      "name": "app-history",
+      "env": {
+        "OXI_TASKMGR_TAB": "app"
+      },
+      "settle": 25
+    },
+    {
       "name": "startup",
       "env": {
         "OXI_TASKMGR_TAB": "startup"

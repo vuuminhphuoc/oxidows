@@ -4,6 +4,7 @@
 
 mod details;
 mod graph;
+mod history;
 mod performance;
 mod processes;
 mod services;
@@ -29,6 +30,7 @@ static WANT_SESSIONS: AtomicBool = AtomicBool::new(false);
 enum Tab {
     Processes,
     Performance,
+    AppHistory,
     Startup,
     Users,
     Details,
@@ -37,13 +39,22 @@ enum Tab {
 }
 
 impl Tab {
-    const ALL: [Tab; 7] =
-        [Tab::Processes, Tab::Performance, Tab::Startup, Tab::Users, Tab::Details, Tab::Services, Tab::Settings];
+    const ALL: [Tab; 8] = [
+        Tab::Processes,
+        Tab::Performance,
+        Tab::AppHistory,
+        Tab::Startup,
+        Tab::Users,
+        Tab::Details,
+        Tab::Services,
+        Tab::Settings,
+    ];
 
     fn label(self) -> &'static str {
         match self {
             Tab::Processes => "Processes",
             Tab::Performance => "Performance",
+            Tab::AppHistory => "App history",
             Tab::Startup => "Startup apps",
             Tab::Users => "Users",
             Tab::Details => "Details",
@@ -125,6 +136,7 @@ struct App {
     elevated: bool,
     processes: processes::State,
     performance: performance::State,
+    history: history::State,
     details: details::State,
     services: services::State,
     startup: startup::State,
@@ -269,6 +281,7 @@ impl App {
             elevated: taskmgr_sys::is_elevated(),
             processes: processes::State::new(status.clone(), settings.group_by_type),
             performance: performance::State::default(),
+            history: history::State::new(cc.egui_ctx.clone()),
             details: details::State::new(status.clone(), details::parse_columns(&settings.details_columns)),
             services: services::State::new(status.clone(), cc.egui_ctx.clone()),
             startup: startup::State::new(status.clone()),
@@ -531,6 +544,7 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ui, |ui| match self.tab {
             Tab::Processes => self.processes.show(ui, &snap),
             Tab::Performance => self.performance.show(ui, &snap),
+            Tab::AppHistory => self.history.show(ui, self.elevated),
             Tab::Startup => self.startup.show(ui),
             Tab::Users => self.users.show(ui, &snap),
             Tab::Details => {

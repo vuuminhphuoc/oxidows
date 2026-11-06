@@ -117,6 +117,12 @@ pub mod tray {
     }
 }
 
+/// App history from Windows' resource usage database (SRUM). Needs administrator; takes seconds
+/// (it reads a shadow copy), so call it off the UI thread.
+pub fn app_history() -> io::Result<taskmgr_core::AppHistory> {
+    imp::app_history()
+}
+
 /// Stops background work (the ETW network trace on Windows). Call on exit.
 pub fn shutdown() {
     imp::shutdown();

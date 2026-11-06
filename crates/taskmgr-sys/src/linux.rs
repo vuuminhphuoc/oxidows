@@ -310,3 +310,6 @@ pub mod tray {
     pub fn update(_cpu_pct: f32, _tip: &str) {}
     pub fn hide_window() {}
 }
+pub fn app_history() -> io::Result<taskmgr_core::AppHistory> {
+    unsupported()
+}
