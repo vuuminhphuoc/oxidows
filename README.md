@@ -17,7 +17,7 @@ confirm on first run. Run it as administrator to see and end elevated processes.
 | --- | --- |
 | ![Processes tab](docs/images/taskmgr-processes.png) | ![Performance tab](docs/images/taskmgr-performance.png) |
 
-<sub>Screenshots from a Linux development build; the Windows build looks the same.</sub>
+<sub>Screenshots from the Linux development build.</sub>
 
 ## Layout
 
