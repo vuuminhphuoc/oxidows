@@ -1418,9 +1418,42 @@ impl App {
 
     /// Ctrl+N: another window on the same folder.
     pub fn new_window(&mut self) {
-        let r = std::env::current_exe().and_then(|exe| std::process::Command::new(exe).arg(&self.cur).spawn());
-        if let Err(e) = r {
+        let cur = self.cur.clone();
+        self.open_window(&cur);
+    }
+
+    fn open_window(&mut self, folder: &Path) -> bool {
+        let r = std::env::current_exe().and_then(|exe| std::process::Command::new(exe).arg(folder).spawn());
+        if let Err(e) = &r {
             self.status = Some(format!("Could not open a new window: {e}"));
+        }
+        r.is_ok()
+    }
+
+    /// Moves tab `from` to position `to` (dragging tabs along the bar).
+    pub fn move_tab(&mut self, from: usize, to: usize) {
+        if from >= self.tabs.len() || to >= self.tabs.len() {
+            return;
+        }
+        let t = self.tabs.remove(from);
+        self.tabs.insert(to, t);
+        let a = self.active_tab;
+        self.active_tab = if a == from {
+            to
+        } else if from < a && to >= a {
+            a - 1
+        } else if from > a && to <= a {
+            a + 1
+        } else {
+            a
+        };
+    }
+
+    /// A tab dragged out of the bar: its folder opens in a new window and the tab closes.
+    pub fn tear_off_tab(&mut self, i: usize) {
+        let folder = if i == self.active_tab { self.cur.clone() } else { self.tabs[i].cur.clone() };
+        if self.open_window(&folder) {
+            self.close_tab(i);
         }
     }
 

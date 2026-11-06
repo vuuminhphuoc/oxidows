@@ -18,7 +18,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Navigation pane: folder tree (expand/collapse) | ✅ | lazy, loaded in the background on first expand |
 | Pin / unpin to Quick access | ✅ | own list, mirrors the shell's Pin to Quick access verb |
 | This PC page (drives as tiles) | ✅ | known folders and drives with free space; Up from a drive root |
-| Tabs (Ctrl+T, Ctrl+W, Ctrl+Tab, drag tab out) | 🟡 | new/close/switch, middle-click a folder or tab; no drag-out yet |
+| Tabs (Ctrl+T, Ctrl+W, Ctrl+Tab, drag tab out) | ✅ | new/close/switch, middle-click; drag along the bar reorders, drag away opens the tab in a new window |
 | Open in new window (Ctrl+N) | ✅ | |
 | Command-line argument opens a folder | ✅ | `oxi-explorer.exe <folder>` |
 

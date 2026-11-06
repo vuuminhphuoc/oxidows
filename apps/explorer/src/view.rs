@@ -70,8 +70,11 @@ fn details_band(
 pub fn tab_bar(app: &mut App, ui: &mut Ui) {
     egui::Panel::top("tabs").show(ui, |ui| {
         ui.add_space(3.0);
+        let bar = ui.max_rect();
         ui.horizontal(|ui| {
             let (mut switch, mut close) = (None, None);
+            // Dragging a tab: along the bar reorders, away from it opens it in a new window.
+            let (mut rects, mut dragged, mut released) = (Vec::new(), None, None);
             for i in 0..app.tabs.len() {
                 let title = app.tab_title(i);
                 let active = i == app.active_tab;
@@ -81,8 +84,19 @@ pub fn tab_bar(app: &mut App, ui: &mut Ui) {
                     title.clone()
                 };
                 let r = ui
-                    .add(egui::Button::selectable(active, short).min_size(egui::vec2(90.0, 22.0)))
+                    .add(
+                        egui::Button::selectable(active, short)
+                            .min_size(egui::vec2(90.0, 22.0))
+                            .sense(Sense::click_and_drag()),
+                    )
                     .on_hover_text(&title);
+                rects.push(r.rect);
+                if r.dragged() {
+                    dragged = Some(i);
+                }
+                if r.drag_stopped() {
+                    released = Some(i);
+                }
                 if r.clicked() {
                     switch = Some(i);
                 }
@@ -101,7 +115,31 @@ pub fn tab_bar(app: &mut App, ui: &mut Ui) {
             if ui.button("+").on_hover_text("New tab (Ctrl+T)").clicked() {
                 app.new_tab(PathBuf::from(explorer_core::HOME), true);
             }
-            if let Some(i) = switch {
+            let pointer = ui.input(|i| i.pointer.latest_pos());
+            let screen = ui.ctx().content_rect();
+            // Far enough below the bar, or outside the window.
+            let torn = |p: egui::Pos2| p.y > bar.bottom() + 40.0 || !screen.contains(p);
+            if let (Some(i), Some(p)) = (dragged, pointer) {
+                if torn(p) {
+                    if app.tabs.len() > 1 {
+                        egui::Tooltip::always_open(
+                            ui.ctx().clone(),
+                            ui.layer_id(),
+                            egui::Id::new("tab-tear"),
+                            egui::PopupAnchor::Pointer,
+                        )
+                        .show(|ui| ui.label(format!("Open \"{}\" in a new window", app.tab_title(i))));
+                    }
+                } else if let Some(j) = rects.iter().position(|r| r.x_range().contains(p.x)).filter(|&j| j != i) {
+                    app.move_tab(i, j);
+                }
+            }
+            if let (Some(i), Some(p)) = (released, pointer)
+                && torn(p)
+                && app.tabs.len() > 1
+            {
+                app.tear_off_tab(i);
+            } else if let Some(i) = switch {
                 app.switch_tab(i);
             } else if let Some(i) = close {
                 app.close_tab(i);
