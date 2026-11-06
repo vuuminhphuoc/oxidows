@@ -30,6 +30,8 @@ enum Msg {
     /// The watched folder changed on disk.
     Changed(PathBuf),
     Icon(IconKey, Option<explorer_sys::IconImage>),
+    /// Subfolder names for the navigation tree.
+    Tree(PathBuf, Vec<String>),
 }
 
 /// Icons are cached per extension; only files that carry their own icon get one each.
@@ -160,6 +162,9 @@ struct App {
     pub hwnd: isize,
     /// All tabs; the active one's slot is stale while it is shown (its state lives in `App`).
     pub tabs: Vec<TabSnap>,
+    /// Navigation tree: subfolders of each expanded folder (loaded on first expand).
+    pub tree: HashMap<PathBuf, Vec<String>>,
+    tree_pending: HashSet<PathBuf>,
     pub active_tab: usize,
 }
 
@@ -216,6 +221,8 @@ impl App {
             title: String::new(),
             hwnd: 0,
             tabs: Vec::new(),
+            tree: HashMap::new(),
+            tree_pending: HashSet::new(),
             active_tab: 0,
         };
         let first = app.snapshot();
@@ -409,6 +416,23 @@ impl App {
         }
     }
 
+    /// Lists the subfolders of `dir` for the tree, in the background.
+    pub fn load_tree(&mut self, dir: PathBuf) {
+        if !self.tree_pending.insert(dir.clone()) {
+            return;
+        }
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        thread::spawn(move || {
+            let mut names = Vec::new();
+            let _ = explorer_sys::list_dir(&dir, &AtomicBool::new(false), &mut |b| {
+                names.extend(b.into_iter().filter(|e| e.is_dir && !e.hidden && !e.system).map(|e| e.name));
+            });
+            names.sort_by(|a, b| explorer_core::natural_cmp(a, b));
+            let _ = tx.send(Msg::Tree(dir, names));
+            ctx.request_repaint();
+        });
+    }
+
     fn load_drives(&self) {
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         thread::spawn(move || {
@@ -494,6 +518,10 @@ impl App {
                     self.changed_at.get_or_insert_with(Instant::now);
                 }
                 Msg::Changed(_) => {}
+                Msg::Tree(dir, names) => {
+                    self.tree_pending.remove(&dir);
+                    self.tree.insert(dir, names);
+                }
                 Msg::Icon(key, img) => {
                     let state = match img {
                         Some(i) => IconState::Ready(self.ctx.load_texture(
@@ -670,6 +698,11 @@ impl App {
     }
 
     fn refresh(&mut self) {
+        // Folders may have been added or removed here; re-read this node of the tree too.
+        if self.tree.remove(&self.cur).is_some() {
+            let c = self.cur.clone();
+            self.load_tree(c);
+        }
         match self.deep_search.clone() {
             Some(q) => self.start_deep_search(q),
             None => self.start_listing(true),
@@ -773,7 +806,7 @@ impl App {
 
     // ---- view & selection ----------------------------------------------------------------
 
-    fn update_view(&mut self) {
+    pub fn update_view(&mut self) {
         let key = ViewKey {
             version: self.version,
             filter: self.filter.clone(),

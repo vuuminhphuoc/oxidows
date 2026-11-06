@@ -15,7 +15,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Environment variables and shell: names in the address bar (`%TEMP%`, `shell:startup`) | ❌ | |
 | Recent locations history dropdown | ❌ | |
 | Navigation pane: Home, known folders, drives with free space | ✅ | |
-| Navigation pane: folder tree (expand/collapse) | ❌ | |
+| Navigation pane: folder tree (expand/collapse) | ✅ | lazy, loaded in the background on first expand |
 | Pin / unpin to Quick access | ❌ | |
 | This PC page (drives as tiles) | ❌ | |
 | Tabs (Ctrl+T, Ctrl+W, Ctrl+Tab, drag tab out) | 🟡 | new/close/switch, middle-click a folder or tab; no drag-out yet |

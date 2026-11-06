@@ -193,12 +193,64 @@ fn address_bar(app: &mut App, ui: &mut Ui) {
     }
 }
 
+/// Requests and clicks collected while drawing the folder tree (it can't borrow `App` mutably).
+#[derive(Default)]
+struct TreeOut {
+    go: Option<PathBuf>,
+    load: Vec<PathBuf>,
+}
+
+/// Expandable node: arrow + clickable label; children are listed lazily the first time it opens.
+fn tree_node(
+    ui: &mut Ui,
+    tree: &std::collections::HashMap<PathBuf, Vec<String>>,
+    cur: &PathBuf,
+    path: &PathBuf,
+    label: &str,
+    out: &mut TreeOut,
+    depth: usize,
+) -> egui::Response {
+    let id = ui.make_persistent_id(("tree", path));
+    let state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
+    let open = state.is_open();
+    let (_, header, _) = state
+        .show_header(ui, |ui| {
+            ui.with_layout(Layout::top_down_justified(Align::LEFT), |ui| {
+                ui.add(egui::Button::selectable(path == cur, label).min_size(egui::vec2(0.0, 20.0)))
+            })
+            .inner
+        })
+        .body(|ui| match tree.get(path) {
+            Some(children) if depth < 32 => {
+                for name in children {
+                    let child = path.join(name);
+                    tree_node(ui, tree, cur, &child, &format!("📁 {name}"), out, depth + 1);
+                }
+                if children.is_empty() {
+                    ui.label(RichText::new("(empty)").small().weak());
+                }
+            }
+            Some(_) => {}
+            None => {
+                ui.spinner();
+            }
+        });
+    if open && !tree.contains_key(path) {
+        out.load.push(path.clone());
+    }
+    if header.inner.clicked() {
+        out.go = Some(path.clone());
+    }
+    header.inner
+}
+
 pub fn sidebar(app: &mut App, ui: &mut Ui) {
     egui::Panel::left("sidebar").resizable(true).default_size(190.0).show(ui, |ui| {
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.add_space(6.0);
             let mut go: Option<PathBuf> = None;
             let mut unmap: Option<char> = None;
+            let mut tree_out = TreeOut::default();
             let place = |ui: &mut Ui, icon: &str, name: &str, path: &PathBuf, cur: &PathBuf| {
                 let selected = path == cur;
                 ui.with_layout(Layout::top_down_justified(Align::LEFT), |ui| {
@@ -220,9 +272,7 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
                     "Videos" => "🎞",
                     _ => "📁",
                 };
-                if place(ui, icon, name, path, &app.cur) {
-                    go = Some(path.clone());
-                }
+                tree_node(ui, &app.tree, &app.cur, path, &format!("{icon}  {name}"), &mut tree_out, 0);
             }
             ui.add_space(6.0);
             ui.separator();
@@ -244,14 +294,7 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
                     DriveKind::Removable => "💾",
                     _ => "🖴",
                 };
-                let r = ui
-                    .with_layout(Layout::top_down_justified(Align::LEFT), |ui| {
-                        ui.add(egui::Button::selectable(d.root == app.cur, format!("{icon}  {label}")).min_size(egui::vec2(0.0, 22.0)))
-                    })
-                    .inner;
-                if r.clicked() {
-                    go = Some(d.root.clone());
-                }
+                let r = tree_node(ui, &app.tree, &app.cur, &d.root, &format!("{icon}  {label}"), &mut tree_out, 0);
                 if d.kind == DriveKind::Network {
                     let letter = letter.chars().next().unwrap_or('Z');
                     r.context_menu(|ui| {
@@ -293,6 +336,12 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
             }
             if let Some(l) = unmap {
                 app.unmap(l);
+            }
+            if go.is_none() {
+                go = tree_out.go;
+            }
+            for p in tree_out.load {
+                app.load_tree(p);
             }
             if let Some(p) = go {
                 app.navigate(p);
@@ -369,6 +418,8 @@ enum Action {
 }
 
 pub fn file_list(app: &mut App, ui: &mut Ui) {
+    // The sidebar or toolbar may have navigated earlier in this frame.
+    app.update_view();
     let mut action: Option<Action> = None;
 
     // Background (empty space below the rows): clear selection, folder context menu.
