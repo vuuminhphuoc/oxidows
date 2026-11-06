@@ -16,8 +16,9 @@ use windows::Win32::UI::Shell::PropertiesSystem::{
 use windows::Win32::UI::Shell::{IShellItem2, SHCreateItemFromParsingName};
 use windows::core::PCWSTR;
 
-fn key(p: Prop) -> &'static PROPERTYKEY {
-    match p {
+fn key(p: Prop) -> Option<&'static PROPERTYKEY> {
+    Some(match p {
+        Prop::Status => return None,
         Prop::Authors => &PKEY_Author,
         Prop::Title => &PKEY_Title,
         Prop::Tags => &PKEY_Keywords,
@@ -26,7 +27,7 @@ fn key(p: Prop) -> &'static PROPERTYKEY {
         Prop::Length => &PKEY_Media_Duration,
         Prop::DateTaken => &PKEY_Photo_DateTaken,
         Prop::Owner => &PKEY_FileOwner,
-    }
+    })
 }
 
 /// The display text of each of `props` for `path` (empty where the item has none).
@@ -43,7 +44,7 @@ pub fn read_props(path: &Path, props: &[Prop]) -> Vec<String> {
     props
         .iter()
         .map(|&p| unsafe {
-            let k = key(p);
+            let Some(k) = key(p) else { return String::new() };
             let Ok(v) = store.GetValue(k) else { return String::new() };
             match PSFormatForDisplayAlloc(k, &v, PDFF_DEFAULT) {
                 Ok(s) => {

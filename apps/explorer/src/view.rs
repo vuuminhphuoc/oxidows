@@ -907,6 +907,10 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
     let mut toggle_col: Option<SortKey> = None;
     let (col_created, col_attrs) = (app.col_created, app.col_attrs);
     let prop_cols = app.prop_cols.clone();
+    // Inside a OneDrive folder, ordinary files are "available on this device".
+    let in_sync_root = ["OneDrive", "OneDriveConsumer", "OneDriveCommercial"]
+        .iter()
+        .any(|v| std::env::var_os(v).is_some_and(|root| !root.is_empty() && app.cur.starts_with(&root)));
     let mut toggle_prop: Option<explorer_core::Prop> = None;
     let mut wanted_props: Vec<PathBuf> = Vec::new();
     // `key`: None for the property columns, which don't sort.
@@ -1129,16 +1133,23 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                     }
                     if !prop_cols.is_empty() {
                         let path = app.child(&e.name);
+                        let only_status = prop_cols.iter().all(|&p| p == explorer_core::Prop::Status);
                         let values = match app.props.get(&path) {
                             Some(v) => v.as_ref(),
                             None => {
-                                wanted_props.push(path);
+                                if !only_status {
+                                    wanted_props.push(path);
+                                }
                                 None
                             }
                         };
                         for p in &prop_cols {
                             let k = explorer_core::Prop::ALL.iter().position(|q| q == p).unwrap_or(0);
-                            let text = values.and_then(|v| v.get(k)).map_or("", String::as_str);
+                            let text = if *p == explorer_core::Prop::Status {
+                                explorer_core::cloud_status(e.attrs, in_sync_root)
+                            } else {
+                                values.and_then(|v| v.get(k)).map_or("", String::as_str)
+                            };
                             row.col(|ui| {
                                 ui.add(egui::Label::new(RichText::new(text).color(weak)).selectable(false));
                             });

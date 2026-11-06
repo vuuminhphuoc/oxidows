@@ -16,6 +16,8 @@ pub use query::Query;
 /// background), in the column chooser's order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Prop {
+    /// Cloud (OneDrive) availability; worked out from the attributes, not read.
+    Status,
     Authors,
     Title,
     Tags,
@@ -27,7 +29,8 @@ pub enum Prop {
 }
 
 impl Prop {
-    pub const ALL: [Prop; 8] = [
+    pub const ALL: [Prop; 9] = [
+        Prop::Status,
         Prop::Authors,
         Prop::Title,
         Prop::Tags,
@@ -40,6 +43,7 @@ impl Prop {
 
     pub fn label(self) -> &'static str {
         match self {
+            Prop::Status => "Status",
             Prop::Authors => "Authors",
             Prop::Title => "Title",
             Prop::Tags => "Tags",
@@ -54,6 +58,7 @@ impl Prop {
     /// Name in the settings file.
     pub fn key(self) -> &'static str {
         match self {
+            Prop::Status => "status",
             Prop::Authors => "authors",
             Prop::Title => "title",
             Prop::Tags => "tags",
@@ -67,6 +72,24 @@ impl Prop {
 
     pub fn parse(s: &str) -> Option<Prop> {
         Prop::ALL.into_iter().find(|p| p.key() == s.trim())
+    }
+}
+
+/// The Status column of a cloud-synced item (OneDrive and other Cloud Files providers), from
+/// its attributes: online-only placeholders carry RECALL_ON_DATA_ACCESS / RECALL_ON_OPEN /
+/// OFFLINE, "Always keep on this device" sets PINNED. `in_sync_root`: the item is inside a
+/// synced folder, so an ordinary file there is "available on this device".
+pub fn cloud_status(attrs: u32, in_sync_root: bool) -> &'static str {
+    const RECALL_ON_OPEN: u32 = 0x4_0000;
+    const RECALL_ON_DATA_ACCESS: u32 = 0x40_0000;
+    if attrs & attr::PINNED != 0 {
+        "● Always available"
+    } else if attrs & (RECALL_ON_DATA_ACCESS | RECALL_ON_OPEN | attr::OFFLINE) != 0 {
+        "☁ Available when online"
+    } else if in_sync_root {
+        "✓ Available on this device"
+    } else {
+        ""
     }
 }
 
@@ -1169,5 +1192,14 @@ mod tests {
         assert_eq!(child_path(lib, r"C:\Users\a\Documents\x.txt"), PathBuf::from(r"C:\Users\a\Documents\x.txt"));
         assert!(Place::Gallery.is_page() && !Place::Local.is_page());
         assert_eq!(shell_folder_template("libraries"), Some(LIBRARIES));
+    }
+
+    #[test]
+    fn cloud_status_from_attributes() {
+        assert_eq!(cloud_status(attr::ARCHIVE | 0x40_0000, true), "☁ Available when online");
+        assert_eq!(cloud_status(attr::ARCHIVE | attr::PINNED, true), "● Always available");
+        assert_eq!(cloud_status(attr::ARCHIVE, true), "✓ Available on this device");
+        assert_eq!(cloud_status(attr::ARCHIVE, false), "");
+        assert_eq!(Prop::parse("status"), Some(Prop::Status));
     }
 }
