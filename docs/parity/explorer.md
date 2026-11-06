@@ -71,26 +71,26 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Feature | Status | Notes |
 | --- | --- | --- |
 | Open with default app, run programs | ✅ | |
-| Open with… (choose app) | ❌ | |
-| Run as administrator | ❌ | |
+| Open with… (choose app) | ✅ | through the shell menu |
+| Run as administrator | ✅ | through the shell menu |
 | Cut / Copy / Paste, shared clipboard with Windows Explorer | ✅ | `CF_HDROP` + Preferred DropEffect |
 | Paste into a folder | ✅ | |
 | Copy as path | ✅ | |
-| Paste shortcut | ❌ | |
+| Paste shortcut | ✅ | through the shell menu |
 | Rename (F2), selects name without extension | ✅ | |
 | Batch rename | ❌ | |
 | Delete to Recycle Bin, Shift+Delete permanently | ✅ | |
 | Native progress, conflict and Undo dialogs | ✅ | `SHFileOperationW` |
 | Undo / Redo (Ctrl+Z / Ctrl+Y) inside the app | ❌ | |
 | New folder (Ctrl+Shift+N) | ✅ | |
-| New → text file, shortcut, other registered types | ❌ | |
+| New → text file, shortcut, other registered types | ✅ | through the shell menu |
 | Drag and drop into the window | ✅ | move on same drive, copy across drives |
 | Drag and drop out of the window / between folders | ❌ | |
-| Compress to ZIP / extract | ❌ | |
+| Compress to ZIP / extract | ✅ | through the shell menu |
 | Properties dialog (Alt+Enter) | ✅ | the shell's own |
 | Open in Terminal | ✅ | Windows Terminal, else cmd |
-| Shell context menu (all handlers: 7-Zip, Git, Send to, …) | ❌ | currently our own menu |
-| Create shortcut | ❌ | |
+| Shell context menu (all handlers: 7-Zip, Git, Send to, …) | ✅ | `IContextMenu3`, Shift for extended verbs; background menu (New ▸, Paste, …) too |
+| Create shortcut | ✅ | through the shell menu |
 
 ## Search
 

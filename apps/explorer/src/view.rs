@@ -301,6 +301,8 @@ enum Action {
     Click(usize, egui::Modifiers),
     Open(usize),
     ContextSelect(usize),
+    /// The shell's menu for the clicked row (selecting it first), or the folder background.
+    ShellMenu(Option<usize>),
     Copy(bool),
     Paste(PathBuf),
     CopyPath,
@@ -322,29 +324,38 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
         action = Some(Action::ClearSelection);
     }
     let cur = app.cur.clone();
-    bg.context_menu(|ui| {
+    // On Windows the shell's own menus are used (all installed handlers); egui menus are the
+    // fallback for the virtual Network page and for non-Windows builds.
+    let shell_menus = app.hwnd != 0 && !matches!(explorer_core::classify(&app.cur), explorer_core::Place::Network);
+    if shell_menus && bg.secondary_clicked() {
+        action = Some(Action::ShellMenu(None));
+    }
+    let bg_menu = |ui: &mut Ui, action: &mut Option<Action>| {
         if ui.button("New folder    Ctrl+Shift+N").clicked() {
-            action = Some(Action::NewFolder);
+            *action = Some(Action::NewFolder);
             ui.close();
         }
         if ui.button("Paste    Ctrl+V").clicked() {
-            action = Some(Action::Paste(cur.clone()));
+            *action = Some(Action::Paste(cur.clone()));
             ui.close();
         }
         if ui.button("Refresh    F5").clicked() {
-            action = Some(Action::Refresh);
+            *action = Some(Action::Refresh);
             ui.close();
         }
         ui.separator();
         if ui.button("Open in Terminal").clicked() {
-            action = Some(Action::Terminal);
+            *action = Some(Action::Terminal);
             ui.close();
         }
         if ui.button("Properties").clicked() {
-            action = Some(Action::Properties(cur.clone()));
+            *action = Some(Action::Properties(cur.clone()));
             ui.close();
         }
-    });
+    };
+    if !shell_menus {
+        bg.context_menu(|ui| bg_menu(ui, &mut action));
+    }
 
     if app.view.is_empty() && !app.loading {
         ui.add_space(30.0);
@@ -441,10 +452,13 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                 } else if resp.clicked() {
                     action = Some(Action::Click(pos, resp.ctx.input(|i| i.modifiers)));
                 } else if resp.secondary_clicked() {
-                    action = Some(Action::ContextSelect(pos));
+                    action = Some(if shell_menus { Action::ShellMenu(Some(pos)) } else { Action::ContextSelect(pos) });
                 }
                 let target = app.child(&e.name);
                 let is_dir = e.is_dir;
+                if shell_menus {
+                    return;
+                }
                 resp.context_menu(|ui| {
                     if ui.button(RichText::new("Open").strong()).clicked() {
                         action = Some(Action::Open(pos));
@@ -507,6 +521,16 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
             if let Some(e) = app.entry_at(pos).cloned() {
                 app.open_entry(&e);
             }
+        }
+        Some(Action::ShellMenu(pos)) => {
+            if let Some(pos) = pos {
+                let name = app.entry_at(pos).map(|e| e.name.clone());
+                if name.is_some_and(|n| !app.selected.contains(&n)) {
+                    app.select_only(pos);
+                }
+            }
+            let shift = ui.input(|i| i.modifiers.shift);
+            app.shell_menu(pos.is_some(), shift);
         }
         Some(Action::ContextSelect(pos)) => {
             let name = app.entry_at(pos).map(|e| e.name.clone());

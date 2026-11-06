@@ -221,3 +221,19 @@ fn network_enumeration_does_not_hang() {
     let found = explorer_sys::network_computers();
     println!("network computers: {found:?} in {:?}", t.elapsed());
 }
+
+#[test]
+fn shell_context_menu_has_standard_verbs() {
+    let d = scratch("menu");
+    let f = d.join("doc.txt");
+    fs::write(&f, b"x").unwrap();
+    let verbs = explorer_sys::shell_menu_verbs(&d, std::slice::from_ref(&f)).unwrap();
+    println!("file verbs: {verbs:?}");
+    for v in ["open", "properties", "delete"] {
+        assert!(verbs.iter().any(|x| x == v), "missing {v} in {verbs:?}");
+    }
+    let bg = explorer_sys::shell_menu_verbs(&d, &[]).unwrap();
+    println!("background verbs: {bg:?}");
+    assert!(bg.iter().any(|x| x == "properties"), "{bg:?}");
+    fs::remove_dir_all(&d).unwrap();
+}

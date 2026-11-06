@@ -97,7 +97,7 @@ fn filetime_to_unix(ft: FILETIME) -> i64 {
 
 /// COM must be initialised on a thread before the shell is used from it. Calling it twice is
 /// harmless (S_FALSE), and a thread winit already set up as OLE STA keeps its mode.
-fn com_init() {
+pub(crate) fn com_init() {
     thread_local!(static DONE: Cell<bool> = const { Cell::new(false) });
     DONE.with(|d| {
         if !d.get() {

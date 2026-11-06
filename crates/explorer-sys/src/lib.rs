@@ -20,6 +20,9 @@ mod windows;
 #[cfg(windows)]
 use windows as imp;
 
+#[cfg(windows)]
+mod shell_menu;
+
 #[cfg(not(windows))]
 mod unix;
 #[cfg(not(windows))]
@@ -200,4 +203,44 @@ pub fn is_auth_error(e: &io::Error) -> bool {
     // ACCESS_DENIED, INVALID_PASSWORD, LOGON_FAILURE, NOT_AUTHENTICATED, ACCOUNT_RESTRICTION,
     // SESSION_CREDENTIAL_CONFLICT is not here: it needs a disconnect first.
     matches!(e.raw_os_error(), Some(5 | 86 | 1326 | 1244 | 1327))
+}
+
+/// What happened with the shell's right-click menu.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MenuOutcome {
+    Dismissed,
+    /// The shell ran the command (its canonical verb, may be empty for third-party items).
+    Invoked(String),
+    /// A command the app has to carry out itself: "rename", or "open"/"explore" on folders.
+    Host(String),
+}
+
+/// Shows the shell's own context menu at the mouse pointer for `items` (full paths, all in
+/// `dir`), or the folder background menu when `items` is empty. `hwnd` is the app window.
+/// `extended` (Shift held) adds the extended verbs, as in Explorer. Blocks until closed.
+/// Not available off Windows (`Unsupported`).
+pub fn shell_context_menu(hwnd: isize, dir: &Path, items: &[PathBuf], extended: bool) -> io::Result<MenuOutcome> {
+    #[cfg(windows)]
+    {
+        shell_menu::show(hwnd, dir, items, extended)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (hwnd, dir, items, extended);
+        Err(io::Error::new(io::ErrorKind::Unsupported, "shell menu is Windows-only"))
+    }
+}
+
+/// The canonical verbs ("open", "properties", "delete", …) the shell menu would offer for
+/// `items`, without showing it. Windows only.
+pub fn shell_menu_verbs(dir: &Path, items: &[PathBuf]) -> io::Result<Vec<String>> {
+    #[cfg(windows)]
+    {
+        shell_menu::verbs(dir, items)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (dir, items);
+        Err(io::Error::new(io::ErrorKind::Unsupported, "shell menu is Windows-only"))
+    }
 }

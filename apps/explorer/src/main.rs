@@ -143,6 +143,8 @@ struct App {
     timing_logged: bool,
     was_focused: bool,
     title: String,
+    /// Main window handle (Windows), for the shell's menus and dialogs; 0 if unknown.
+    pub hwnd: isize,
 }
 
 impl App {
@@ -195,6 +197,7 @@ impl App {
             timing_logged: false,
             was_focused: true,
             title: String::new(),
+            hwnd: 0,
         };
         app.start_listing(false);
         app.start_watch();
@@ -737,6 +740,28 @@ impl App {
         });
     }
 
+    /// The shell's right-click menu for the selection (`for_items`) or for the folder itself.
+    pub fn shell_menu(&mut self, for_items: bool, extended: bool) {
+        let items = if for_items { self.selected_paths() } else { Vec::new() };
+        match explorer_sys::shell_context_menu(self.hwnd, &self.cur, &items, extended) {
+            Ok(explorer_sys::MenuOutcome::Host(verb)) if verb == "rename" => self.begin_rename(),
+            Ok(explorer_sys::MenuOutcome::Host(_)) => {
+                if let Some(p) = items.first() {
+                    self.navigate(p.clone());
+                }
+            }
+            Ok(explorer_sys::MenuOutcome::Invoked(verb)) => {
+                // The shell changed something (new file, paste, delete…); the watcher sees most
+                // of it, this catches the rest (e.g. drives, network).
+                if !verb.is_empty() {
+                    self.changed_at.get_or_insert_with(Instant::now);
+                }
+            }
+            Ok(explorer_sys::MenuOutcome::Dismissed) => {}
+            Err(e) => self.status = Some(format!("Menu: {e}")),
+        }
+    }
+
     pub fn unmap(&mut self, letter: char) {
         self.status = Some(match explorer_sys::unmap_drive(letter) {
             Ok(()) => format!("Disconnected {letter}:"),
@@ -983,7 +1008,15 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        if self.hwnd == 0 {
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            if let Ok(h) = frame.window_handle()
+                && let RawWindowHandle::Win32(w) = h.as_raw()
+            {
+                self.hwnd = w.hwnd.get();
+            }
+        }
         self.drain();
         // Coming back to the window: pick up changes made elsewhere (cheap: one listing).
         let focused = ui.input(|i| i.viewport().focused.unwrap_or(true));
