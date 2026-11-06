@@ -2,6 +2,7 @@
 //! PDH for disk and GPU rates.
 
 mod hw;
+mod net;
 mod procinfo;
 mod services;
 mod sessions;
@@ -284,6 +285,8 @@ pub struct Collector {
     cores: NtBuffer,
     pdh: Option<Pdh>,
     base_mhz: u32,
+    /// The ETW network session is running.
+    net: bool,
 }
 
 // The PDH handles are only ever used from the thread that owns the collector.
@@ -293,6 +296,30 @@ fn filetime(ft: FILETIME) -> u64 {
     (u64::from(ft.dwHighDateTime) << 32) | u64::from(ft.dwLowDateTime)
 }
 
+/// SYSTEM_THREAD_INFORMATION (x64): 0x50 bytes; ThreadState at 0x44, WaitReason at 0x48.
+const THREAD_INFO_SIZE: usize = 0x50;
+const THREAD_STATE_WAITING: u32 = 5;
+const WAIT_REASON_SUSPENDED: u32 = 5;
+
+/// A process is "Suspended" when every one of its threads waits because it was suspended.
+fn all_threads_suspended(bytes: &[u8], offset: usize, p: &SystemProcessInformation) -> bool {
+    let n = p.number_of_threads as usize;
+    let start = offset + size_of::<SystemProcessInformation>();
+    if n == 0 || start + n * THREAD_INFO_SIZE > bytes.len() {
+        return false;
+    }
+    let u32_at = |o: usize| u32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]);
+    (0..n).all(|i| {
+        let t = start + i * THREAD_INFO_SIZE;
+        u32_at(t + 0x44) == THREAD_STATE_WAITING && u32_at(t + 0x48) == WAIT_REASON_SUSPENDED
+    })
+}
+
+/// Stops background tracing started by the collector.
+pub fn shutdown() {
+    net::stop();
+}
+
 impl Collector {
     pub fn new() -> io::Result<Self> {
         Ok(Self {
@@ -300,6 +327,7 @@ impl Collector {
             cores: NtBuffer::new(4096),
             pdh: Pdh::open(),
             base_mhz: hw::base_mhz(),
+            net: procinfo::is_elevated() && net::start(),
         })
     }
 
@@ -310,7 +338,15 @@ impl Collector {
         for p in &mut processes {
             p.has_window = windows.contains(&p.pid);
         }
-        let system = self.read_system()?;
+        if self.net {
+            net::with_totals(|t| {
+                for p in &mut processes {
+                    p.net_bytes = t.get(&p.pid).copied().unwrap_or(0);
+                }
+            });
+        }
+        let mut system = self.read_system()?;
+        system.per_process_net = self.net;
         Ok(RawSample { at, processes, system })
     }
 
@@ -344,6 +380,8 @@ impl Collector {
                     memory: p.working_set_private_size as u64,
                     io_read_bytes: p.read_transfer_count as u64,
                     io_write_bytes: p.write_transfer_count as u64,
+                    net_bytes: 0,
+                    suspended: all_threads_suspended(bytes, offset, p),
                     threads: p.number_of_threads,
                     handles: p.handle_count,
                     session_id: p.session_id,

@@ -48,6 +48,10 @@ pub struct RawProcess {
     pub memory: u64,
     pub io_read_bytes: u64,
     pub io_write_bytes: u64,
+    /// Network bytes sent + received since monitoring started (0 when unavailable).
+    pub net_bytes: u64,
+    /// Every thread is suspended.
+    pub suspended: bool,
     pub threads: u32,
     pub handles: u32,
     pub session_id: u32,
@@ -74,6 +78,8 @@ pub struct StaticInfo {
 /// System-wide counters for one sample.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RawSystem {
+    /// Per-process network bytes are being measured (needs administrator on Windows).
+    pub per_process_net: bool,
     pub cpu: CpuTimes,
     pub cores: Vec<CpuTimes>,
     pub mem_total: u64,
@@ -209,6 +215,9 @@ pub struct ProcessRow {
     pub memory: u64,
     /// Read + write bytes per second.
     pub disk_bps: f64,
+    /// Sent + received bytes per second.
+    pub net_bps: f64,
+    pub suspended: bool,
     pub threads: u32,
     pub handles: u32,
     pub session_id: u32,
@@ -221,6 +230,7 @@ pub struct ProcessRow {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SystemRates {
+    pub per_process_net: bool,
     pub cpu_pct: f32,
     pub cores_pct: Vec<f32>,
     pub mem_used: u64,
@@ -496,6 +506,7 @@ impl History {
 struct PrevProc {
     cpu_time: u64,
     io: u64,
+    net: u64,
 }
 
 /// Turns raw cumulative samples into rates. Keep one per collector.
@@ -533,15 +544,19 @@ impl Sampler {
             .map(|p| {
                 let key = (p.pid, p.start_time);
                 let io = p.io_read_bytes.saturating_add(p.io_write_bytes);
-                let (cpu_pct, disk_bps) = match (secs, self.prev_procs.get(&key)) {
+                let (cpu_pct, disk_bps, net_bps) = match (secs, self.prev_procs.get(&key)) {
                     (Some(secs), Some(prev)) => {
                         let cpu_100ns = p.cpu_time.saturating_sub(prev.cpu_time) as f64;
                         let cpu = cpu_100ns / (secs * 1e7 * ncpu) * 100.0;
-                        (cpu.clamp(0.0, 100.0) as f32, io.saturating_sub(prev.io) as f64 / secs)
+                        (
+                            cpu.clamp(0.0, 100.0) as f32,
+                            io.saturating_sub(prev.io) as f64 / secs,
+                            p.net_bytes.saturating_sub(prev.net) as f64 / secs,
+                        )
                     }
-                    _ => (0.0, 0.0),
+                    _ => (0.0, 0.0, 0.0),
                 };
-                procs_now.insert(key, PrevProc { cpu_time: p.cpu_time, io });
+                procs_now.insert(key, PrevProc { cpu_time: p.cpu_time, io, net: p.net_bytes });
                 thread_count += u64::from(p.threads);
                 handle_count += u64::from(p.handles);
                 ProcessRow {
@@ -552,6 +567,8 @@ impl Sampler {
                     cpu_pct,
                     memory: p.memory,
                     disk_bps,
+                    net_bps,
+                    suspended: p.suspended,
                     threads: p.threads,
                     handles: p.handles,
                     session_id: p.session_id,
@@ -602,6 +619,7 @@ impl Sampler {
             })
             .collect();
         let system = SystemRates {
+            per_process_net: sys.per_process_net,
             cpu_pct,
             cores_pct,
             mem_used: sys.mem_total.saturating_sub(sys.mem_available),
@@ -647,6 +665,7 @@ pub enum SortKey {
     Cpu,
     Memory,
     Disk,
+    Network,
     Gpu,
     Threads,
 }
@@ -727,6 +746,7 @@ pub fn sorted_view(rows: &[ProcessRow], filter: &str, key: SortKey, descending: 
             SortKey::Memory => a.memory.cmp(&b.memory),
             SortKey::Disk => a.disk_bps.total_cmp(&b.disk_bps),
             SortKey::Gpu => a.gpu_pct.total_cmp(&b.gpu_pct),
+            SortKey::Network => a.net_bps.total_cmp(&b.net_bps),
             SortKey::Threads => a.threads.cmp(&b.threads),
         };
         let ord = if descending { ord.reverse() } else { ord };
@@ -864,6 +884,8 @@ mod tests {
                 cpu_pct: cpu,
                 memory: 0,
                 disk_bps: 0.0,
+                net_bps: 0.0,
+                suspended: false,
                 threads: 0,
                 handles: 0,
                 session_id: 0,
@@ -888,6 +910,8 @@ mod tests {
             cpu_pct: cpu,
             memory: mem,
             disk_bps: 0.0,
+            net_bps: 0.0,
+            suspended: false,
             threads: 1,
             handles: 1,
             session_id: session,
@@ -929,6 +953,8 @@ mod tests {
             cpu_pct: 0.0,
             memory: 0,
             disk_bps: 0.0,
+            net_bps: 0.0,
+            suspended: false,
             threads: 0,
             handles: 0,
             session_id: 1,

@@ -96,6 +96,11 @@ impl Collector {
     }
 }
 
+/// Stops background work (the ETW network trace on Windows). Call on exit.
+pub fn shutdown() {
+    imp::shutdown();
+}
+
 /// Ends a process immediately (Windows `TerminateProcess`, Unix `SIGKILL`).
 pub fn end_process(pid: u32) -> io::Result<()> {
     imp::end_process(pid)

@@ -61,6 +61,8 @@ impl Collector {
             memory: num(21) * self.page_size,
             io_read_bytes: read,
             io_write_bytes: write,
+            net_bytes: 0,
+            suspended: false,
             threads: num(17) as u32,
             handles,
             session_id: num(3) as u32,
@@ -297,3 +299,4 @@ pub fn is_running(name: &str) -> bool {
         .flatten()
         .any(|e| std::fs::read_to_string(e.path().join("comm")).is_ok_and(|c| c.trim().eq_ignore_ascii_case(name)))
 }
+pub fn shutdown() {}

@@ -182,6 +182,21 @@ fn spawn_sampler(ctx: egui::Context, tx: Sender<Result<Arc<Snapshot>, String>>) 
                     spent += t0.elapsed();
                     if since.elapsed() >= Duration::from_secs(5) {
                         eprintln!("sampler: {n} samples, {:.1} ms each", spent.as_secs_f64() * 1000.0 / f64::from(n));
+                        if let Ok(s) = &msg {
+                            let busy: Vec<String> = s
+                                .processes
+                                .iter()
+                                .filter(|p| p.net_bps > 0.0)
+                                .take(5)
+                                .map(|p| format!("{} {:.0} B/s", p.name, p.net_bps))
+                                .collect();
+                            let suspended = s.processes.iter().filter(|p| p.suspended).count();
+                            eprintln!(
+                                "per-process network: {}, active: [{}]; suspended processes: {suspended}",
+                                s.system.per_process_net,
+                                busy.join(", ")
+                            );
+                        }
                         (n, spent, since) = (0, Duration::ZERO, Instant::now());
                     }
                 }
@@ -378,6 +393,10 @@ impl App {
 }
 
 impl eframe::App for App {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        taskmgr_sys::shutdown();
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.drain();
         if self.first_data_logged && std::env::var_os("OXI_TASKMGR_TIMING").is_some() {

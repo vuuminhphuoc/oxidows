@@ -3,7 +3,9 @@
 
 use egui::{Color32, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
-use taskmgr_core::{ProcGroup, ProcessRow, Snapshot, SortKey, display_name, format_bytes, group_of, sorted_view};
+use taskmgr_core::{
+    ProcGroup, ProcessRow, Snapshot, SortKey, display_name, format_bits_per_sec, format_bytes, group_of, sorted_view,
+};
 use taskmgr_sys::PriorityClass;
 
 use crate::{Dialog, Status};
@@ -172,6 +174,9 @@ pub fn process_menu(ui: &mut Ui, status: &Status, rows: &[ProcessRow], p: &Proce
     }
 }
 
+/// Shown where per-process network data needs elevation.
+pub const NET_HINT: &str = "Per-process network needs administrator: use Run as administrator";
+
 /// Task Manager style heat: transparent at 0, amber at the top of the scale.
 fn heat(ui: &Ui, fraction: f32) -> Color32 {
     let base = if ui.visuals().dark_mode { Color32::from_rgb(180, 120, 0) } else { Color32::from_rgb(255, 200, 40) };
@@ -227,6 +232,7 @@ impl State {
             view.into_iter().map(Line::Row).collect()
         };
         let mem_total = snap.system.mem_total.max(1) as f32;
+        let net_on = snap.system.per_process_net;
         let row_h = 22.0;
 
         let mut clicked_sort = None;
@@ -237,8 +243,10 @@ impl State {
             .sense(egui::Sense::click())
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
             .column(Column::remainder().at_least(200.0).clip(true))
+            .column(Column::exact(76.0))
             .column(Column::exact(64.0))
             .column(Column::exact(64.0))
+            .column(Column::exact(90.0))
             .column(Column::exact(90.0))
             .column(Column::exact(90.0))
             .column(Column::exact(60.0))
@@ -246,10 +254,12 @@ impl State {
             .header(row_h, |mut h| {
                 for (key, title) in [
                     (Some(SortKey::Name), "Name"),
+                    (None, "Status"),
                     (Some(SortKey::Pid), "PID"),
                     (Some(SortKey::Cpu), "CPU"),
                     (Some(SortKey::Memory), "Memory"),
                     (Some(SortKey::Disk), "Disk"),
+                    (Some(SortKey::Network), "Network"),
                     (Some(SortKey::Gpu), "GPU"),
                     (None, "Publisher"),
                 ] {
@@ -275,7 +285,7 @@ impl State {
                                 let arrow = if self.collapsed[gi] { ">" } else { "v" };
                                 ui.label(RichText::new(format!("{arrow} {} ({n})", g.label())).strong());
                             });
-                            for _ in 0..6 {
+                            for _ in 0..8 {
                                 row.col(|_| {});
                             }
                             if row.response().clicked() {
@@ -294,6 +304,11 @@ impl State {
                         ui.label(display_name(p)).on_hover_text(&p.name);
                     });
                     row.col(|ui| {
+                        if p.suspended {
+                            ui.label(RichText::new("Suspended").weak());
+                        }
+                    });
+                    row.col(|ui| {
                         ui.label(p.pid.to_string());
                     });
                     row.col(|ui| {
@@ -307,6 +322,14 @@ impl State {
                     row.col(|ui| {
                         ui.painter().rect_filled(ui.max_rect(), 0.0, heat(ui, (p.disk_bps / 10e6) as f32));
                         ui.label(format!("{}/s", format_bytes(p.disk_bps)));
+                    });
+                    row.col(|ui| {
+                        if net_on {
+                            ui.painter().rect_filled(ui.max_rect(), 0.0, heat(ui, (p.net_bps * 8.0 / 10e6) as f32));
+                            ui.label(format_bits_per_sec(p.net_bps));
+                        } else {
+                            ui.label(RichText::new("-").weak()).on_hover_text(NET_HINT);
+                        }
                     });
                     row.col(|ui| {
                         ui.painter().rect_filled(ui.max_rect(), 0.0, heat(ui, p.gpu_pct / 100.0));
