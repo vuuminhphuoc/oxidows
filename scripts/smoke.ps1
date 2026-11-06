@@ -50,7 +50,10 @@ if ($null -eq $windowMs) { Stop-Process -Id $p.Id -Force; throw "$Name showed no
 
 Start-Sleep -Seconds $SettleSeconds
 $p.Refresh()
-if ($p.HasExited) { throw "$Name crashed after its window appeared (exit code $($p.ExitCode))" }
+if ($p.HasExited) {
+    Get-Content $stderr -ErrorAction SilentlyContinue | Write-Host
+    throw "$Name crashed after its window appeared (exit code $($p.ExitCode))"
+}
 
 # Idle CPU: process CPU time over a quiet interval, as a share of the whole machine.
 $cpu0 = $p.TotalProcessorTime

@@ -7,7 +7,7 @@ use egui_extras::{Column, TableBuilder};
 use explorer_core::{SortKey, breadcrumbs, format_bytes, format_size_kb, format_time, icon_for};
 use explorer_sys::DriveKind;
 
-use crate::{App, Dialog};
+use crate::{App, Dialog, IconKey, IconState};
 
 pub fn toolbar(app: &mut App, ui: &mut Ui) {
     egui::Panel::top("toolbar").show(ui, |ui| {
@@ -34,7 +34,7 @@ pub fn toolbar(app: &mut App, ui: &mut Ui) {
             // Search box on the right, address bar takes the rest.
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let search = ui.add(
-                    egui::TextEdit::singleline(&mut app.filter).hint_text("🔍 Search this folder").desired_width(200.0),
+                    egui::TextEdit::singleline(&mut app.filter).hint_text("🔍 Search (Enter: subfolders)").desired_width(200.0),
                 );
                 if std::mem::take(&mut app.focus_search) {
                     search.request_focus();
@@ -42,6 +42,13 @@ pub fn toolbar(app: &mut App, ui: &mut Ui) {
                 if search.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     app.filter.clear();
                     search.surrender_focus();
+                }
+                // Enter searches subfolders too; clearing the box goes back to the folder.
+                if search.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !app.filter.trim().is_empty() {
+                    app.start_deep_search(app.filter.trim().to_string());
+                }
+                if app.deep_search.is_some() && app.filter.trim().is_empty() {
+                    app.end_deep_search();
                 }
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| address_bar(app, ui));
             });
@@ -196,10 +203,14 @@ pub fn status_bar(app: &mut App, ui: &mut Ui) {
                     ui.label(format!("{} selected", sel.len()));
                 }
             }
+            if let Some(q) = &app.deep_search {
+                ui.separator();
+                ui.label(format!("Results for \"{q}\" in subfolders"));
+            }
             if app.loading {
                 ui.separator();
                 ui.spinner();
-                ui.label("Loading…");
+                ui.label(if app.deep_search.is_some() { "Searching…" } else { "Loading…" });
             } else if let Some(t) = app.list_time {
                 ui.separator();
                 ui.label(RichText::new(format!("read in {:.1} ms", t.as_secs_f64() * 1000.0)).weak());
@@ -299,6 +310,7 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
     };
     let n = app.view.len();
     let weak = ui.visuals().weak_text_color();
+    let mut wanted_icons: Vec<IconKey> = Vec::new();
     let mut table = TableBuilder::new(ui)
         .striped(true)
         .resizable(true)
@@ -326,8 +338,19 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                 let dim = e.hidden || e.system;
                 let name_text = if dim { RichText::new(&e.name).color(weak) } else { RichText::new(&e.name) };
                 row.col(|ui| {
-                    let icon = RichText::new(icon_for(e));
-                    ui.label(if e.is_dir { icon.color(egui::Color32::from_rgb(230, 180, 60)) } else { icon });
+                    let key = IconKey::for_entry(e, &app.cur);
+                    match app.icons.get(&key) {
+                        Some(IconState::Ready(tex)) => {
+                            ui.add(egui::Image::new((tex.id(), egui::vec2(16.0, 16.0))));
+                        }
+                        state => {
+                            if state.is_none() {
+                                wanted_icons.push(key);
+                            }
+                            let icon = RichText::new(icon_for(e));
+                            ui.label(if e.is_dir { icon.color(egui::Color32::from_rgb(230, 180, 60)) } else { icon });
+                        }
+                    }
                     ui.add_space(4.0);
                     ui.add(egui::Label::new(name_text).selectable(false).truncate());
                     if e.link {
@@ -401,6 +424,7 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
             });
         });
 
+    app.request_icons(wanted_icons);
     if let Some(k) = sort_click {
         app.set_sort(k);
     }

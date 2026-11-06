@@ -9,7 +9,7 @@ use std::time::UNIX_EPOCH;
 
 use explorer_core::Entry;
 
-use crate::{BATCH, Drive, DriveKind, FileOp};
+use crate::{BATCH, Drive, DriveKind, FileOp, IconImage};
 
 static CLIPBOARD: Mutex<Option<(Vec<PathBuf>, bool)>> = Mutex::new(None);
 
@@ -139,4 +139,8 @@ pub fn watch_dir(dir: &Path, cancel: &AtomicBool, on_change: &mut dyn FnMut()) -
 
 pub fn ctrl_v_down() -> bool {
     false
+}
+
+pub fn shell_icon(_path: &Path, _is_dir: bool, _per_file: bool) -> Option<IconImage> {
+    None
 }

@@ -28,14 +28,21 @@ use windows_sys::Win32::System::Time::{GetTimeZoneInformation, TIME_ZONE_INFORMA
 use windows_sys::Win32::UI::Shell::{
     DragQueryFileW, FO_COPY, FO_DELETE, FO_MOVE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOCONFIRMMKDIR, FOF_NOERRORUI, FOF_RENAMEONCOLLISION, FOF_SILENT,
     FOF_WANTNUKEWARNING, FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Music,
-    FOLDERID_Pictures, FOLDERID_Profile, FOLDERID_Videos, SEE_MASK_INVOKEIDLIST, SHELLEXECUTEINFOW,
+    FOLDERID_Pictures, FOLDERID_Profile, FOLDERID_Videos, SEE_MASK_INVOKEIDLIST, SHELLEXECUTEINFOW, SHFILEINFOW, SHGFI_ICON, SHGFI_SMALLICON, SHGFI_USEFILEATTRIBUTES,
+    SHGetFileInfoW,
     SHFILEOPSTRUCTW, SHFileOperationW, SHGetKnownFolderPath, ShellExecuteExW, ShellExecuteW,
 };
+use windows_sys::Win32::Graphics::Gdi::{
+    BI_RGB, BITMAP, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, DeleteObject, GetDC, GetDIBits, GetObjectW, HBITMAP,
+    HDC, ReleaseDC,
+};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL};
-use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, HWND_MESSAGE, SW_SHOWNORMAL};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    CreateWindowExW, DestroyIcon, GetIconInfo, HWND_MESSAGE, ICONINFO, SW_SHOWNORMAL,
+};
 use windows_sys::core::GUID;
 
-use crate::{BATCH, Drive, DriveKind, FileOp};
+use crate::{BATCH, Drive, DriveKind, FileOp, IconImage};
 
 const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
 const FILE_ATTRIBUTE_SYSTEM: u32 = 0x4;
@@ -455,4 +462,71 @@ pub fn watch_dir(dir: &Path, cancel: &AtomicBool, on_change: &mut dyn FnMut()) -
 
 pub fn ctrl_v_down() -> bool {
     unsafe { GetKeyState(VK_CONTROL as i32) < 0 && GetKeyState(b'V' as i32) < 0 }
+}
+
+const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
+
+/// Reads a bitmap as 32-bit top-down BGRA.
+unsafe fn bitmap_bgra(dc: HDC, bmp: HBITMAP, w: i32, h: i32) -> Option<Vec<u8>> {
+    let mut bi: BITMAPINFO = unsafe { zeroed() };
+    bi.bmiHeader = BITMAPINFOHEADER {
+        biSize: size_of::<BITMAPINFOHEADER>() as u32,
+        biWidth: w,
+        biHeight: -h,
+        biPlanes: 1,
+        biBitCount: 32,
+        biCompression: BI_RGB,
+        ..unsafe { zeroed() }
+    };
+    let mut buf = vec![0u8; (w * h * 4) as usize];
+    let lines = unsafe { GetDIBits(dc, bmp, 0, h as u32, buf.as_mut_ptr().cast(), &mut bi, DIB_RGB_COLORS) };
+    (lines == h).then_some(buf)
+}
+
+pub fn shell_icon(path: &Path, is_dir: bool, per_file: bool) -> Option<IconImage> {
+    com_init();
+    let w = wide(path);
+    let mut info: SHFILEINFOW = unsafe { zeroed() };
+    let attrs = if is_dir { FILE_ATTRIBUTE_DIRECTORY } else { FILE_ATTRIBUTE_NORMAL };
+    let flags = SHGFI_ICON | SHGFI_SMALLICON | if per_file { 0 } else { SHGFI_USEFILEATTRIBUTES };
+    let ok = unsafe { SHGetFileInfoW(w.as_ptr(), attrs, &mut info, size_of::<SHFILEINFOW>() as u32, flags) };
+    if ok == 0 || info.hIcon.is_null() {
+        return None;
+    }
+    let mut ii: ICONINFO = unsafe { zeroed() };
+    let got = unsafe { GetIconInfo(info.hIcon, &mut ii) } != 0;
+    let mut out = None;
+    if got && !ii.hbmColor.is_null() {
+        let mut bm: BITMAP = unsafe { zeroed() };
+        unsafe { GetObjectW(ii.hbmColor, size_of::<BITMAP>() as i32, (&mut bm as *mut BITMAP).cast()) };
+        let (bw, bh) = (bm.bmWidth, bm.bmHeight);
+        if bw > 0 && bh > 0 && bw <= 256 && bh <= 256 {
+            let dc = unsafe { GetDC(null_mut()) };
+            if let Some(mut px) = unsafe { bitmap_bgra(dc, ii.hbmColor, bw, bh) } {
+                // Old-style icons carry no alpha; transparency then comes from the AND mask.
+                if px.chunks_exact(4).all(|p| p[3] == 0) {
+                    let mask = if ii.hbmMask.is_null() { None } else { unsafe { bitmap_bgra(dc, ii.hbmMask, bw, bh) } };
+                    for (i, p) in px.chunks_exact_mut(4).enumerate() {
+                        let transparent = mask.as_ref().is_some_and(|m| m[i * 4] != 0);
+                        p[3] = if transparent { 0 } else { 255 };
+                    }
+                }
+                for p in px.chunks_exact_mut(4) {
+                    p.swap(0, 2); // BGRA -> RGBA
+                }
+                out = Some(IconImage { width: bw as usize, height: bh as usize, rgba: px });
+            }
+            unsafe { ReleaseDC(null_mut(), dc) };
+        }
+    }
+    unsafe {
+        if !ii.hbmColor.is_null() {
+            DeleteObject(ii.hbmColor);
+        }
+        if !ii.hbmMask.is_null() {
+            DeleteObject(ii.hbmMask);
+        }
+        DestroyIcon(info.hIcon);
+    }
+    out
 }

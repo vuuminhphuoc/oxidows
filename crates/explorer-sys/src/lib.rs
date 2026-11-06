@@ -135,3 +135,19 @@ pub fn clipboard_set_files(paths: &[PathBuf], cut: bool) -> io::Result<()> {
 pub fn clipboard_get_files() -> Option<(Vec<PathBuf>, bool)> {
     imp::clipboard_get_files()
 }
+
+/// A small (16 px at 100 % scaling) icon as straight RGBA, row-major, top row first.
+#[derive(Clone, Debug)]
+pub struct IconImage {
+    pub width: usize,
+    pub height: usize,
+    pub rgba: Vec<u8>,
+}
+
+/// The shell's small icon. With `per_file` false only the extension (or "folder") matters and
+/// the disk is not touched (`SHGFI_USEFILEATTRIBUTES`), so one call serves every `.txt`. Use
+/// `per_file` for items whose icon is inside the file itself: `.exe`, `.lnk`, `.ico`.
+/// Call from a worker thread; `None` where there is no shell (non-Windows) or on failure.
+pub fn shell_icon(path: &Path, is_dir: bool, per_file: bool) -> Option<IconImage> {
+    imp::shell_icon(path, is_dir, per_file)
+}

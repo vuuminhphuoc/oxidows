@@ -161,3 +161,13 @@ fn clipboard_round_trip() {
     assert_eq!(got, &files[..1]);
     assert!(!cut);
 }
+
+#[test]
+fn shell_icons() {
+    let txt = explorer_sys::shell_icon(Path::new("x.txt"), false, false).expect("txt icon");
+    assert!(txt.width >= 16 && txt.height >= 16);
+    assert_eq!(txt.rgba.len(), txt.width * txt.height * 4);
+    assert!(txt.rgba.chunks_exact(4).any(|p| p[3] > 0), "icon is fully transparent");
+    assert!(explorer_sys::shell_icon(Path::new("folder"), true, false).is_some());
+    assert!(explorer_sys::shell_icon(Path::new(r"C:\Windows\notepad.exe"), false, true).is_some());
+}

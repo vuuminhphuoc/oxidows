@@ -4,7 +4,7 @@
 
 mod view;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -24,6 +24,35 @@ enum Msg {
     OpDone(String, std::io::Result<bool>),
     /// The watched folder changed on disk.
     Changed(PathBuf),
+    Icon(IconKey, Option<explorer_sys::IconImage>),
+}
+
+/// Icons are cached per extension; only files that carry their own icon get one each.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub enum IconKey {
+    Dir,
+    Ext(String),
+    File(PathBuf),
+}
+
+impl IconKey {
+    pub fn for_entry(e: &Entry, dir: &Path) -> Self {
+        if e.is_dir {
+            return IconKey::Dir;
+        }
+        let ext = e.extension();
+        if matches!(ext.as_str(), "exe" | "lnk" | "ico" | "url" | "msc" | "cpl" | "scr") {
+            IconKey::File(dir.join(&e.name))
+        } else {
+            IconKey::Ext(ext)
+        }
+    }
+}
+
+pub enum IconState {
+    Pending,
+    Ready(egui::TextureHandle),
+    Failed,
 }
 
 enum Dialog {
@@ -83,10 +112,14 @@ struct App {
 
     address_edit: Option<String>,
     focus_search: bool,
+    /// Query of the running/finished search through subfolders; `None` = normal listing.
+    pub deep_search: Option<String>,
     dialog: Option<Dialog>,
     status: Option<String>,
     ops_running: usize,
 
+    pub icons: HashMap<IconKey, IconState>,
+    icon_tx: Option<Sender<IconKey>>,
     drives: Vec<Drive>,
     places: Vec<(&'static str, PathBuf)>,
     home: PathBuf,
@@ -131,9 +164,12 @@ impl App {
             type_ahead: (String::new(), Instant::now()),
             address_edit: None,
             focus_search: false,
+            deep_search: None,
             dialog: None,
             status: None,
             ops_running: 0,
+            icons: HashMap::new(),
+            icon_tx: None,
             drives: Vec::new(),
             places: explorer_sys::known_folders(),
             home: explorer_sys::home_dir(),
@@ -145,13 +181,77 @@ impl App {
         };
         app.start_listing(false);
         app.start_watch();
+        app.start_icon_loader();
         app.load_drives();
         app
     }
 
     // ---- workers -------------------------------------------------------------------------
 
+    /// Searches `cur` and everything below it for names containing `query`. Results keep their
+    /// path relative to `cur` as the name ("sub\\file.txt"), so opening, copying and deleting
+    /// them works unchanged. Links/junctions are not followed (no loops).
+    pub fn start_deep_search(&mut self, query: String) {
+        self.cancel.store(true, Ordering::Relaxed);
+        self.cancel = Arc::new(AtomicBool::new(false));
+        self.generation += 1;
+        self.loading = true;
+        self.list_error = None;
+        self.replace_on_next_batch = false;
+        self.entries.clear();
+        self.selected.clear();
+        self.version += 1;
+        self.deep_search = Some(query.clone());
+        let (root, generation, cancel, tx, ctx) =
+            (self.cur.clone(), self.generation, self.cancel.clone(), self.tx.clone(), self.ctx.clone());
+        thread::Builder::new()
+            .name("search".into())
+            .spawn(move || {
+                let t = Instant::now();
+                let needle = query.to_lowercase();
+                let mut queue = std::collections::VecDeque::from([PathBuf::new()]);
+                let mut found = Vec::new();
+                let mut last_send = Instant::now();
+                while let Some(rel) = queue.pop_front() {
+                    if cancel.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    // Unreadable folders (access denied) are skipped, as Explorer does.
+                    let _ = explorer_sys::list_dir(&root.join(&rel), &cancel, &mut |batch| {
+                        for mut e in batch {
+                            let rel_name = rel.join(&e.name);
+                            if e.is_dir && !e.link {
+                                queue.push_back(rel_name.clone());
+                            }
+                            if e.name.to_lowercase().contains(&needle) {
+                                e.name = rel_name.to_string_lossy().into_owned();
+                                found.push(e);
+                            }
+                        }
+                    });
+                    if !found.is_empty() && (found.len() >= explorer_sys::BATCH || last_send.elapsed().as_millis() > 100) {
+                        let _ = tx.send(Msg::Batch(generation, std::mem::take(&mut found)));
+                        ctx.request_repaint();
+                        last_send = Instant::now();
+                    }
+                }
+                if !found.is_empty() {
+                    let _ = tx.send(Msg::Batch(generation, found));
+                }
+                let _ = tx.send(Msg::Done(generation, Ok(()), t.elapsed()));
+                ctx.request_repaint();
+            })
+            .expect("spawn search thread");
+    }
+
+    pub fn end_deep_search(&mut self) {
+        if self.deep_search.take().is_some() {
+            self.start_listing(false);
+        }
+    }
+
     fn start_listing(&mut self, keep_old: bool) {
+        self.deep_search = None;
         self.cancel.store(true, Ordering::Relaxed);
         self.cancel = Arc::new(AtomicBool::new(false));
         self.generation += 1;
@@ -193,6 +293,42 @@ impl App {
                 });
             })
             .expect("spawn watch thread");
+    }
+
+    /// One thread turns icon requests into pixels, in the order rows became visible.
+    fn start_icon_loader(&mut self) {
+        if !cfg!(windows) {
+            return; // the dev build keeps the emoji fallback
+        }
+        let (req_tx, req_rx) = channel::<IconKey>();
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        thread::Builder::new()
+            .name("icons".into())
+            .spawn(move || {
+                while let Ok(key) = req_rx.recv() {
+                    let img = match &key {
+                        IconKey::Dir => explorer_sys::shell_icon(Path::new("folder"), true, false),
+                        IconKey::Ext(e) => explorer_sys::shell_icon(Path::new(&format!("file.{e}")), false, false),
+                        IconKey::File(p) => explorer_sys::shell_icon(p, false, true),
+                    };
+                    if tx.send(Msg::Icon(key, img)).is_err() {
+                        return;
+                    }
+                    ctx.request_repaint();
+                }
+            })
+            .expect("spawn icon thread");
+        self.icon_tx = Some(req_tx);
+    }
+
+    pub fn request_icons(&mut self, keys: Vec<IconKey>) {
+        let Some(tx) = &self.icon_tx else { return };
+        for k in keys {
+            if let std::collections::hash_map::Entry::Vacant(slot) = self.icons.entry(k) {
+                let _ = tx.send(slot.key().clone());
+                slot.insert(IconState::Pending);
+            }
+        }
     }
 
     fn load_drives(&self) {
@@ -263,10 +399,21 @@ impl App {
                 }
                 Msg::Batch(..) | Msg::Done(..) => {}
                 Msg::Drives(d) => self.drives = d,
-                Msg::Changed(dir) if dir == self.cur => {
+                Msg::Changed(dir) if dir == self.cur && self.deep_search.is_none() => {
                     self.changed_at.get_or_insert_with(Instant::now);
                 }
                 Msg::Changed(_) => {}
+                Msg::Icon(key, img) => {
+                    let state = match img {
+                        Some(i) => IconState::Ready(self.ctx.load_texture(
+                            format!("icon-{key:?}"),
+                            egui::ColorImage::from_rgba_unmultiplied([i.width, i.height], &i.rgba),
+                            egui::TextureOptions::LINEAR,
+                        )),
+                        None => IconState::Failed,
+                    };
+                    self.icons.insert(key, state);
+                }
                 Msg::OpDone(desc, r) => {
                     self.ops_running -= 1;
                     self.status = Some(match r {
@@ -332,7 +479,10 @@ impl App {
     }
 
     fn refresh(&mut self) {
-        self.start_listing(true);
+        match self.deep_search.clone() {
+            Some(q) => self.start_deep_search(q),
+            None => self.start_listing(true),
+        }
     }
 
     fn open_entry(&mut self, e: &Entry) {
@@ -474,8 +624,9 @@ impl App {
     fn begin_rename(&mut self) {
         let sel = self.selected_entries();
         if let [e] = sel.as_slice() {
-            self.dialog =
-                Some(Dialog::Rename { original: e.name.clone(), text: e.name.clone(), error: None, opened: false });
+            // In search results `name` is a relative path; only its last part is edited.
+            let leaf = Path::new(&e.name).file_name().map_or_else(|| e.name.clone(), |n| n.to_string_lossy().into_owned());
+            self.dialog = Some(Dialog::Rename { original: e.name.clone(), text: leaf, error: None, opened: false });
         }
     }
 
@@ -489,22 +640,25 @@ impl App {
         match dialog {
             Dialog::Rename { original, text, .. } => {
                 let new = text.trim_end();
-                if new == original {
+                let from = self.cur.join(original);
+                let old_leaf = from.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                if new == old_leaf {
                     return None;
                 }
                 if let Err(e) = validate_name(new) {
                     return Some(e);
                 }
+                let to = from.with_file_name(new);
                 // std::fs::rename replaces an existing target; refuse instead (a case-only
                 // change of the same item is fine).
-                let clash = self.entries.iter().any(|e| e.name.eq_ignore_ascii_case(new) && !e.name.eq_ignore_ascii_case(original));
-                if clash {
+                if to.exists() && !new.eq_ignore_ascii_case(&old_leaf) {
                     return Some("There is already an item with that name");
                 }
-                match std::fs::rename(self.cur.join(original), self.cur.join(new)) {
+                match std::fs::rename(&from, &to) {
                     Ok(()) => {
                         self.selected.clear();
-                        self.pending_select = Some(new.to_string());
+                        let parent = Path::new(original).parent().unwrap_or(Path::new(""));
+                        self.pending_select = Some(parent.join(new).to_string_lossy().into_owned());
                         self.refresh();
                     }
                     Err(e) => self.status = Some(format!("Could not rename: {e}")),
