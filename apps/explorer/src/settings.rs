@@ -48,6 +48,8 @@ pub struct Settings {
     pub group_by: explorer_core::GroupBy,
     pub show_protected: bool,
     pub item_checkboxes: bool,
+    /// Property-system columns shown in Details, in order.
+    pub prop_cols: Vec<explorer_core::Prop>,
 }
 
 impl Default for Settings {
@@ -67,6 +69,7 @@ impl Default for Settings {
             group_by: explorer_core::GroupBy::None,
             show_protected: false,
             item_checkboxes: false,
+            prop_cols: Vec::new(),
         }
     }
 }
@@ -156,6 +159,7 @@ impl Settings {
                 }
                 "show_protected" => s.show_protected = flag(v),
                 "item_checkboxes" => s.item_checkboxes = flag(v),
+                "columns" => s.prop_cols = v.split(',').filter_map(explorer_core::Prop::parse).collect(),
                 "group_by" => {
                     use explorer_core::GroupBy;
                     s.group_by = match v {
@@ -215,6 +219,8 @@ impl Settings {
             "group_by={group}\nshow_protected={}\nitem_checkboxes={}\n",
             self.show_protected, self.item_checkboxes
         ));
+        let cols: Vec<&str> = self.prop_cols.iter().map(|p| p.key()).collect();
+        out.push_str(&format!("columns={}\n", cols.join(",")));
         for p in &self.pinned {
             out.push_str(&format!("pin={}\n", p.display()));
         }
@@ -307,6 +313,7 @@ impl App {
         self.group_by = s.group_by;
         self.show_protected = s.show_protected;
         self.item_checkboxes = s.item_checkboxes;
+        self.prop_cols = s.prop_cols.clone();
     }
 
     /// Once per frame: per-folder views, and saving changes.
@@ -362,6 +369,7 @@ impl App {
         s.group_by = self.group_by;
         s.show_protected = self.show_protected;
         s.item_checkboxes = self.item_checkboxes;
+        s.prop_cols = self.prop_cols.clone();
 
         if self.persist.settings != self.persist.saved {
             let at = *self.persist.changed_at.get_or_insert_with(Instant::now);
@@ -400,6 +408,7 @@ mod tests {
             group_by: explorer_core::GroupBy::None,
             show_protected: false,
             item_checkboxes: false,
+            prop_cols: vec![explorer_core::Prop::Dimensions, explorer_core::Prop::Authors],
         };
         s.remember_folder(
             r"c:\users\a\pictures".into(),

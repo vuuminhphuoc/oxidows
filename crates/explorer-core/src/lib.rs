@@ -12,6 +12,64 @@ use std::path::{Path, PathBuf};
 pub mod query;
 pub use query::Query;
 
+/// Optional Details columns read from the Windows property system (per file, in the
+/// background), in the column chooser's order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Prop {
+    Authors,
+    Title,
+    Tags,
+    Rating,
+    Dimensions,
+    Length,
+    DateTaken,
+    Owner,
+}
+
+impl Prop {
+    pub const ALL: [Prop; 8] = [
+        Prop::Authors,
+        Prop::Title,
+        Prop::Tags,
+        Prop::Rating,
+        Prop::Dimensions,
+        Prop::Length,
+        Prop::DateTaken,
+        Prop::Owner,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Prop::Authors => "Authors",
+            Prop::Title => "Title",
+            Prop::Tags => "Tags",
+            Prop::Rating => "Rating",
+            Prop::Dimensions => "Dimensions",
+            Prop::Length => "Length",
+            Prop::DateTaken => "Date taken",
+            Prop::Owner => "Owner",
+        }
+    }
+
+    /// Name in the settings file.
+    pub fn key(self) -> &'static str {
+        match self {
+            Prop::Authors => "authors",
+            Prop::Title => "title",
+            Prop::Tags => "tags",
+            Prop::Rating => "rating",
+            Prop::Dimensions => "dimensions",
+            Prop::Length => "length",
+            Prop::DateTaken => "datetaken",
+            Prop::Owner => "owner",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Prop> {
+        Prop::ALL.into_iter().find(|p| p.key() == s.trim())
+    }
+}
+
 /// One item in a folder listing.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Entry {

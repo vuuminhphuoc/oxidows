@@ -35,6 +35,8 @@ enum Msg {
     Changed(PathBuf),
     Icon(IconKey, Option<explorer_sys::IconImage>),
     Thumb(PathBuf, Option<explorer_sys::IconImage>),
+    /// Every `Prop::ALL` value of one file.
+    Props(PathBuf, Vec<String>),
     /// Subfolder names for the navigation tree.
     Tree(PathBuf, Vec<String>),
     Preview(PathBuf, pane::PreviewData),
@@ -243,6 +245,12 @@ struct App {
     pub thumbs: HashMap<PathBuf, IconState>,
     pub thumb_wanted: Vec<PathBuf>,
     thumb_tx: Option<Sender<(PathBuf, u32)>>,
+    /// Property-system columns shown in Details.
+    pub prop_cols: Vec<explorer_core::Prop>,
+    /// Per file: `Prop::ALL` values, `None` while loading.
+    pub props: HashMap<PathBuf, Option<Vec<String>>>,
+    pub props_wanted: Vec<PathBuf>,
+    props_tx: Option<Sender<PathBuf>>,
     /// Size the cached thumbnails were made at.
     thumb_px: u32,
     icon_tx: Option<Sender<IconKey>>,
@@ -325,6 +333,10 @@ impl App {
             thumbs: HashMap::new(),
             thumb_wanted: Vec::new(),
             thumb_tx: None,
+            prop_cols: Vec::new(),
+            props: HashMap::new(),
+            props_wanted: Vec::new(),
+            props_tx: None,
             thumb_px: 96,
             icon_tx: None,
             drives: Vec::new(),
@@ -595,6 +607,34 @@ impl App {
             })
             .expect("spawn thumbnail thread");
         self.thumb_tx = Some(thumb_tx);
+
+        let (props_tx, props_rx) = channel::<PathBuf>();
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        thread::Builder::new()
+            .name("props".into())
+            .spawn(move || {
+                while let Ok(p) = props_rx.recv() {
+                    let v = explorer_sys::read_props(&p, &explorer_core::Prop::ALL);
+                    if tx.send(Msg::Props(p, v)).is_err() {
+                        return;
+                    }
+                    ctx.request_repaint();
+                }
+            })
+            .expect("spawn property thread");
+        self.props_tx = Some(props_tx);
+    }
+
+    /// Asks for the property columns of the rows drawn this frame.
+    pub fn request_props(&mut self) {
+        let wanted = std::mem::take(&mut self.props_wanted);
+        let Some(tx) = &self.props_tx else { return };
+        for p in wanted {
+            if let std::collections::hash_map::Entry::Vacant(slot) = self.props.entry(p) {
+                let _ = tx.send(slot.key().clone());
+                slot.insert(None);
+            }
+        }
     }
 
     pub fn request_thumbs(&mut self) {
@@ -743,6 +783,11 @@ impl App {
                     }
                 }
                 Msg::Preview(p, data) => self.preview_loaded(p, data),
+                Msg::Props(p, v) => {
+                    if self.props.contains_key(&p) {
+                        self.props.insert(p, Some(v));
+                    }
+                }
                 Msg::Tree(dir, names) => {
                     self.tree_pending.remove(&dir);
                     self.tree.insert(dir, names);
@@ -882,6 +927,7 @@ impl App {
         self.changed_at = None;
         self.thumbs.clear();
         self.thumb_wanted.clear();
+        self.props.clear();
         self.start_listing(false);
         self.start_watch();
     }

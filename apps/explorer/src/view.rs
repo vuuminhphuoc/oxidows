@@ -904,13 +904,18 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
     // Right-clicking any header opens the column chooser, as in Explorer.
     let mut toggle_col: Option<SortKey> = None;
     let (col_created, col_attrs) = (app.col_created, app.col_attrs);
+    let prop_cols = app.prop_cols.clone();
+    let mut toggle_prop: Option<explorer_core::Prop> = None;
+    let mut wanted_props: Vec<PathBuf> = Vec::new();
+    // `key`: None for the property columns, which don't sort.
     let mut header =
-        |h: &mut egui_extras::TableRow, key: SortKey, title: &str, app: &App, out: &mut Option<SortKey>| {
+        |h: &mut egui_extras::TableRow, key: Option<SortKey>, title: &str, app: &App, out: &mut Option<SortKey>| {
             h.col(|ui| {
-                let arrow = if app.sort == key { if app.ascending { " ⏶" } else { " ⏷" } } else { "" };
+                let sorted = key.is_some_and(|k| app.sort == k);
+                let arrow = if sorted { if app.ascending { " ⏶" } else { " ⏷" } } else { "" };
                 let resp = ui.add(egui::Button::new(RichText::new(format!("{title}{arrow}")).strong()).frame(false));
-                if resp.clicked() {
-                    *out = Some(key);
+                if resp.clicked() && key.is_some() {
+                    *out = key;
                 }
                 resp.context_menu(|ui| {
                     ui.add_enabled(false, egui::Checkbox::new(&mut true, "Name"));
@@ -921,6 +926,13 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                         let mut on = on;
                         if ui.checkbox(&mut on, label).clicked() {
                             toggle_col = Some(k);
+                            ui.close();
+                        }
+                    }
+                    for p in explorer_core::Prop::ALL {
+                        let mut on = app.prop_cols.contains(&p);
+                        if ui.checkbox(&mut on, p.label()).clicked() {
+                            toggle_prop = Some(p);
                             ui.close();
                         }
                     }
@@ -953,8 +965,11 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
         if col_attrs {
             table = table.column(Column::initial(80.0).at_least(40.0).clip(true));
         }
+        for _ in &prop_cols {
+            table = table.column(Column::initial(120.0).at_least(50.0).clip(true));
+        }
         // Column widths are remembered per column set.
-        table = table.id_salt(("details", col_created, col_attrs, app.pane));
+        table = table.id_salt(("details", col_created, col_attrs, app.pane, &prop_cols));
         // With Group by on, a heading row (negative: -1 - group index) starts each group.
         let rows_map: Vec<isize> = app
             .groups
@@ -964,7 +979,7 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
             .collect();
         let grouped = !rows_map.is_empty();
         let n_rows = if grouped { rows_map.len() } else { n };
-        let n_cols = 4 + usize::from(col_created) + usize::from(col_attrs);
+        let n_cols = 4 + usize::from(col_created) + usize::from(col_attrs) + prop_cols.len();
         if let Some(pos) = app.scroll_to.take().filter(|&p| p < n) {
             let row = if grouped { rows_map.iter().position(|&r| r == pos as isize).unwrap_or(pos) } else { pos };
             table = table.scroll_to_row(row, None);
@@ -974,22 +989,31 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
         let mut band_start: Option<[f32; 2]> = None;
         table
             .header(row_h, |mut h| {
-                header(&mut h, SortKey::Name, "Name", app, &mut sort_click);
+                header(&mut h, Some(SortKey::Name), "Name", app, &mut sort_click);
                 let bin = app.in_recycle_bin();
                 header(
                     &mut h,
-                    SortKey::Modified,
+                    Some(SortKey::Modified),
                     if bin { "Date deleted" } else { "Date modified" },
                     app,
                     &mut sort_click,
                 );
-                header(&mut h, SortKey::Type, if bin { "Original location" } else { "Type" }, app, &mut sort_click);
-                header(&mut h, SortKey::Size, "Size", app, &mut sort_click);
+                header(
+                    &mut h,
+                    Some(SortKey::Type),
+                    if bin { "Original location" } else { "Type" },
+                    app,
+                    &mut sort_click,
+                );
+                header(&mut h, Some(SortKey::Size), "Size", app, &mut sort_click);
                 if col_created {
-                    header(&mut h, SortKey::Created, "Date created", app, &mut sort_click);
+                    header(&mut h, Some(SortKey::Created), "Date created", app, &mut sort_click);
                 }
                 if col_attrs {
-                    header(&mut h, SortKey::Attributes, "Attributes", app, &mut sort_click);
+                    header(&mut h, Some(SortKey::Attributes), "Attributes", app, &mut sort_click);
+                }
+                for p in &prop_cols {
+                    header(&mut h, None, p.label(), app, &mut sort_click);
                 }
             })
             .body(|body| {
@@ -1101,6 +1125,23 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                             );
                         });
                     }
+                    if !prop_cols.is_empty() {
+                        let path = app.child(&e.name);
+                        let values = match app.props.get(&path) {
+                            Some(v) => v.as_ref(),
+                            None => {
+                                wanted_props.push(path);
+                                None
+                            }
+                        };
+                        for p in &prop_cols {
+                            let k = explorer_core::Prop::ALL.iter().position(|q| q == p).unwrap_or(0);
+                            let text = values.and_then(|v| v.get(k)).map_or("", String::as_str);
+                            row.col(|ui| {
+                                ui.add(egui::Label::new(RichText::new(text).color(weak)).selectable(false));
+                            });
+                        }
+                    }
                     let resp = row.response();
                     drawn.push((row.index(), resp.rect));
                     if resp.drag_started() {
@@ -1205,6 +1246,17 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
     if let Some(t) = hover_target {
         app.drop_target = Some(t);
     }
+    if let Some(p) = toggle_prop {
+        if app.prop_cols.contains(&p) {
+            app.prop_cols.retain(|&q| q != p);
+        } else {
+            app.prop_cols.push(p);
+            let order = |q: &explorer_core::Prop| explorer_core::Prop::ALL.iter().position(|x| x == q);
+            app.prop_cols.sort_by_key(order);
+        }
+    }
+    app.props_wanted.extend(wanted_props);
+    app.request_props();
     match toggle_col {
         Some(SortKey::Created) => app.col_created = !app.col_created,
         Some(SortKey::Attributes) => app.col_attrs = !app.col_attrs,

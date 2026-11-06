@@ -42,7 +42,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Sort by any column, folders first, natural order | ✅ | |
 | Resize columns | ✅ | |
 | More columns (Date created, Attributes), choose columns | ✅ | right-click a column header |
-| Other columns (Owner, Dimensions, Authors, …) | ❌ | need the property system |
+| Other columns (Owner, Dimensions, Authors, …) | ✅ | Authors, Title, Tags, Rating, Dimensions, Length, Date taken, Owner from the property system; not sortable yet |
 | Group by (name, date modified, type, size) | ✅ | Details and icon views (not List) |
 | Extra large / Large / Medium / Small icons, List, Details, Tiles (Ctrl+Shift+1…7) | ✅ | |
 | Content view (Ctrl+Shift+8) | ✅ | name + type, date modified + size, thumbnails |

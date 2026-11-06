@@ -464,3 +464,25 @@ fn shell_search_finds_by_name_and_stat_reads_entries() {
     assert!(!found.iter().any(|p| same(p, &d.join("other.txt"))));
     fs::remove_dir_all(&d).unwrap();
 }
+
+#[test]
+fn property_columns_are_read() {
+    use explorer_core::Prop;
+    let _g = guard("property_columns_are_read");
+    let d = scratch("props");
+    let png = d.join("pic.png");
+    let script = format!(
+        "Add-Type -AssemblyName System.Drawing; $b=New-Object System.Drawing.Bitmap 37,21; $b.Save('{}'); $b.Dispose()",
+        png.display()
+    );
+    let st = std::process::Command::new("powershell").args(["-NoProfile", "-Command", &script]).status().unwrap();
+    assert!(st.success());
+    let w = watchdog("property store", 60);
+    let v = explorer_sys::read_props(&png, &[Prop::Dimensions, Prop::Owner, Prop::Authors]);
+    w.store(true, Ordering::Relaxed);
+    println!("props: {v:?}");
+    assert!(v[0].contains("37") && v[0].contains("21"), "{v:?}");
+    assert!(!v[1].is_empty(), "owner: {v:?}");
+    assert!(v[2].is_empty(), "authors: {v:?}");
+    fs::remove_dir_all(&d).unwrap();
+}

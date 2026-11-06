@@ -23,6 +23,8 @@ use windows as imp;
 #[cfg(windows)]
 mod preview;
 #[cfg(windows)]
+mod props;
+#[cfg(windows)]
 mod search;
 #[cfg(windows)]
 mod shell_menu;
@@ -61,6 +63,18 @@ use unix as imp;
 
 /// Entries are handed over in batches of this many so a huge folder shows up progressively.
 pub const BATCH: usize = 2048;
+
+/// Display text of each property column for `path` ("" where it has none; always "" off
+/// Windows). Slow-ish (opens the file's property handler): call off the UI thread.
+pub fn read_props(path: &Path, props: &[explorer_core::Prop]) -> Vec<String> {
+    #[cfg(windows)]
+    return props::read_props(path, props);
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        vec![String::new(); props.len()]
+    }
+}
 
 /// One file or folder's entry; its `name` is the last path component.
 pub fn stat(path: &Path) -> Option<Entry> {
