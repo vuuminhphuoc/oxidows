@@ -136,6 +136,7 @@ struct App {
     first_data_logged: bool,
     /// OXI_TASKMGR_TIMING: frames drawn since `frames_since`.
     frames: u32,
+    frame_cpu: f32,
     frames_since: Instant,
 }
 
@@ -187,7 +188,9 @@ fn spawn_sampler(ctx: egui::Context, tx: Sender<Result<Arc<Snapshot>, String>>) 
                 if tx.send(msg).is_err() {
                     return; // window closed
                 }
-                ctx.request_repaint();
+                // A zero-delay request makes egui paint two frames; a tiny delay paints one, which
+                // halves idle CPU where rendering is expensive (software rendering in VMs and RDP).
+                ctx.request_repaint_after(Duration::from_millis(1));
                 if first {
                     // A second sample right away gives real CPU % on screen within ~250 ms.
                     first = false;
@@ -246,6 +249,7 @@ impl App {
             started: Instant::now(),
             first_data_logged: false,
             frames: 0,
+            frame_cpu: 0.0,
             frames_since: Instant::now(),
         }
     }
@@ -374,13 +378,19 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.drain();
         if self.first_data_logged && std::env::var_os("OXI_TASKMGR_TIMING").is_some() {
             self.frames += 1;
+            self.frame_cpu += frame.info().cpu_usage.unwrap_or(0.0);
             if self.frames_since.elapsed() >= Duration::from_secs(5) {
-                eprintln!("ui: {} frames in {:.1} s", self.frames, self.frames_since.elapsed().as_secs_f64());
-                (self.frames, self.frames_since) = (0, Instant::now());
+                eprintln!(
+                    "ui: {} frames in {:.1} s, {:.1} ms app time each",
+                    self.frames,
+                    self.frames_since.elapsed().as_secs_f64(),
+                    self.frame_cpu * 1000.0 / self.frames as f32
+                );
+                (self.frames, self.frame_cpu, self.frames_since) = (0, 0.0, Instant::now());
             }
         }
         let snap = self.snapshot.clone();

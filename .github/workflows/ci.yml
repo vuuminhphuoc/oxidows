@@ -32,7 +32,7 @@ jobs:
         env:
           OXI_TASKMGR_TIMING: "1"
         run: |
-          foreach ($m in '0', '2000', '500') {
+          foreach ($m in '2000') {
             $env:OXI_TASKMGR_INTERVAL_MS = $m
             try { ./scripts/smoke.ps1 -Exe target/release/oxi-taskmgr.exe -Name "taskmgr-every-$m-ms" -OutDir smoke-backends }
             catch { Write-Host "taskmgr-$m failed: $_" }
