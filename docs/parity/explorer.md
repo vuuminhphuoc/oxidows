@@ -51,9 +51,9 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Overlay icons (shortcut arrow, OneDrive status) | ❌ | |
 | Show/hide hidden items | ✅ | |
 | Show/hide file name extensions | ✅ | … menu |
-| Show protected OS files | ❌ | hidden+system shown with "Hidden items" |
+| Show protected OS files | ✅ | separate checkbox; hidden+system items stay out unless it is on |
 | Compact mode | ➖ | |
-| Preview pane (Alt+P) | 🟡 | text files and shell thumbnails (images, videos, PDFs); no embedded preview handlers (Office) yet |
+| Preview pane (Alt+P) | ✅ | hosts the registered Windows preview handler (Office, PDF, mail, fonts, media) out of process; text and thumbnails otherwise |
 | Details pane (Alt+Shift+P) | ✅ | type, size, dates, attributes; totals for a multi-selection |
 | Status bar: item count, selection count and size | ✅ | |
 
@@ -65,7 +65,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Arrows, Home/End, PageUp/PageDown, Shift to extend | ✅ | |
 | Type-ahead to jump to a name | ✅ | |
 | Rubber-band (drag rectangle) selection | 🟡 | icon, List and Tiles views; not yet in Details |
-| Item check boxes | ❌ | |
+| Item check boxes | ✅ | shown on hover or when selected; every view |
 | Invert selection | ✅ | … menu |
 
 ## File operations
@@ -80,7 +80,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Copy as path | ✅ | |
 | Paste shortcut | ✅ | through the shell menu |
 | Rename (F2), selects name without extension | ✅ | |
-| Batch rename | ❌ | |
+| Batch rename | ✅ | "name (1).ext", "name (2).ext"…; one Undo puts all back |
 | Delete to Recycle Bin, Shift+Delete permanently | ✅ | |
 | Native progress, conflict and Undo dialogs | ✅ | `SHFileOperationW` |
 | Undo / Redo (Ctrl+Z / Ctrl+Y) inside the app | ✅ | rename, new folder, copy, move, delete to Recycle Bin |
@@ -108,7 +108,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Feature | Status | Notes |
 | --- | --- | --- |
 | Recycle Bin (browse, restore, empty) | ✅ | reads `$Recycle.Bin` `$I` records; original location and date deleted columns |
-| Home / Recent files | ❌ | |
+| Home / Recent files | ✅ | Quick access + recent files from the Recent folder |
 | Libraries, Gallery | ❌ | |
 | OneDrive status | ❌ | |
 | Control Panel and other shell namespaces | ➖ | not the file system |

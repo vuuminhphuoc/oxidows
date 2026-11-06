@@ -394,3 +394,46 @@ fn shortcut_target_is_read() {
     assert!(same(&got, &target), "{got:?} vs {target:?}");
     fs::remove_dir_all(&d).unwrap();
 }
+
+#[test]
+fn preview_handler_hosts_a_font() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow, WS_OVERLAPPEDWINDOW};
+    let _g = guard("preview_handler_hosts_a_font");
+    assert!(!explorer_sys::has_preview_handler(""));
+    let found: Vec<&str> = ["ttf", "txt", "xml", "rtf", "pdf", "docx", "eml", "jpg", "mp4"]
+        .into_iter()
+        .filter(|e| explorer_sys::has_preview_handler(e))
+        .collect();
+    println!("preview handlers registered for: {found:?}");
+    // Windows ships the font previewer on every edition, Server included.
+    assert!(found.contains(&"ttf"), "no font preview handler");
+    let d = scratch("preview");
+    let font = d.join("arial.ttf");
+    fs::copy(r"C:\Windows\Fonts\arial.ttf", &font).unwrap();
+    let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
+    let parent = unsafe {
+        CreateWindowExW(
+            0,
+            class.as_ptr(),
+            std::ptr::null(),
+            WS_OVERLAPPEDWINDOW,
+            0,
+            0,
+            640,
+            480,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null(),
+        )
+    };
+    assert!(!parent.is_null());
+    let w = watchdog("preview handler", 60);
+    let mut host = explorer_sys::PreviewHost::open(parent as isize, &font, [10, 10, 400, 300]).expect("open preview");
+    host.place(Some([20, 20, 500, 400]));
+    host.place(None);
+    drop(host);
+    w.store(true, Ordering::Relaxed);
+    unsafe { DestroyWindow(parent) };
+    fs::remove_dir_all(&d).unwrap();
+}

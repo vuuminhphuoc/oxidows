@@ -21,9 +21,36 @@ mod windows;
 use windows as imp;
 
 #[cfg(windows)]
+mod preview;
+#[cfg(windows)]
 mod shell_menu;
 #[cfg(windows)]
 mod thumbs;
+#[cfg(windows)]
+pub use preview::PreviewHost;
+
+/// Whether files with extension `ext` ("docx") have a registered preview handler.
+pub fn has_preview_handler(ext: &str) -> bool {
+    #[cfg(windows)]
+    return preview::handler_for(ext).is_some();
+    #[cfg(not(windows))]
+    {
+        let _ = ext;
+        false
+    }
+}
+
+/// Off Windows there are no preview handlers; this stands in so the app needs no `cfg`.
+#[cfg(not(windows))]
+pub struct PreviewHost;
+
+#[cfg(not(windows))]
+impl PreviewHost {
+    pub fn open(_parent: isize, _path: &Path, _rect: [i32; 4]) -> io::Result<Self> {
+        Err(io::Error::new(io::ErrorKind::Unsupported, "preview handlers need Windows"))
+    }
+    pub fn place(&mut self, _rect: Option<[i32; 4]>) {}
+}
 
 #[cfg(not(windows))]
 mod unix;

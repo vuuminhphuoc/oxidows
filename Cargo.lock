@@ -683,11 +683,11 @@ dependencies = [
 
 [[package]]
 name = "explorer-core"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "explorer-sys"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "explorer-core",
  "windows",
@@ -1711,7 +1711,7 @@ dependencies = [
 
 [[package]]
 name = "oxi-explorer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "eframe",
  "egui",

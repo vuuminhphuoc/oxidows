@@ -1,5 +1,6 @@
-//! The right-hand pane: Preview (Alt+P) shows an image/video/PDF thumbnail or the start of a
-//! text file; Details (Alt+Shift+P) shows the selection's properties.
+//! The right-hand pane: Preview (Alt+P) hosts the file type's Windows preview handler (Office,
+//! PDF, mail, fonts, …) when one is registered, and otherwise shows a thumbnail or the start of
+//! a text file; Details (Alt+Shift+P) shows the selection's properties.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -35,6 +36,8 @@ pub enum PreviewState {
     Image(egui::TextureHandle),
     Text(String),
     Nothing,
+    /// A Windows preview handler; `None` until the pane's rectangle is known.
+    Handler(Option<explorer_sys::PreviewHost>),
 }
 
 /// Reads the preview of `path` off the UI thread.
@@ -77,16 +80,28 @@ impl App {
                 if self.preview.as_ref().is_some_and(|(p, _)| *p == path) {
                     return;
                 }
-                self.preview = Some((path.clone(), PreviewState::Loading));
-                let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
-                let _ = std::thread::Builder::new().name("preview".into()).spawn(move || {
-                    let data = load(&path, is_text);
-                    if tx.send(Msg::Preview(path, data)).is_ok() {
-                        ctx.request_repaint();
-                    }
-                });
+                // Drop the old handler first: it may hold the file open.
+                self.preview = None;
+                let ext = path.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default();
+                if !is_text && self.hwnd != 0 && explorer_sys::has_preview_handler(&ext) {
+                    self.preview = Some((path, PreviewState::Handler(None)));
+                    return;
+                }
+                self.load_preview(path, is_text);
             }
         }
+    }
+
+    /// Reads a thumbnail or text preview in the background.
+    fn load_preview(&mut self, path: PathBuf, is_text: bool) {
+        self.preview = Some((path.clone(), PreviewState::Loading));
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        let _ = std::thread::Builder::new().name("preview".into()).spawn(move || {
+            let data = load(&path, is_text);
+            if tx.send(Msg::Preview(path, data)).is_ok() {
+                ctx.request_repaint();
+            }
+        });
     }
 
     pub fn preview_loaded(&mut self, path: PathBuf, data: PreviewData) {
@@ -129,13 +144,47 @@ fn centered_note(ui: &mut Ui, text: &str) {
     ui.centered_and_justified(|ui| ui.label(RichText::new(text).weak()));
 }
 
+/// Opens the handler once the pane's rectangle is known and keeps its window over it; falls
+/// back to the thumbnail when the handler fails.
+fn handler_preview(app: &mut App, ui: &mut Ui) {
+    let r = ui.available_rect_before_wrap();
+    let ppp = ui.ctx().pixels_per_point();
+    let px = [
+        (r.left() * ppp).round() as i32,
+        (r.top() * ppp).round() as i32,
+        (r.right() * ppp).round() as i32,
+        (r.bottom() * ppp).round() as i32,
+    ];
+    // A native child window sits above everything egui draws: hide it under menus and dialogs.
+    let covered = egui::Popup::is_any_open(ui.ctx()) || ui.ctx().any_popup_open() || app.dialog.is_some();
+    if let Some((path, PreviewState::Handler(host))) = &mut app.preview {
+        if host.is_none() && !covered && px[2] > px[0] && px[3] > px[1] {
+            match explorer_sys::PreviewHost::open(app.hwnd, path, px) {
+                Ok(h) => *host = Some(h),
+                Err(_) => {
+                    let path = path.clone();
+                    return app.load_preview(path, false);
+                }
+            }
+        }
+        if let Some(h) = host {
+            h.place((!covered).then_some(px));
+        }
+    }
+    ui.allocate_rect(r, egui::Sense::hover());
+}
+
 fn preview(app: &mut App, ui: &mut Ui) {
+    if matches!(app.preview, Some((_, PreviewState::Handler(_)))) {
+        return handler_preview(app, ui);
+    }
     match &app.preview {
         None => centered_note(ui, "Select a file to preview."),
         Some((_, PreviewState::Loading)) => {
             ui.centered_and_justified(|ui| ui.spinner());
         }
         Some((_, PreviewState::Nothing)) => centered_note(ui, "No preview available."),
+        Some((_, PreviewState::Handler(_))) => {}
         Some((_, PreviewState::Image(tex))) => {
             let size = tex.size_vec2();
             let scale = (ui.available_width() / size.x).min(1.5);
