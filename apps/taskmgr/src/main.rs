@@ -128,6 +128,9 @@ struct App {
     replaces_taskmgr: Option<bool>,
     started: Instant,
     first_data_logged: bool,
+    /// OXI_TASKMGR_TIMING: frames drawn since `frames_since`.
+    frames: u32,
+    frames_since: Instant,
 }
 
 /// Collects on its own thread so a slow OS call never blocks a frame. The UI only repaints when
@@ -145,6 +148,8 @@ fn spawn_sampler(ctx: egui::Context, tx: Sender<Result<Arc<Snapshot>, String>>) 
             };
             let mut sampler = Sampler::new();
             let mut first = true;
+            let timing = std::env::var_os("OXI_TASKMGR_TIMING").is_some();
+            let (mut n, mut spent, mut since) = (0u32, Duration::ZERO, Instant::now());
             loop {
                 let ms = INTERVAL_MS.load(Ordering::Relaxed);
                 if ms == 0 && !first {
@@ -155,6 +160,7 @@ fn spawn_sampler(ctx: egui::Context, tx: Sender<Result<Arc<Snapshot>, String>>) 
                     services: WANT_SERVICES.load(Ordering::Relaxed),
                     sessions: WANT_SESSIONS.load(Ordering::Relaxed),
                 };
+                let t0 = Instant::now();
                 let msg = collector
                     .collect(extras)
                     .map(|(raw, extra)| {
@@ -164,6 +170,14 @@ fn spawn_sampler(ctx: egui::Context, tx: Sender<Result<Arc<Snapshot>, String>>) 
                         Arc::new(snap)
                     })
                     .map_err(|e| e.to_string());
+                if timing {
+                    n += 1;
+                    spent += t0.elapsed();
+                    if since.elapsed() >= Duration::from_secs(5) {
+                        eprintln!("sampler: {n} samples, {:.1} ms each", spent.as_secs_f64() * 1000.0 / f64::from(n));
+                        (n, spent, since) = (0, Duration::ZERO, Instant::now());
+                    }
+                }
                 if tx.send(msg).is_err() {
                     return; // window closed
                 }
@@ -211,6 +225,8 @@ impl App {
             status,
             started: Instant::now(),
             first_data_logged: false,
+            frames: 0,
+            frames_since: Instant::now(),
         }
     }
 
@@ -340,6 +356,13 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.drain();
+        if self.first_data_logged && std::env::var_os("OXI_TASKMGR_TIMING").is_some() {
+            self.frames += 1;
+            if self.frames_since.elapsed() >= Duration::from_secs(5) {
+                eprintln!("ui: {} frames in {:.1} s", self.frames, self.frames_since.elapsed().as_secs_f64());
+                (self.frames, self.frames_since) = (0, Instant::now());
+            }
+        }
         let snap = self.snapshot.clone();
         // Ctrl+Tab / Ctrl+Shift+Tab move between pages, as in Task Manager.
         let (next, prev) = ui.input_mut(|i| {
