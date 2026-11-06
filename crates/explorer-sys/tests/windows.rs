@@ -9,6 +9,28 @@ use std::time::{Duration, Instant};
 
 use explorer_sys::{Entry, FileOp, file_op_silent, list_dir};
 
+/// Fails the whole test binary (instead of hanging CI for hours) if `stage` takes too long.
+fn watchdog(stage: &'static str, secs: u64) -> Arc<AtomicBool> {
+    let done = Arc::new(AtomicBool::new(false));
+    let d = done.clone();
+    eprintln!("[start] {stage}");
+    std::thread::spawn(move || {
+        let t = Instant::now();
+        while t.elapsed() < Duration::from_secs(secs) {
+            if d.load(Ordering::Relaxed) {
+                eprintln!("[done]  {stage} in {:?}", t.elapsed());
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        // Straight to stderr: the test harness would swallow eprintln! output on exit.
+        use std::io::Write;
+        let _ = writeln!(std::io::stderr(), "TIMEOUT: {stage} still running after {secs} s");
+        std::process::exit(99);
+    });
+    done
+}
+
 fn scratch(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("oxi-explorer-test-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&d);
@@ -178,6 +200,7 @@ fn smb_share_on_localhost() {
     let d = scratch("smb");
     fs::write(d.join("hello.txt"), b"over smb").unwrap();
     let share = format!("oxitest{}", std::process::id());
+    let w = watchdog("net share", 60);
     let ok = std::process::Command::new("net")
         .args(["share", &format!("{share}={}", d.display()), "/grant:Everyone,FULL"])
         .status()
@@ -187,23 +210,30 @@ fn smb_share_on_localhost() {
         // `net share` needs admin; the CI runner has it. Say so rather than pass silently.
         panic!("could not create test share (not elevated?)");
     }
+    w.store(true, Ordering::Relaxed);
     let cleanup = || {
         let _ = std::process::Command::new("net").args(["share", &share, "/delete", "/y"]).status();
     };
 
+    let w = watchdog("list_shares(localhost)", 60);
     let shares = explorer_sys::list_shares("localhost").unwrap();
+    w.store(true, Ordering::Relaxed);
     assert!(shares.iter().any(|s| s.name.eq_ignore_ascii_case(&share)), "{shares:?}");
     assert!(!shares.iter().any(|s| s.name.ends_with('$')), "hidden shares leaked: {shares:?}");
 
     let unc = PathBuf::from(format!(r"\\localhost\{share}"));
+    let w = watchdog("connect + list UNC", 60);
     explorer_sys::connect(&unc, false).unwrap();
     assert_eq!(names(&unc), ["hello.txt"]);
+    w.store(true, Ordering::Relaxed);
     let local = scratch("smb-dst");
     assert!(file_op_silent(FileOp::Copy, &[unc.join("hello.txt")], Some(&local)).unwrap());
     assert_eq!(fs::read(local.join("hello.txt")).unwrap(), b"over smb");
 
     let letter = *explorer_sys::free_drive_letters().last().expect("a free drive letter");
+    let w = watchdog("map drive", 60);
     explorer_sys::map_drive(letter, &unc, false, false).unwrap();
+    w.store(true, Ordering::Relaxed);
     let mapped = PathBuf::from(format!("{letter}:\\"));
     let listed = names(&mapped);
     let net = explorer_sys::drives().into_iter().find(|x| x.root == mapped).map(|x| x.kind);
@@ -217,8 +247,12 @@ fn smb_share_on_localhost() {
 
 #[test]
 fn network_enumeration_does_not_hang() {
+    // The browse list can be slow without a network; it runs on a worker thread in the app,
+    // so here it only must finish within a bound.
+    let w = watchdog("network_computers", 120);
     let t = Instant::now();
     let found = explorer_sys::network_computers();
+    w.store(true, Ordering::Relaxed);
     println!("network computers: {found:?} in {:?}", t.elapsed());
 }
 
@@ -227,12 +261,14 @@ fn shell_context_menu_has_standard_verbs() {
     let d = scratch("menu");
     let f = d.join("doc.txt");
     fs::write(&f, b"x").unwrap();
+    let w = watchdog("shell menu verbs", 60);
     let verbs = explorer_sys::shell_menu_verbs(&d, std::slice::from_ref(&f)).unwrap();
     println!("file verbs: {verbs:?}");
     for v in ["open", "properties", "delete"] {
         assert!(verbs.iter().any(|x| x == v), "missing {v} in {verbs:?}");
     }
     let bg = explorer_sys::shell_menu_verbs(&d, &[]).unwrap();
+    w.store(true, Ordering::Relaxed);
     println!("background verbs: {bg:?}");
     assert!(bg.iter().any(|x| x == "properties"), "{bg:?}");
     fs::remove_dir_all(&d).unwrap();
@@ -243,9 +279,11 @@ fn recycle_bin_list_and_restore() {
     let d = scratch("bin");
     let f = d.join(format!("binned-{}.txt", std::process::id()));
     fs::write(&f, b"come back").unwrap();
+    let w = watchdog("recycle + list bin", 60);
     assert!(file_op_silent(FileOp::Recycle, std::slice::from_ref(&f), None).unwrap());
     assert!(!f.exists());
     let items = explorer_sys::recycle_bin_items();
+    w.store(true, Ordering::Relaxed);
     let it = items.iter().find(|i| i.original == f).unwrap_or_else(|| panic!("{f:?} not in bin: {items:?}"));
     assert_eq!(it.size, 9);
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;

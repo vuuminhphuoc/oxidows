@@ -11,6 +11,8 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
+    # A hung test or app must not hold the runner for the 6 h default.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
