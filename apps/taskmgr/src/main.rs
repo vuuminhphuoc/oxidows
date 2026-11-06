@@ -254,7 +254,7 @@ impl App {
             elevated: taskmgr_sys::is_elevated(),
             processes: processes::State::new(status.clone(), settings.group_by_type),
             performance: performance::State::default(),
-            details: details::State::new(status.clone()),
+            details: details::State::new(status.clone(), details::parse_columns(&settings.details_columns)),
             services: services::State::new(status.clone(), cc.egui_ctx.clone()),
             startup: startup::State::new(status.clone()),
             users: users::State::new(status.clone()),
@@ -506,7 +506,12 @@ impl eframe::App for App {
             Tab::Performance => self.performance.show(ui, &snap),
             Tab::Startup => self.startup.show(ui),
             Tab::Users => self.users.show(ui, &snap),
-            Tab::Details => self.details.show(ui, &snap),
+            Tab::Details => {
+                if self.details.show(ui, &snap) {
+                    self.settings.details_columns = details::columns_text(&self.details.columns);
+                    self.save_settings();
+                }
+            }
             Tab::Services => self.services.show(ui, &snap),
             Tab::Settings => {
                 let tabs: Vec<&str> = Tab::ALL.iter().filter(|t| **t != Tab::Settings).map(|t| t.label()).collect();

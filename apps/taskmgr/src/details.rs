@@ -1,34 +1,272 @@
-//! Details tab: every process with user, session, priority, handles and full path.
+//! Details tab: every process, with columns the user picks (right-click the header, or the
+//! "Select columns" button), sortable by any of them.
+
+use std::cmp::Ordering;
 
 use egui::{RichText, Ui};
 use egui_extras::{Column, TableBuilder};
-use taskmgr_core::{ProcessRow, Snapshot, format_bytes, priority_label};
+use taskmgr_core::{ProcessRow, Snapshot, format_bits_per_sec, format_bytes, priority_label};
 
 use crate::Status;
-use crate::processes::{end_task, process_menu};
+use crate::processes::{NET_HINT, end_task, process_menu};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Sort {
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Col {
     Name,
     Pid,
+    Status,
     User,
+    Session,
     Cpu,
+    CpuTime,
     Memory,
+    Threads,
     Handles,
+    Priority,
+    IoRead,
+    IoWrite,
+    Network,
+    Gpu,
+    Description,
+    Publisher,
+    Path,
+    CommandLine,
+    ParentPid,
+}
+
+impl Col {
+    pub const ALL: [Col; 20] = [
+        Col::Name,
+        Col::Pid,
+        Col::Status,
+        Col::User,
+        Col::Session,
+        Col::Cpu,
+        Col::CpuTime,
+        Col::Memory,
+        Col::Threads,
+        Col::Handles,
+        Col::Priority,
+        Col::IoRead,
+        Col::IoWrite,
+        Col::Network,
+        Col::Gpu,
+        Col::Description,
+        Col::Publisher,
+        Col::Path,
+        Col::CommandLine,
+        Col::ParentPid,
+    ];
+
+    /// What a fresh install shows, as in Task Manager plus Path.
+    pub const DEFAULT: [Col; 10] = [
+        Col::Name,
+        Col::Pid,
+        Col::Status,
+        Col::User,
+        Col::Cpu,
+        Col::Memory,
+        Col::Threads,
+        Col::Handles,
+        Col::Priority,
+        Col::Path,
+    ];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Col::Name => "Name",
+            Col::Pid => "PID",
+            Col::Status => "Status",
+            Col::User => "User name",
+            Col::Session => "Session ID",
+            Col::Cpu => "CPU",
+            Col::CpuTime => "CPU time",
+            Col::Memory => "Memory (private working set)",
+            Col::Threads => "Threads",
+            Col::Handles => "Handles",
+            Col::Priority => "Base priority",
+            Col::IoRead => "I/O read bytes",
+            Col::IoWrite => "I/O write bytes",
+            Col::Network => "Network",
+            Col::Gpu => "GPU",
+            Col::Description => "Description",
+            Col::Publisher => "Company",
+            Col::Path => "Image path name",
+            Col::CommandLine => "Command line",
+            Col::ParentPid => "Parent PID",
+        }
+    }
+
+    /// Short key used in the settings file.
+    pub fn key(self) -> &'static str {
+        match self {
+            Col::Name => "name",
+            Col::Pid => "pid",
+            Col::Status => "status",
+            Col::User => "user",
+            Col::Session => "session",
+            Col::Cpu => "cpu",
+            Col::CpuTime => "cputime",
+            Col::Memory => "memory",
+            Col::Threads => "threads",
+            Col::Handles => "handles",
+            Col::Priority => "priority",
+            Col::IoRead => "ioread",
+            Col::IoWrite => "iowrite",
+            Col::Network => "network",
+            Col::Gpu => "gpu",
+            Col::Description => "description",
+            Col::Publisher => "company",
+            Col::Path => "path",
+            Col::CommandLine => "cmdline",
+            Col::ParentPid => "ppid",
+        }
+    }
+
+    pub fn from_key(k: &str) -> Option<Col> {
+        Col::ALL.into_iter().find(|c| c.key() == k)
+    }
+
+    fn header(self) -> &'static str {
+        match self {
+            Col::Memory => "Memory",
+            c => c.title(),
+        }
+    }
+
+    fn column(self) -> Column {
+        match self {
+            Col::Name => Column::initial(170.0).clip(true),
+            Col::User | Col::Description | Col::Publisher => Column::initial(150.0).clip(true),
+            Col::Path | Col::CommandLine => Column::initial(260.0).clip(true),
+            Col::Memory | Col::IoRead | Col::IoWrite | Col::Network | Col::CpuTime => Column::initial(90.0),
+            Col::Priority | Col::Status => Column::initial(90.0),
+            _ => Column::initial(64.0),
+        }
+    }
+
+    /// Numbers read best biggest first; text A to Z.
+    fn descending_first(self) -> bool {
+        matches!(
+            self,
+            Col::Cpu
+                | Col::CpuTime
+                | Col::Memory
+                | Col::Threads
+                | Col::Handles
+                | Col::IoRead
+                | Col::IoWrite
+                | Col::Network
+                | Col::Gpu
+        )
+    }
+
+    fn cmp(self, a: &ProcessRow, b: &ProcessRow) -> Ordering {
+        let text = |x: &str, y: &str| x.to_lowercase().cmp(&y.to_lowercase());
+        match self {
+            Col::Name => text(&a.name, &b.name),
+            Col::Pid => a.pid.cmp(&b.pid),
+            Col::Status => a.suspended.cmp(&b.suspended),
+            Col::User => text(&a.info.user, &b.info.user),
+            Col::Session => a.session_id.cmp(&b.session_id),
+            Col::Cpu => a.cpu_pct.total_cmp(&b.cpu_pct),
+            Col::CpuTime => a.cpu_time.cmp(&b.cpu_time),
+            Col::Memory => a.memory.cmp(&b.memory),
+            Col::Threads => a.threads.cmp(&b.threads),
+            Col::Handles => a.handles.cmp(&b.handles),
+            Col::Priority => a.base_priority.cmp(&b.base_priority),
+            Col::IoRead => a.io_read_bytes.cmp(&b.io_read_bytes),
+            Col::IoWrite => a.io_write_bytes.cmp(&b.io_write_bytes),
+            Col::Network => a.net_bps.total_cmp(&b.net_bps),
+            Col::Gpu => a.gpu_pct.total_cmp(&b.gpu_pct),
+            Col::Description => text(&a.info.description, &b.info.description),
+            Col::Publisher => text(&a.info.publisher, &b.info.publisher),
+            Col::Path => text(&a.info.path, &b.info.path),
+            Col::CommandLine => text(&a.info.command_line, &b.info.command_line),
+            Col::ParentPid => a.parent_pid.cmp(&b.parent_pid),
+        }
+    }
+
+    fn cell(self, ui: &mut Ui, p: &ProcessRow, net_on: bool) {
+        let dash = |s: &str| if s.is_empty() { "-".to_string() } else { s.to_string() };
+        let text = match self {
+            Col::Name => p.name.clone(),
+            Col::Pid => p.pid.to_string(),
+            Col::Status => (if p.suspended { "Suspended" } else { "Running" }).to_string(),
+            Col::User => dash(&p.info.user),
+            Col::Session => p.session_id.to_string(),
+            Col::Cpu => format!("{:.0}", p.cpu_pct),
+            Col::CpuTime => format_cpu_time(p.cpu_time),
+            Col::Memory => format_bytes(p.memory as f64),
+            Col::Threads => p.threads.to_string(),
+            Col::Handles => p.handles.to_string(),
+            Col::Priority => priority_label(p.base_priority).to_string(),
+            Col::IoRead => format_bytes(p.io_read_bytes as f64),
+            Col::IoWrite => format_bytes(p.io_write_bytes as f64),
+            Col::Network if !net_on => {
+                ui.label(RichText::new("-").weak()).on_hover_text(NET_HINT);
+                return;
+            }
+            Col::Network => format_bits_per_sec(p.net_bps),
+            Col::Gpu => format!("{:.0}", p.gpu_pct),
+            Col::Description => dash(&p.info.description),
+            Col::Publisher => dash(&p.info.publisher),
+            Col::Path => {
+                ui.label(dash(&p.info.path)).on_hover_text(dash(&p.info.command_line));
+                return;
+            }
+            Col::CommandLine => {
+                ui.label(dash(&p.info.command_line)).on_hover_text(dash(&p.info.command_line));
+                return;
+            }
+            Col::ParentPid => p.parent_pid.to_string(),
+        };
+        ui.label(text);
+    }
+}
+
+/// CPU time as Task Manager shows it: h:mm:ss.
+pub fn format_cpu_time(t_100ns: u64) -> String {
+    let s = t_100ns / 10_000_000;
+    format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+}
+
+pub fn parse_columns(v: &str) -> Vec<Col> {
+    let mut cols: Vec<Col> = v.split(',').filter_map(|k| Col::from_key(k.trim())).collect();
+    cols.dedup();
+    if !cols.contains(&Col::Name) {
+        cols.insert(0, Col::Name);
+    }
+    cols
+}
+
+pub fn columns_text(cols: &[Col]) -> String {
+    cols.iter().map(|c| c.key()).collect::<Vec<_>>().join(",")
 }
 
 pub struct State {
     filter: String,
-    sort: Sort,
+    sort: Col,
     descending: bool,
     selected: Option<(u32, String)>,
     scroll_to: Option<u32>,
     status: Status,
+    pub columns: Vec<Col>,
+    picking: bool,
 }
 
 impl State {
-    pub fn new(status: Status) -> Self {
-        Self { filter: String::new(), sort: Sort::Name, descending: false, selected: None, scroll_to: None, status }
+    pub fn new(status: Status, columns: Vec<Col>) -> Self {
+        Self {
+            filter: String::new(),
+            sort: Col::Name,
+            descending: false,
+            selected: None,
+            scroll_to: None,
+            status,
+            columns,
+            picking: false,
+        }
     }
 
     /// Selects `pid` and clears the search so the row is visible.
@@ -40,8 +278,10 @@ impl State {
         }
     }
 
-    pub fn show(&mut self, ui: &mut Ui, snap: &Snapshot) {
+    /// Returns true when the visible columns changed (the caller saves them).
+    pub fn show(&mut self, ui: &mut Ui, snap: &Snapshot) -> bool {
         let rows = &snap.processes;
+        let before = self.columns.clone();
         ui.horizontal(|ui| {
             ui.label("Search:");
             ui.add(
@@ -52,8 +292,12 @@ impl State {
             {
                 end_task(&self.status, rows, pid, &name);
             }
+            if ui.button("Select columns").clicked() {
+                self.picking = true;
+            }
         });
         ui.add_space(4.0);
+        self.column_picker(ui.ctx());
 
         let f = self.filter.trim().to_lowercase();
         let mut view: Vec<&ProcessRow> = rows
@@ -66,19 +310,15 @@ impl State {
                     || p.info.path.to_lowercase().contains(&f)
             })
             .collect();
+        let sort = self.sort;
         view.sort_by(|a, b| {
-            let o = match self.sort {
-                Sort::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-                Sort::Pid => a.pid.cmp(&b.pid),
-                Sort::User => a.info.user.cmp(&b.info.user),
-                Sort::Cpu => a.cpu_pct.total_cmp(&b.cpu_pct),
-                Sort::Memory => a.memory.cmp(&b.memory),
-                Sort::Handles => a.handles.cmp(&b.handles),
-            };
+            let o = sort.cmp(a, b);
             let o = if self.descending { o.reverse() } else { o };
             o.then(a.pid.cmp(&b.pid))
         });
 
+        let net_on = snap.system.per_process_net;
+        let cols = self.columns.clone();
         let row_h = 20.0;
         let mut clicked = None;
         let mut table = TableBuilder::new(ui);
@@ -87,45 +327,33 @@ impl State {
         {
             table = table.scroll_to_row(i, Some(egui::Align::Center));
         }
-        table
+        table = table
             .striped(true)
             .resizable(true)
             .sense(egui::Sense::click())
-            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-            .column(Column::initial(170.0).clip(true))
-            .column(Column::exact(60.0))
-            .column(Column::initial(150.0).clip(true))
-            .column(Column::exact(55.0))
-            .column(Column::exact(55.0))
-            .column(Column::exact(85.0))
-            .column(Column::exact(60.0))
-            .column(Column::exact(60.0))
-            .column(Column::exact(95.0))
-            .column(Column::remainder().clip(true))
+            .cell_layout(egui::Layout::left_to_right(egui::Align::Center));
+        for (i, c) in cols.iter().enumerate() {
+            table = table.column(if i + 1 == cols.len() { Column::remainder().clip(true) } else { c.column() });
+        }
+        table
             .header(row_h, |mut h| {
-                let cols: [(Option<Sort>, &str); 10] = [
-                    (Some(Sort::Name), "Name"),
-                    (Some(Sort::Pid), "PID"),
-                    (Some(Sort::User), "User name"),
-                    (None, "Session"),
-                    (Some(Sort::Cpu), "CPU"),
-                    (Some(Sort::Memory), "Memory"),
-                    (None, "Threads"),
-                    (Some(Sort::Handles), "Handles"),
-                    (None, "Priority"),
-                    (None, "Path"),
-                ];
-                for (key, title) in cols {
-                    h.col(|ui| match key {
-                        Some(k) => {
-                            let arrow = if self.sort == k { if self.descending { " v" } else { " ^" } } else { "" };
-                            if ui.button(RichText::new(format!("{title}{arrow}")).strong()).clicked() {
-                                clicked = Some(k);
+                for &c in &cols {
+                    h.col(|ui| {
+                        let arrow = if self.sort == c { if self.descending { " v" } else { " ^" } } else { "" };
+                        let resp = ui.button(RichText::new(format!("{}{arrow}", c.header())).strong());
+                        if resp.clicked() {
+                            clicked = Some(c);
+                        }
+                        resp.context_menu(|ui| {
+                            if ui.button("Select columns").clicked() {
+                                self.picking = true;
+                                ui.close();
                             }
-                        }
-                        None => {
-                            ui.label(RichText::new(title).strong());
-                        }
+                            if c != Col::Name && ui.button(format!("Hide \"{}\"", c.header())).clicked() {
+                                self.columns.retain(|x| *x != c);
+                                ui.close();
+                            }
+                        });
                     });
                 }
             })
@@ -133,39 +361,9 @@ impl State {
                 body.rows(row_h, view.len(), |mut row| {
                     let p = view[row.index()];
                     row.set_selected(self.selected.as_ref().is_some_and(|(pid, _)| *pid == p.pid));
-                    let dash = |s: &str| {
-                        if s.is_empty() { "-".to_string() } else { s.to_string() }
-                    };
-                    row.col(|ui| {
-                        ui.label(&p.name);
-                    });
-                    row.col(|ui| {
-                        ui.label(p.pid.to_string());
-                    });
-                    row.col(|ui| {
-                        ui.label(dash(&p.info.user));
-                    });
-                    row.col(|ui| {
-                        ui.label(p.session_id.to_string());
-                    });
-                    row.col(|ui| {
-                        ui.label(format!("{:.0}", p.cpu_pct));
-                    });
-                    row.col(|ui| {
-                        ui.label(format_bytes(p.memory as f64));
-                    });
-                    row.col(|ui| {
-                        ui.label(p.threads.to_string());
-                    });
-                    row.col(|ui| {
-                        ui.label(p.handles.to_string());
-                    });
-                    row.col(|ui| {
-                        ui.label(priority_label(p.base_priority));
-                    });
-                    row.col(|ui| {
-                        ui.label(dash(&p.info.path)).on_hover_text(dash(&p.info.command_line));
-                    });
+                    for &c in &cols {
+                        row.col(|ui| c.cell(ui, p, net_on));
+                    }
                     let resp = row.response();
                     if resp.clicked() {
                         self.selected = Some((p.pid, p.name.clone()));
@@ -178,8 +376,70 @@ impl State {
                 self.descending = !self.descending;
             } else {
                 self.sort = k;
-                self.descending = matches!(k, Sort::Cpu | Sort::Memory | Sort::Handles);
+                self.descending = k.descending_first();
             }
         }
+        if !self.columns.contains(&self.sort) {
+            self.sort = Col::Name;
+        }
+        self.columns != before
+    }
+
+    fn column_picker(&mut self, ctx: &egui::Context) {
+        if !self.picking {
+            return;
+        }
+        let mut open = true;
+        egui::Window::new("Select columns").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+            ui.label("Choose the columns that appear in the table.");
+            ui.add_space(4.0);
+            egui::Grid::new("cols").num_columns(2).show(ui, |ui| {
+                for (i, c) in Col::ALL.into_iter().enumerate() {
+                    let mut on = self.columns.contains(&c);
+                    let resp = ui.add_enabled(c != Col::Name, egui::Checkbox::new(&mut on, c.title()));
+                    if resp.changed() {
+                        if on {
+                            // Keep the order of Col::ALL.
+                            let at = self
+                                .columns
+                                .iter()
+                                .position(|x| Col::ALL.iter().position(|a| a == x) > Some(i))
+                                .unwrap_or(self.columns.len());
+                            self.columns.insert(at, c);
+                        } else {
+                            self.columns.retain(|x| *x != c);
+                        }
+                    }
+                    if i % 2 == 1 {
+                        ui.end_row();
+                    }
+                }
+            });
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui.button("Reset").clicked() {
+                    self.columns = Col::DEFAULT.to_vec();
+                }
+                if ui.button("Close").clicked() {
+                    self.picking = false;
+                }
+            });
+        });
+        if !open {
+            self.picking = false;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn columns_round_trip() {
+        let cols = vec![Col::Name, Col::Pid, Col::CommandLine];
+        assert_eq!(parse_columns(&columns_text(&cols)), cols);
+        assert_eq!(parse_columns("pid,bogus"), vec![Col::Name, Col::Pid]);
+        assert_eq!(format_cpu_time(36_610_000_000), "1:01:01");
     }
 }
