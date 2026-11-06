@@ -180,3 +180,111 @@ impl EncodeWideNul for std::ffi::OsStr {
         self.encode_wide().chain(Some(0)).collect()
     }
 }
+
+// ---- Process actions: affinity, efficiency mode, dump file, run new task ----
+
+use std::os::windows::io::AsRawHandle;
+
+use windows_sys::Win32::System::Diagnostics::Debug::{MiniDumpWithFullMemory, MiniDumpWriteDump};
+use windows_sys::Win32::System::Threading::{
+    GetProcessAffinityMask, GetProcessInformation, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+    PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE, PROCESS_QUERY_INFORMATION,
+    PROCESS_VM_READ, ProcessPowerThrottling, SetProcessAffinityMask, SetProcessInformation,
+};
+
+/// (process mask, system mask).
+pub fn affinity(pid: u32) -> io::Result<(u64, u64)> {
+    let h = open(pid, PROCESS_QUERY_LIMITED_INFORMATION)?;
+    let (mut p, mut s) = (0usize, 0usize);
+    // SAFETY: out-pointers to locals.
+    if unsafe { GetProcessAffinityMask(h.0, &mut p, &mut s) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((p as u64, s as u64))
+}
+
+pub fn set_affinity(pid: u32, mask: u64) -> io::Result<()> {
+    let h = open(pid, PROCESS_SET_INFORMATION)?;
+    // SAFETY: valid handle.
+    if unsafe { SetProcessAffinityMask(h.0, mask as usize) } == 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
+}
+
+pub fn efficiency_mode(pid: u32) -> io::Result<bool> {
+    let h = open(pid, PROCESS_QUERY_LIMITED_INFORMATION)?;
+    // SAFETY: POD out-struct with the version set, as the API requires.
+    unsafe {
+        let mut st: PROCESS_POWER_THROTTLING_STATE = zeroed();
+        st.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+        if GetProcessInformation(
+            h.0,
+            ProcessPowerThrottling,
+            (&mut st as *mut PROCESS_POWER_THROTTLING_STATE).cast(),
+            size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
+        ) == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(st.ControlMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED != 0
+            && st.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED != 0)
+    }
+}
+
+/// Like the built-in tool: EcoQoS throttling plus Low priority on, Normal priority off.
+pub fn set_efficiency_mode(pid: u32, on: bool) -> io::Result<()> {
+    let h = open(pid, PROCESS_SET_INFORMATION)?;
+    let st = PROCESS_POWER_THROTTLING_STATE {
+        Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+        StateMask: if on { PROCESS_POWER_THROTTLING_EXECUTION_SPEED } else { 0 },
+    };
+    // SAFETY: valid handle, struct of the declared size.
+    unsafe {
+        if SetProcessInformation(
+            h.0,
+            ProcessPowerThrottling,
+            (&st as *const PROCESS_POWER_THROTTLING_STATE).cast(),
+            size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
+        ) == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        if SetPriorityClass(h.0, if on { IDLE_PRIORITY_CLASS } else { NORMAL_PRIORITY_CLASS }) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+/// Full-memory dump, the same kind "Create memory dump file" writes. Slow for big processes.
+pub fn create_dump(pid: u32, path: &std::path::Path) -> io::Result<()> {
+    let h = open(pid, PROCESS_QUERY_INFORMATION | PROCESS_VM_READ)?;
+    let file = std::fs::File::create(path)?;
+    // SAFETY: valid process and file handles; no optional streams.
+    let ok = unsafe {
+        MiniDumpWriteDump(h.0, pid, file.as_raw_handle(), MiniDumpWithFullMemory, null(), null(), null())
+    };
+    if ok == 0 {
+        let e = io::Error::last_os_error();
+        drop(file);
+        let _ = std::fs::remove_file(path);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// `ShellExecuteW` of a program (first token, quotes allowed) with the rest as its arguments.
+pub fn run_new_task(command: &str, admin: bool) -> io::Result<()> {
+    let (file, params) = crate::split_command(command);
+    let wide = |s: &str| -> Vec<u16> { s.encode_utf16().chain(Some(0)).collect() };
+    let (f, p) = (wide(&file), wide(&params));
+    let verb = wide(if admin { "runas" } else { "open" });
+    // SAFETY: NUL-terminated wide strings.
+    let r = unsafe {
+        ShellExecuteW(null_mut(), verb.as_ptr(), f.as_ptr(), if params.is_empty() { null() } else { p.as_ptr() }, null(), SW_SHOWNORMAL)
+    };
+    if r as usize > 32 { Ok(()) } else { Err(io::Error::other(format!("Windows cannot find '{file}' (code {})", r as usize))) }
+}
+
+pub fn open_url(url: &str) -> io::Result<()> {
+    run_new_task(url, false)
+}

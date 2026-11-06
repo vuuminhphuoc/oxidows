@@ -55,7 +55,7 @@ fn values(key: &Key) -> Vec<(String, String)> {
         }
         let name = String::from_utf16_lossy(&name[..nlen as usize]);
         let words: Vec<u16> =
-            data[..dlen as usize].chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+            data[..dlen as usize].as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
         let text = String::from_utf16_lossy(&words).trim_end_matches('\0').to_string();
         out.push((name, text));
     }

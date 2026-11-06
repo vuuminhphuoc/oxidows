@@ -127,6 +127,58 @@ pub fn restart_elevated() -> io::Result<()> {
     imp::restart_elevated()
 }
 
+pub fn affinity(pid: u32) -> io::Result<(u64, u64)> {
+    imp::affinity(pid)
+}
+
+pub fn set_affinity(pid: u32, mask: u64) -> io::Result<()> {
+    imp::set_affinity(pid, mask)
+}
+
+pub fn efficiency_mode(pid: u32) -> io::Result<bool> {
+    imp::efficiency_mode(pid)
+}
+
+pub fn set_efficiency_mode(pid: u32, on: bool) -> io::Result<()> {
+    imp::set_efficiency_mode(pid, on)
+}
+
+/// Writes a full memory dump; slow for large processes, so call it off the UI thread.
+pub fn create_dump(pid: u32, path: &std::path::Path) -> io::Result<()> {
+    imp::create_dump(pid, path)
+}
+
+/// "Run new task": a program, document, folder or URL, optionally through the UAC prompt.
+pub fn run_new_task(command: &str, admin: bool) -> io::Result<()> {
+    imp::run_new_task(command.trim(), admin)
+}
+
+pub fn search_online(term: &str) -> io::Result<()> {
+    let q: String = term
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            b' ' => "+".to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect();
+    imp::open_url(&format!("https://www.bing.com/search?q={q}"))
+}
+
+/// `"C:\Program Files\x.exe" -a b` -> (`C:\Program Files\x.exe`, `-a b`).
+pub(crate) fn split_command(cmd: &str) -> (String, String) {
+    let cmd = cmd.trim();
+    if let Some(rest) = cmd.strip_prefix('"')
+        && let Some(end) = rest.find('"')
+    {
+        return (rest[..end].to_string(), rest[end + 1..].trim().to_string());
+    }
+    match cmd.split_once(' ') {
+        Some((f, p)) => (f.to_string(), p.trim().to_string()),
+        None => (cmd.to_string(), String::new()),
+    }
+}
+
 /// Opens Explorer with the file selected.
 pub fn open_file_location(path: &str) -> io::Result<()> {
     #[cfg(windows)]
@@ -137,5 +189,20 @@ pub fn open_file_location(path: &str) -> io::Result<()> {
     {
         let dir = std::path::Path::new(path).parent().map(|p| p.display().to_string()).unwrap_or_default();
         std::process::Command::new("xdg-open").arg(dir).spawn().map(|_| ())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_command;
+
+    #[test]
+    fn splits_commands() {
+        assert_eq!(split_command("notepad"), ("notepad".into(), String::new()));
+        assert_eq!(split_command("cmd /k echo hi"), ("cmd".into(), "/k echo hi".into()));
+        assert_eq!(
+            split_command(r#""C:\Program Files\a b.exe" --x"#),
+            (r"C:\Program Files\a b.exe".into(), "--x".into())
+        );
     }
 }

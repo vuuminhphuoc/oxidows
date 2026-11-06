@@ -205,3 +205,32 @@ pub fn is_elevated() -> bool {
 pub fn restart_elevated() -> io::Result<()> {
     Err(io::Error::new(io::ErrorKind::Unsupported, "run with sudo instead"))
 }
+
+fn unsupported<T>() -> io::Result<T> {
+    Err(io::Error::new(io::ErrorKind::Unsupported, "Windows-only"))
+}
+
+pub fn affinity(_pid: u32) -> io::Result<(u64, u64)> {
+    let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(64);
+    let all = if n == 64 { u64::MAX } else { (1u64 << n) - 1 };
+    Ok((all, all))
+}
+pub fn set_affinity(_pid: u32, _mask: u64) -> io::Result<()> {
+    unsupported()
+}
+pub fn efficiency_mode(_pid: u32) -> io::Result<bool> {
+    Ok(false)
+}
+pub fn set_efficiency_mode(_pid: u32, _on: bool) -> io::Result<()> {
+    unsupported()
+}
+pub fn create_dump(_pid: u32, _path: &std::path::Path) -> io::Result<()> {
+    unsupported()
+}
+pub fn run_new_task(command: &str, _admin: bool) -> io::Result<()> {
+    let (file, params) = crate::split_command(command);
+    std::process::Command::new(file).args(params.split_whitespace()).spawn().map(|_| ())
+}
+pub fn open_url(url: &str) -> io::Result<()> {
+    std::process::Command::new("xdg-open").arg(url).spawn().map(|_| ())
+}

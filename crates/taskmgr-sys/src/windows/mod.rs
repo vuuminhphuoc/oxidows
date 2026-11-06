@@ -6,7 +6,10 @@ mod services;
 mod sessions;
 mod startup;
 
-pub use procinfo::{is_elevated, restart_elevated, set_priority, static_info};
+pub use procinfo::{
+    affinity, create_dump, efficiency_mode, is_elevated, open_url, restart_elevated, run_new_task, set_affinity,
+    set_efficiency_mode, set_priority, static_info,
+};
 pub use services::{list_services, service_control};
 pub use sessions::list_sessions;
 pub use startup::{set_startup_enabled, startup_items};
