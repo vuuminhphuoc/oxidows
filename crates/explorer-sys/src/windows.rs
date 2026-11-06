@@ -504,14 +504,14 @@ pub fn shell_icon(path: &Path, is_dir: bool, per_file: bool) -> Option<IconImage
             let dc = unsafe { GetDC(null_mut()) };
             if let Some(mut px) = unsafe { bitmap_bgra(dc, ii.hbmColor, bw, bh) } {
                 // Old-style icons carry no alpha; transparency then comes from the AND mask.
-                if px.chunks_exact(4).all(|p| p[3] == 0) {
+                if px.as_chunks::<4>().0.iter().all(|p| p[3] == 0) {
                     let mask = if ii.hbmMask.is_null() { None } else { unsafe { bitmap_bgra(dc, ii.hbmMask, bw, bh) } };
-                    for (i, p) in px.chunks_exact_mut(4).enumerate() {
+                    for (i, p) in px.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                         let transparent = mask.as_ref().is_some_and(|m| m[i * 4] != 0);
                         p[3] = if transparent { 0 } else { 255 };
                     }
                 }
-                for p in px.chunks_exact_mut(4) {
+                for p in px.as_chunks_mut::<4>().0.iter_mut() {
                     p.swap(0, 2); // BGRA -> RGBA
                 }
                 out = Some(IconImage { width: bw as usize, height: bh as usize, rgba: px });
