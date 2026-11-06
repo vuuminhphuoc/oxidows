@@ -12,6 +12,61 @@ use explorer_sys::DriveKind;
 
 use crate::{App, Dialog, IconKey, IconState, MapDrive, ViewMode};
 
+/// Temp-data key of the Details rubber band: [start x on screen, start as a fractional row].
+const DETAILS_BAND: &str = "details-band";
+
+/// The selection rectangle in Details. Rows are uniform, so the band is tracked in row units
+/// and survives scrolling; the rows it spans (headings excluded) become the selection.
+fn details_band(
+    app: &mut App,
+    ui: &mut Ui,
+    start: Option<[f32; 2]>,
+    drawn: &[(usize, egui::Rect)],
+    rows_map: &[isize],
+) {
+    let id = egui::Id::new(DETAILS_BAND);
+    let base_id = egui::Id::new("details-band-base");
+    if let Some(s) = start {
+        let base = if ui.input(|i| i.modifiers.command) { app.selected.clone() } else { Default::default() };
+        ui.data_mut(|d| {
+            d.insert_temp(id, s);
+            d.insert_temp(base_id, base);
+        });
+    }
+    let Some([x0, start]) = ui.data(|d| d.get_temp::<[f32; 2]>(id)) else { return };
+    let (down, pos) = ui.input(|i| (i.pointer.primary_down(), i.pointer.interact_pos()));
+    let (Some(p), Some(&(k0, r0)), Some(&(k1, r1))) = (pos.filter(|_| down), drawn.first(), drawn.last()) else {
+        ui.data_mut(|d| {
+            d.remove::<[f32; 2]>(id);
+            d.remove::<std::collections::HashSet<String>>(base_id);
+        });
+        return;
+    };
+    let stride = if k1 > k0 { (r1.top() - r0.top()) / (k1 - k0) as f32 } else { r0.height() };
+    let cur = k0 as f32 + (p.y - r0.top()) / stride.max(1.0);
+    let (a, b) = (start.min(cur).max(0.0), start.max(cur).max(0.0));
+    let n_rows = if rows_map.is_empty() { app.view.len() } else { rows_map.len() };
+    let names: std::collections::HashSet<String> = (a.floor() as usize..=(b.floor() as usize))
+        .take_while(|&r| r < n_rows)
+        .filter_map(|r| if rows_map.is_empty() { Some(r) } else { usize::try_from(rows_map[r]).ok() })
+        .filter_map(|pos| app.entry_at(pos).map(|e| e.name.clone()))
+        .collect();
+    let base: std::collections::HashSet<String> = ui.data(|d| d.get_temp(base_id)).unwrap_or_default();
+    app.selected = base.union(&names).cloned().collect();
+    let y = |f: f32| r0.top() + (f - k0 as f32) * stride;
+    let band = egui::Rect::from_two_pos(egui::pos2(x0, y(start)), p);
+    let clip = egui::Rect::from_min_max(r0.min, r1.max);
+    let sel = ui.visuals().selection.bg_fill;
+    ui.painter().with_clip_rect(clip).rect(
+        band,
+        0.0,
+        sel.gamma_multiply(0.25),
+        egui::Stroke::new(1.0, sel),
+        egui::StrokeKind::Inside,
+    );
+    ui.ctx().request_repaint();
+}
+
 pub fn tab_bar(app: &mut App, ui: &mut Ui) {
     egui::Panel::top("tabs").show(ui, |ui| {
         ui.add_space(3.0);
@@ -844,6 +899,7 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
     if app.view_mode != ViewMode::Details {
         crate::grid::show(app, ui, &mut action, &mut wanted_icons, shell_menus, in_bin);
     } else {
+        let band_active = ui.data(|d| d.get_temp::<[f32; 2]>(egui::Id::new(DETAILS_BAND)).is_some());
         let mut table = TableBuilder::new(ui)
             .striped(true)
             .resizable(true)
@@ -875,6 +931,9 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
             let row = if grouped { rows_map.iter().position(|&r| r == pos as isize).unwrap_or(pos) } else { pos };
             table = table.scroll_to_row(row, None);
         }
+        // Rows drawn this frame (table row, screen rect), and a rubber band started on one.
+        let mut drawn: Vec<(usize, egui::Rect)> = Vec::new();
+        let mut band_start: Option<[f32; 2]> = None;
         table
             .header(row_h, |mut h| {
                 header(&mut h, SortKey::Name, "Name", app, &mut sort_click);
@@ -908,6 +967,7 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                                 for _ in 1..n_cols {
                                     row.col(|_| {});
                                 }
+                                drawn.push((row.index(), row.response().rect));
                                 return;
                             }
                             p => p as usize,
@@ -925,6 +985,7 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                         d.rfind('.').filter(|&i| i > 0).map_or(d, |i| &d[..i])
                     };
                     let name_text = if dim { RichText::new(shown).color(weak) } else { RichText::new(shown) };
+                    let mut name_rect = egui::Rect::NOTHING;
                     row.col(|ui| {
                         if app.item_checkboxes {
                             let mut on = app.selected.contains(&e.name);
@@ -953,6 +1014,14 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                         ui.add(egui::Label::new(name_text).selectable(false).truncate());
                         if e.link {
                             ui.label(RichText::new(" ⤴").weak());
+                        }
+                        name_rect = ui.min_rect();
+                        // Keep the band's end in view: the table scrolls while it is dragged.
+                        if band_active
+                            && let Some(p) = ui.input(|i| i.pointer.interact_pos())
+                            && !ui.clip_rect().y_range().contains(p.y)
+                        {
+                            ui.scroll_to_rect(egui::Rect::from_center_size(p, egui::vec2(1.0, 1.0)), None);
                         }
                     });
                     row.col(|ui| {
@@ -995,8 +1064,19 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                         });
                     }
                     let resp = row.response();
-                    if resp.drag_started() && !in_bin {
-                        drag_start = Some(e.name.clone());
+                    drawn.push((row.index(), resp.rect));
+                    if resp.drag_started() {
+                        // As in Explorer: dragging the name moves the item, dragging anywhere
+                        // else on the row draws the selection rectangle.
+                        let origin = resp.ctx.input(|i| i.pointer.press_origin());
+                        match origin {
+                            Some(p) if !name_rect.contains(p) => {
+                                let frac = (p.y - resp.rect.top()) / resp.rect.height().max(1.0);
+                                band_start = Some([p.x, row.index() as f32 + frac]);
+                            }
+                            _ if !in_bin => drag_start = Some(e.name.clone()),
+                            _ => {}
+                        }
                     }
                     if e.is_dir && !app.is_dragged(&e.name) {
                         drop_hover(&resp, dragging, &app.child(&e.name), &mut hover_target);
@@ -1076,6 +1156,7 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                     });
                 });
             });
+        details_band(app, ui, band_start, &drawn, &rows_map);
     }
 
     app.request_icons(wanted_icons);

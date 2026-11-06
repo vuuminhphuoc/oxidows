@@ -64,7 +64,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Click, Ctrl+click, Shift+click, Ctrl+A, Esc | ✅ | |
 | Arrows, Home/End, PageUp/PageDown, Shift to extend | ✅ | |
 | Type-ahead to jump to a name | ✅ | |
-| Rubber-band (drag rectangle) selection | 🟡 | icon, List and Tiles views; not yet in Details |
+| Rubber-band (drag rectangle) selection | ✅ | every view; in Details it starts outside the name, as in Explorer, and scrolls
 | Item check boxes | ✅ | shown on hover or when selected; every view |
 | Invert selection | ✅ | … menu |
 
