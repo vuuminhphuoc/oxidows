@@ -151,3 +151,53 @@ pub struct IconImage {
 pub fn shell_icon(path: &Path, is_dir: bool, per_file: bool) -> Option<IconImage> {
     imp::shell_icon(path, is_dir, per_file)
 }
+
+// ---- SMB / network -------------------------------------------------------------------------
+
+/// A shared folder on a server, as `\\server` lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Share {
+    pub name: String,
+    pub remark: String,
+}
+
+/// Disk shares of `server` (a name or IP, without backslashes), hidden `$` shares left out.
+/// Uses `NetShareEnum`, i.e. the SMB server's own list.
+pub fn list_shares(server: &str) -> io::Result<Vec<Share>> {
+    imp::list_shares(server)
+}
+
+/// Opens an SMB session to `remote` (`\\server\share`). With `prompt`, Windows asks for a
+/// user name and password (and can remember them) when the current login is not accepted.
+pub fn connect(remote: &Path, prompt: bool) -> io::Result<()> {
+    imp::connect(remote, prompt)
+}
+
+/// Maps `letter:` to `remote`. `persistent` reconnects it at sign-in. `interactive` lets
+/// Windows ask for credentials.
+pub fn map_drive(letter: char, remote: &Path, persistent: bool, interactive: bool) -> io::Result<()> {
+    imp::map_drive(letter, remote, persistent, interactive)
+}
+
+/// Disconnects a mapped drive and forgets it at sign-in.
+pub fn unmap_drive(letter: char) -> io::Result<()> {
+    imp::unmap_drive(letter)
+}
+
+/// Computers visible on the local network (`\\NAME`), from the network provider's browse
+/// list. Can take seconds and depends on Network Discovery; call from a worker thread.
+pub fn network_computers() -> Vec<String> {
+    imp::network_computers()
+}
+
+/// Drive letters not in use, for "Map network drive".
+pub fn free_drive_letters() -> Vec<char> {
+    imp::free_drive_letters()
+}
+
+/// Errors that a login (another user name / password) could fix.
+pub fn is_auth_error(e: &io::Error) -> bool {
+    // ACCESS_DENIED, INVALID_PASSWORD, LOGON_FAILURE, NOT_AUTHENTICATED, ACCOUNT_RESTRICTION,
+    // SESSION_CREDENTIAL_CONFLICT is not here: it needs a disconnect first.
+    matches!(e.raw_os_error(), Some(5 | 86 | 1326 | 1244 | 1327))
+}

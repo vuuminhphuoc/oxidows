@@ -9,7 +9,7 @@ use std::time::UNIX_EPOCH;
 
 use explorer_core::Entry;
 
-use crate::{BATCH, Drive, DriveKind, FileOp, IconImage};
+use crate::{BATCH, Drive, DriveKind, FileOp, IconImage, Share};
 
 static CLIPBOARD: Mutex<Option<(Vec<PathBuf>, bool)>> = Mutex::new(None);
 
@@ -143,4 +143,26 @@ pub fn ctrl_v_down() -> bool {
 
 pub fn shell_icon(_path: &Path, _is_dir: bool, _per_file: bool) -> Option<IconImage> {
     None
+}
+
+fn no_smb() -> io::Error {
+    io::Error::new(io::ErrorKind::Unsupported, "SMB browsing is only available on Windows")
+}
+pub fn list_shares(_server: &str) -> io::Result<Vec<Share>> {
+    Err(no_smb())
+}
+pub fn connect(_remote: &Path, _prompt: bool) -> io::Result<()> {
+    Err(no_smb())
+}
+pub fn map_drive(_letter: char, _remote: &Path, _persistent: bool, _interactive: bool) -> io::Result<()> {
+    Err(no_smb())
+}
+pub fn unmap_drive(_letter: char) -> io::Result<()> {
+    Err(no_smb())
+}
+pub fn network_computers() -> Vec<String> {
+    Vec::new()
+}
+pub fn free_drive_letters() -> Vec<char> {
+    Vec::new()
 }

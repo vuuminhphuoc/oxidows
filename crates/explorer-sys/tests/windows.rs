@@ -171,3 +171,53 @@ fn shell_icons() {
     assert!(explorer_sys::shell_icon(Path::new("folder"), true, false).is_some());
     assert!(explorer_sys::shell_icon(Path::new(r"C:\Windows\notepad.exe"), false, true).is_some());
 }
+
+/// Real SMB against the runner's own server: share a temp folder, browse, copy, map a drive.
+#[test]
+fn smb_share_on_localhost() {
+    let d = scratch("smb");
+    fs::write(d.join("hello.txt"), b"over smb").unwrap();
+    let share = format!("oxitest{}", std::process::id());
+    let ok = std::process::Command::new("net")
+        .args(["share", &format!("{share}={}", d.display()), "/grant:Everyone,FULL"])
+        .status()
+        .unwrap()
+        .success();
+    if !ok {
+        // `net share` needs admin; the CI runner has it. Say so rather than pass silently.
+        panic!("could not create test share (not elevated?)");
+    }
+    let cleanup = || {
+        let _ = std::process::Command::new("net").args(["share", &share, "/delete", "/y"]).status();
+    };
+
+    let shares = explorer_sys::list_shares("localhost").unwrap();
+    assert!(shares.iter().any(|s| s.name.eq_ignore_ascii_case(&share)), "{shares:?}");
+    assert!(!shares.iter().any(|s| s.name.ends_with('$')), "hidden shares leaked: {shares:?}");
+
+    let unc = PathBuf::from(format!(r"\\localhost\{share}"));
+    explorer_sys::connect(&unc, false).unwrap();
+    assert_eq!(names(&unc), ["hello.txt"]);
+    let local = scratch("smb-dst");
+    assert!(file_op_silent(FileOp::Copy, &[unc.join("hello.txt")], Some(&local)).unwrap());
+    assert_eq!(fs::read(local.join("hello.txt")).unwrap(), b"over smb");
+
+    let letter = *explorer_sys::free_drive_letters().last().expect("a free drive letter");
+    explorer_sys::map_drive(letter, &unc, false, false).unwrap();
+    let mapped = PathBuf::from(format!("{letter}:\\"));
+    let listed = names(&mapped);
+    let net = explorer_sys::drives().into_iter().find(|x| x.root == mapped).map(|x| x.kind);
+    explorer_sys::unmap_drive(letter).unwrap();
+    cleanup();
+    assert_eq!(listed, ["hello.txt"]);
+    assert_eq!(net, Some(explorer_sys::DriveKind::Network));
+    let _ = fs::remove_dir_all(&d);
+    let _ = fs::remove_dir_all(&local);
+}
+
+#[test]
+fn network_enumeration_does_not_hang() {
+    let t = Instant::now();
+    let found = explorer_sys::network_computers();
+    println!("network computers: {found:?} in {:?}", t.elapsed());
+}

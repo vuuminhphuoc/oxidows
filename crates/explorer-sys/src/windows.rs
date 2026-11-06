@@ -11,7 +11,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use explorer_core::Entry;
 use windows_sys::Win32::Foundation::{FILETIME, GetLastError, GlobalFree, HWND, INVALID_HANDLE_VALUE, POINT};
+use windows_sys::Win32::NetworkManagement::NetManagement::{MAX_PREFERRED_LENGTH, NetApiBufferFree};
+use windows_sys::Win32::NetworkManagement::WNet::{
+    CONNECT_INTERACTIVE, CONNECT_PROMPT, CONNECT_UPDATE_PROFILE, NETRESOURCEW, RESOURCE_GLOBALNET, RESOURCETYPE_DISK,
+    RESOURCEUSAGE_CONTAINER, WNetAddConnection2W, WNetCancelConnection2W, WNetCloseEnum, WNetEnumResourceW,
+    WNetOpenEnumW,
+};
 use windows_sys::Win32::Storage::FileSystem::{
+    NetShareEnum, SHARE_INFO_1, STYPE_SPECIAL,
     FILE_NOTIFY_CHANGE_ATTRIBUTES, FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME,
     FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SIZE, FIND_FIRST_EX_LARGE_FETCH, FindClose,
     FindCloseChangeNotification, FindFirstChangeNotificationW, FindNextChangeNotification, FindExInfoBasic, FindExSearchNameMatch, FindFirstFileExW, FindNextFileW,
@@ -42,7 +49,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 use windows_sys::core::GUID;
 
-use crate::{BATCH, Drive, DriveKind, FileOp, IconImage};
+use crate::{BATCH, Drive, DriveKind, FileOp, IconImage, Share};
 
 const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
 const FILE_ATTRIBUTE_SYSTEM: u32 = 0x4;
@@ -529,4 +536,135 @@ pub fn shell_icon(path: &Path, is_dir: bool, per_file: bool) -> Option<IconImage
         DestroyIcon(info.hIcon);
     }
     out
+}
+
+const NERR_SUCCESS: u32 = 0;
+const ERROR_MORE_DATA: u32 = 234;
+const ERROR_NO_MORE_ITEMS: u32 = 259;
+const RESOURCEDISPLAYTYPE_SERVER: u32 = 2;
+
+unsafe fn pwstr(p: *const u16) -> String {
+    if p.is_null() {
+        return String::new();
+    }
+    let len = (0..).take_while(|&i| unsafe { *p.add(i) } != 0).count();
+    String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(p, len) })
+}
+
+pub fn list_shares(server: &str) -> io::Result<Vec<Share>> {
+    let name = wide(format!(r"\\{}", server.trim_start_matches('\\')));
+    let mut out = Vec::new();
+    let mut resume = 0u32;
+    loop {
+        let (mut buf, mut read, mut total) = (null_mut::<u8>(), 0u32, 0u32);
+        let r = unsafe { NetShareEnum(name.as_ptr(), 1, &mut buf, MAX_PREFERRED_LENGTH, &mut read, &mut total, &mut resume) };
+        if r != NERR_SUCCESS && r != ERROR_MORE_DATA {
+            return Err(io::Error::from_raw_os_error(r as i32));
+        }
+        if !buf.is_null() {
+            let items = unsafe { std::slice::from_raw_parts(buf.cast::<SHARE_INFO_1>(), read as usize) };
+            for it in items {
+                // Disk shares only (type 0), and not the hidden admin ones (C$, ADMIN$).
+                if it.shi1_type & !STYPE_SPECIAL == 0 && it.shi1_type & STYPE_SPECIAL == 0 {
+                    let name = unsafe { pwstr(it.shi1_netname) };
+                    if !name.ends_with('$') {
+                        out.push(Share { name, remark: unsafe { pwstr(it.shi1_remark) } });
+                    }
+                }
+            }
+            unsafe { NetApiBufferFree(buf.cast()) };
+        }
+        if r != ERROR_MORE_DATA {
+            break;
+        }
+    }
+    out.sort_by_key(|s| s.name.to_lowercase());
+    Ok(out)
+}
+
+fn add_connection(local: Option<&str>, remote: &Path, flags: u32) -> io::Result<()> {
+    let mut remote_w = wide(remote.as_os_str().to_string_lossy().trim_end_matches('\\'));
+    let mut local_w = local.map(wide);
+    let mut nr: NETRESOURCEW = unsafe { zeroed() };
+    nr.dwType = RESOURCETYPE_DISK;
+    nr.lpRemoteName = remote_w.as_mut_ptr();
+    nr.lpLocalName = local_w.as_mut().map_or(null_mut(), |l| l.as_mut_ptr());
+    com_init();
+    let r = unsafe { WNetAddConnection2W(&nr, null(), null(), flags) };
+    if r == 0 { Ok(()) } else { Err(io::Error::from_raw_os_error(r as i32)) }
+}
+
+pub fn connect(remote: &Path, prompt: bool) -> io::Result<()> {
+    add_connection(None, remote, if prompt { CONNECT_INTERACTIVE | CONNECT_PROMPT } else { 0 })
+}
+
+pub fn map_drive(letter: char, remote: &Path, persistent: bool, interactive: bool) -> io::Result<()> {
+    let local = format!("{}:", letter.to_ascii_uppercase());
+    let flags = if persistent { CONNECT_UPDATE_PROFILE } else { 0 } | if interactive { CONNECT_INTERACTIVE } else { 0 };
+    add_connection(Some(&local), remote, flags)
+}
+
+pub fn unmap_drive(letter: char) -> io::Result<()> {
+    let local = wide(format!("{}:", letter.to_ascii_uppercase()));
+    let r = unsafe { WNetCancelConnection2W(local.as_ptr(), CONNECT_UPDATE_PROFILE, 0) };
+    if r == 0 { Ok(()) } else { Err(io::Error::from_raw_os_error(r as i32)) }
+}
+
+/// Walks the network provider tree (providers -> domains/workgroups -> servers).
+fn enum_servers(container: Option<&NETRESOURCEW>, depth: u32, out: &mut Vec<String>) {
+    if depth > 3 || out.len() >= 1000 {
+        return;
+    }
+    let mut h = null_mut();
+    let r = unsafe {
+        WNetOpenEnumW(
+            RESOURCE_GLOBALNET,
+            RESOURCETYPE_DISK,
+            RESOURCEUSAGE_CONTAINER,
+            container.map_or(null(), |c| c as *const NETRESOURCEW),
+            &mut h,
+        )
+    };
+    if r != 0 {
+        return;
+    }
+    let mut buf = vec![0u64; 16 * 1024 / 8]; // 16 KB, 8-byte aligned for NETRESOURCEW
+    loop {
+        let mut count = u32::MAX;
+        let mut size = (buf.len() * 8) as u32;
+        let r = unsafe { WNetEnumResourceW(h, &mut count, buf.as_mut_ptr().cast(), &mut size) };
+        if r == ERROR_NO_MORE_ITEMS || (r != 0 && r != ERROR_MORE_DATA) {
+            break;
+        }
+        if r == ERROR_MORE_DATA {
+            buf.resize((size as usize).div_ceil(8), 0);
+            continue;
+        }
+        let items = unsafe { std::slice::from_raw_parts(buf.as_ptr().cast::<NETRESOURCEW>(), count as usize) };
+        for nr in items {
+            if nr.dwDisplayType == RESOURCEDISPLAYTYPE_SERVER {
+                let name = unsafe { pwstr(nr.lpRemoteName) };
+                if !name.is_empty() && !out.contains(&name) {
+                    out.push(name);
+                }
+            } else if nr.dwUsage & RESOURCEUSAGE_CONTAINER != 0 {
+                enum_servers(Some(nr), depth + 1, out);
+            }
+        }
+    }
+    unsafe { WNetCloseEnum(h) };
+}
+
+pub fn network_computers() -> Vec<String> {
+    com_init();
+    let mut out = Vec::new();
+    enum_servers(None, 0, &mut out);
+    out.sort_by_key(|s| s.to_lowercase());
+    out
+}
+
+pub fn free_drive_letters() -> Vec<char> {
+    let used = unsafe { GetLogicalDrives() };
+    // A and B are left out, as Explorer does.
+    (2..26u32).filter(|i| used & (1 << i) == 0).map(|i| (b'A' + i as u8) as char).collect()
 }
