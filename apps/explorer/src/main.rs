@@ -844,6 +844,14 @@ impl App {
         }
     }
 
+    /// Recent locations: several steps back or forward at once.
+    pub fn jump_history(&mut self, steps: isize) {
+        if let Some(p) = self.history.jump(self.cur.clone(), steps) {
+            self.cur = p;
+            self.entered_new_folder(None);
+        }
+    }
+
     fn forward(&mut self) {
         if let Some(p) = self.history.forward(self.cur.clone()) {
             self.cur = p;

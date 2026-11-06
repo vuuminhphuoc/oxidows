@@ -357,6 +357,32 @@ impl History {
     pub fn can_forward(&self) -> bool {
         !self.forward.is_empty()
     }
+
+    /// The Recent locations list, newest first: (steps, place) where steps > 0 are forward,
+    /// 0 is `current`, < 0 are back. Pass `steps` to [`History::jump`].
+    pub fn recent(&self, current: &Path) -> Vec<(isize, PathBuf)> {
+        let mut out: Vec<(isize, PathBuf)> =
+            self.forward.iter().enumerate().map(|(i, p)| ((self.forward.len() - i) as isize, p.clone())).collect();
+        out.push((0, current.to_path_buf()));
+        out.extend(self.back.iter().rev().enumerate().map(|(i, p)| (-(i as isize) - 1, p.clone())));
+        out
+    }
+
+    /// Moves `steps` back (negative) or forward (positive) at once.
+    pub fn jump(&mut self, mut current: PathBuf, steps: isize) -> Option<PathBuf> {
+        let mut moved = false;
+        for _ in 0..steps.unsigned_abs() {
+            let next = if steps < 0 { self.back(current.clone()) } else { self.forward(current.clone()) };
+            match next {
+                Some(p) => {
+                    current = p;
+                    moved = true;
+                }
+                None => break,
+            }
+        }
+        moved.then_some(current)
+    }
 }
 
 /// Breadcrumb segments: (label, full path) from the root down to `path`.
@@ -799,5 +825,21 @@ mod tests {
         assert_eq!(shell_folder_template("RecycleBinFolder"), Some(RECYCLE_BIN));
         assert_eq!(shell_folder_template("common startup"), shell_folder_template("CommonStartup"));
         assert_eq!(shell_folder_template("bogus"), None);
+    }
+
+    #[test]
+    fn recent_locations() {
+        let p = |s: &str| PathBuf::from(s);
+        let mut h = History::default();
+        h.visit(p("/a"));
+        h.visit(p("/b"));
+        // now at /c, back = [/a, /b]
+        let back1 = h.back(p("/c")).unwrap();
+        assert_eq!(back1, p("/b"));
+        let r = h.recent(&back1);
+        assert_eq!(r, [(1, p("/c")), (0, p("/b")), (-1, p("/a"))]);
+        assert_eq!(h.jump(p("/b"), -1), Some(p("/a")));
+        assert_eq!(h.jump(p("/a"), 2), Some(p("/c")));
+        assert!(!h.can_forward());
     }
 }

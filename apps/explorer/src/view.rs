@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use egui::{Align, Layout, RichText, Sense, Ui};
 use egui_extras::{Column, TableBuilder};
 use explorer_core::{
-    SortKey, format_attributes, format_bytes, format_size_kb, format_time, icon_for, location_crumbs, parent_path,
+    SortKey, classify, format_attributes, format_bytes, format_size_kb, format_time, icon_for, location_crumbs,
+    parent_path,
 };
 use explorer_sys::DriveKind;
 
@@ -71,6 +72,22 @@ pub fn toolbar(app: &mut App, ui: &mut Ui) {
             {
                 app.forward();
             }
+            // Recent locations.
+            let recent = app.history.recent(&app.cur);
+            ui.add_enabled_ui(recent.len() > 1, |ui| {
+                ui.menu_button("⏷", |ui| {
+                    for (steps, p) in recent {
+                        let label = location_crumbs(&p).last().map_or_else(|| p.display().to_string(), |c| c.0.clone());
+                        let text = if steps == 0 { RichText::new(label).strong() } else { RichText::new(label) };
+                        if ui.button(text).on_hover_text(p.display().to_string()).clicked() {
+                            app.jump_history(steps);
+                            ui.close();
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("Recent locations");
+            });
             if ui
                 .add_enabled(parent_path(&app.cur).is_some(), egui::Button::new("⬆"))
                 .on_hover_text("Up (Alt+Up)")
@@ -242,10 +259,60 @@ pub fn toolbar(app: &mut App, ui: &mut Ui) {
 
 fn address_bar(app: &mut App, ui: &mut Ui) {
     let width = ui.available_width();
-    if let Some(text) = app.address_edit.as_mut() {
-        let r = ui.add(egui::TextEdit::singleline(text).desired_width(width - 8.0));
+    if let Some(typed) = app.address_edit.clone() {
+        // Autocomplete: subfolders of the typed folder that start with the typed name.
+        let cut = typed.rfind(['\\', '/']).map(|i| i + 1).unwrap_or(0);
+        let (dir, prefix) = (PathBuf::from(&typed[..cut]), typed[cut..].to_lowercase());
+        let mut suggestions: Vec<PathBuf> = Vec::new();
+        if cut > 0 && dir.is_dir() {
+            match app.tree.get(&dir) {
+                Some(names) => {
+                    suggestions = names
+                        .iter()
+                        .filter(|n| n.to_lowercase().starts_with(&prefix) && !n.eq_ignore_ascii_case(&typed[cut..]))
+                        .take(12)
+                        .map(|n| dir.join(n))
+                        .collect()
+                }
+                None => app.load_tree(dir.clone()),
+            }
+        }
+        let edit_id = ui.make_persistent_id("address-edit");
+        // Tab completes the first suggestion; taken before the text box would move focus.
+        let focused = ui.memory(|m| m.has_focus(edit_id));
+        let text = app.address_edit.as_mut().expect("editing");
+        if focused && !suggestions.is_empty() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab))
+        {
+            *text = format!("{}{}", suggestions[0].display(), std::path::MAIN_SEPARATOR);
+        }
+        let mut edit = egui::TextEdit::singleline(text).id(edit_id).desired_width(width - 8.0);
+        if focused {
+            edit = edit.lock_focus(true);
+        }
+        let r = ui.add(edit);
         if !r.has_focus() && !r.lost_focus() {
             r.request_focus();
+        }
+        if r.has_focus() && !suggestions.is_empty() {
+            let mut pick = None;
+            egui::Area::new(egui::Id::new("address-complete"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(r.rect.left_bottom())
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.set_min_width(r.rect.width() - 12.0);
+                        for s in &suggestions {
+                            if ui.add(egui::Button::new(s.display().to_string()).frame(false)).clicked() {
+                                pick = Some(s.clone());
+                            }
+                        }
+                    });
+                });
+            if let Some(p) = pick {
+                app.address_edit = None;
+                app.navigate(p);
+                return;
+            }
         }
         if r.lost_focus() {
             let submit = ui.input(|i| i.key_pressed(egui::Key::Enter));
@@ -264,27 +331,70 @@ fn address_bar(app: &mut App, ui: &mut Ui) {
         .inner_margin(egui::Margin::symmetric(4, 1));
     let resp = frame.show(ui, |ui| {
         ui.set_width(width - 16.0);
+        // The empty part of the bar, registered first so the segments above it get the pointer.
+        let bar = ui.interact(
+            egui::Rect::from_min_size(ui.max_rect().min, egui::vec2(width - 16.0, ui.spacing().interact_size.y)),
+            ui.id().with("address-bg"),
+            Sense::click(),
+        );
         ui.spacing_mut().item_spacing.x = 0.0;
         let crumbs = location_crumbs(&app.cur);
         // Long paths: show the last segments that fit, like Explorer.
         let skip = crumbs.len().saturating_sub(((width / 90.0) as usize).max(2));
         let mut go = None;
+        let mut load = None;
+        let mut over_child = false;
         if skip > 0 {
             ui.label(" … ");
         }
+        let local = classify(&app.cur) == explorer_core::Place::Local;
         for (i, (label, path)) in crumbs.iter().enumerate().skip(skip) {
-            if i > skip {
-                ui.label(RichText::new(" › ").weak());
-            }
-            if ui.add(egui::Button::new(label).frame(false)).clicked() {
+            let b = ui.add(egui::Button::new(label).frame(false));
+            over_child |= b.hovered();
+            if b.clicked() {
                 go = Some(path.clone());
             }
+            // The arrow after a segment lists its subfolders (the one on the path in bold).
+            if local && classify(path) == explorer_core::Place::Local {
+                let next = crumbs.get(i + 1).map(|c| &c.1);
+                let (arrow, _) = egui::containers::menu::MenuButton::from_button(
+                    egui::Button::new(RichText::new(" › ").weak()).frame(false),
+                )
+                .ui(ui, |ui| {
+                    egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| match app.tree.get(path) {
+                        Some(names) if names.is_empty() => {
+                            ui.label(RichText::new("(empty)").weak());
+                        }
+                        Some(names) => {
+                            for n in names {
+                                let child = path.join(n);
+                                let t = if Some(&child) == next { RichText::new(n).strong() } else { RichText::new(n) };
+                                if ui.button(t).clicked() {
+                                    go = Some(child);
+                                    ui.close();
+                                }
+                            }
+                        }
+                        None => {
+                            load = Some(path.clone());
+                            ui.spinner();
+                        }
+                    });
+                });
+                over_child |= arrow.hovered();
+            } else if i + 1 < crumbs.len() {
+                ui.label(RichText::new(" › ").weak());
+            }
         }
-        go
+        (go, load, bar.clicked() && !over_child)
     });
-    if let Some(p) = resp.inner {
+    let (go, load, edit) = resp.inner;
+    if let Some(p) = load {
+        app.load_tree(p);
+    }
+    if let Some(p) = go {
         app.navigate(p);
-    } else if resp.response.interact(Sense::click()).clicked() {
+    } else if edit {
         app.address_edit = Some(app.cur.to_string_lossy().into_owned());
     }
 }
