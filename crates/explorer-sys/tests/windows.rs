@@ -496,3 +496,27 @@ fn libraries_list_their_folders() {
     assert!(libs.iter().all(|(n, _)| !n.is_empty() && !n.ends_with(".library-ms")));
     assert!(libs.iter().flat_map(|l| &l.1).any(|p| p.is_dir()), "{libs:?}");
 }
+
+#[test]
+fn default_file_manager_round_trip() {
+    let _g = guard("default_file_manager_round_trip");
+    let reg = |key: &str| {
+        let out = std::process::Command::new("reg").args(["query", key, "/ve"]).output().unwrap();
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    assert!(!explorer_sys::is_default_file_manager());
+    let exe = Path::new(r"C:\Tools\oxi-explorer.exe");
+    explorer_sys::set_default_file_manager(Some(exe)).unwrap();
+    assert!(explorer_sys::is_default_file_manager());
+    let cmd = reg(r"HKCU\Software\Classes\Directory\shell\oxi-explorer\command");
+    assert!(cmd.contains(r#""C:\Tools\oxi-explorer.exe" "%1""#), "{cmd}");
+    let win_e = reg(r"HKCU\Software\Classes\CLSID\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}\shell\opennewwindow\command");
+    assert!(win_e.contains("oxi-explorer.exe"), "{win_e}");
+    explorer_sys::set_default_file_manager(None).unwrap();
+    assert!(!explorer_sys::is_default_file_manager());
+    assert!(!reg(r"HKCU\Software\Classes\Directory\shell\oxi-explorer\command").contains("oxi-explorer.exe"));
+    assert!(
+        !reg(r"HKCU\Software\Classes\CLSID\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}\shell\opennewwindow\command")
+            .contains("oxi")
+    );
+}

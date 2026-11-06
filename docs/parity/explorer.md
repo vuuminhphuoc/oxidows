@@ -123,4 +123,4 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Long paths (> 260 chars) | ✅ | `\\?\` prefix |
 | Remembers window size, view and sort per folder | ✅ | `%APPDATA%\oxidows\explorer.ini` |
 | Dark / light theme follows Windows | ✅ | System / Light / Dark in the … menu |
-| Replace Win+E / default folder handler | ❌ | registry opt-in, later |
+| Replace Win+E / default folder handler | ✅ | opt-in checkbox in the … menu; per user (HKCU) folders, drives and Win+E; untick restores File Explorer |

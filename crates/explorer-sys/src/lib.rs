@@ -21,6 +21,8 @@ mod windows;
 use windows as imp;
 
 #[cfg(windows)]
+mod default_handler;
+#[cfg(windows)]
 mod libraries;
 #[cfg(windows)]
 mod preview;
@@ -94,6 +96,29 @@ pub fn libraries() -> Vec<(String, Vec<PathBuf>)> {
         .filter(|(n, _)| matches!(*n, "Documents" | "Music" | "Pictures" | "Videos"))
         .map(|(n, p)| (n.to_string(), vec![p]))
         .collect()
+}
+
+/// Whether folders (and Win+E) open in oxi-explorer for this user.
+pub fn is_default_file_manager() -> bool {
+    #[cfg(windows)]
+    return default_handler::is_default();
+    #[cfg(not(windows))]
+    false
+}
+
+/// Makes `exe` (or, with `None`, the built-in Explorer again) open folders, drives and Win+E,
+/// for this user only.
+pub fn set_default_file_manager(exe: Option<&Path>) -> io::Result<()> {
+    #[cfg(windows)]
+    return match exe {
+        Some(exe) => default_handler::set_default(exe),
+        None => default_handler::unset_default(),
+    };
+    #[cfg(not(windows))]
+    {
+        let _ = exe;
+        Err(io::Error::new(io::ErrorKind::Unsupported, "only on Windows"))
+    }
 }
 
 /// One file or folder's entry; its `name` is the last path component.
