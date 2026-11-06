@@ -32,7 +32,10 @@ cargo test --workspace
 cargo build --release -p oxi-taskmgr
 ```
 
-CI (`.github/workflows/ci.yml`) runs clippy, tests and a release build on `windows-latest`.
+CI (`.github/workflows/ci.yml`) runs clippy, tests and a release build on `windows-latest`, then
+[`scripts/smoke.ps1`](scripts/smoke.ps1) launches every `oxi-*.exe` and records time to window, private
+working set, idle CPU and a screenshot (job summary + `smoke-results` artifact). Name a new app's
+binary `oxi-<app>` and it is smoke-tested and released automatically.
 Pushing a tag such as `v0.1.0` publishes the exe as a GitHub Release.
 
 ## License

@@ -19,11 +19,26 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
-      - run: cargo build --release -p oxi-taskmgr
+      - run: cargo build --release --workspace
+      # Every app exe named oxi-*.exe is launched, measured and screenshotted (see scripts/smoke.ps1).
+      - name: Smoke test
+        shell: pwsh
+        env:
+          OXI_TASKMGR_TIMING: "1"
+        run: |
+          $exes = Get-ChildItem target/release -Filter "oxi-*.exe"
+          if (-not $exes) { throw "no oxi-*.exe built" }
+          foreach ($e in $exes) { ./scripts/smoke.ps1 -Exe $e.FullName -Name $e.BaseName.Substring(4) -OutDir smoke }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-results
+          path: smoke/
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         with:
-          name: oxi-taskmgr-windows
-          path: target/release/oxi-taskmgr.exe
+          name: oxidows-windows
+          path: target/release/oxi-*.exe
 
   # A tag like v0.1.0 publishes the exe as a GitHub Release download.
   release:
@@ -35,10 +50,10 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: oxi-taskmgr-windows
+          name: oxidows-windows
       - env:
           GH_TOKEN: ${{ github.token }}
         run: >-
-          gh release create "$GITHUB_REF_NAME" oxi-taskmgr.exe
+          gh release create "$GITHUB_REF_NAME" oxi-*.exe
           --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME"
-          --notes "Windows x64 build of the oxidows Task Manager. Unsigned: Windows SmartScreen may warn on first run."
+          --notes "Windows x64 builds of the oxidows apps. Unsigned: Windows SmartScreen may warn on first run."
