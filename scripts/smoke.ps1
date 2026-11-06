@@ -60,9 +60,38 @@ if ($p.HasExited) {
 if ($ScreenshotOnly) { $IdleSeconds = 0 }
 # Idle CPU: process CPU time over a quiet interval, as a share of the whole machine.
 $cpu0 = $p.TotalProcessorTime
+$threads0 = @{}
+foreach ($t in $p.Threads) { try { $threads0[$t.Id] = $t.TotalProcessorTime.TotalMilliseconds } catch { } }
 Start-Sleep -Seconds $IdleSeconds
 $p.Refresh()
 $cpu1 = $p.TotalProcessorTime
+# Which threads used the idle CPU (named threads show their name), to tell rendering from sampling.
+if ($IdleSeconds -gt 0) {
+    if (-not ('Smoke.Native' -as [type])) {
+        Add-Type -Namespace Smoke -Name Native -MemberDefinition @'
+[DllImport("kernel32.dll")] public static extern IntPtr OpenThread(uint access, bool inherit, uint id);
+[DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
+[DllImport("kernel32.dll", CharSet = CharSet.Unicode)] public static extern int GetThreadDescription(IntPtr h, out IntPtr desc);
+[DllImport("kernel32.dll")] public static extern IntPtr LocalFree(IntPtr p);
+public static string Name(uint id) {
+    IntPtr h = OpenThread(0x1000, false, id); // THREAD_QUERY_LIMITED_INFORMATION
+    if (h == IntPtr.Zero) return "";
+    IntPtr d; string s = "";
+    if (GetThreadDescription(h, out d) >= 0 && d != IntPtr.Zero) { s = Marshal.PtrToStringUni(d); LocalFree(d); }
+    CloseHandle(h); return s;
+}
+'@
+    }
+    $busy = foreach ($t in $p.Threads) {
+        try {
+            $ms = $t.TotalProcessorTime.TotalMilliseconds - ($threads0[$t.Id] ?? 0)
+            [pscustomobject]@{ id = $t.Id; ms = [math]::Round($ms); name = [Smoke.Native]::Name([uint32]$t.Id) }
+        } catch { }
+    }
+    Write-Host "Busiest threads over the idle interval (ms of CPU):"
+    $busy | Sort-Object ms -Descending | Select-Object -First 6 | ForEach-Object { Write-Host ("  {0,7} ms  tid {1}  {2}" -f $_.ms, $_.id, $_.name) }
+    Write-Host "Logical processors: $([Environment]::ProcessorCount)"
+}
 $idleCpuPct = if ($IdleSeconds -gt 0) { [math]::Round(($cpu1 - $cpu0).TotalMilliseconds / ($IdleSeconds * 1000 * [Environment]::ProcessorCount) * 100, 3) } else { $null }
 
 # "Memory" in Task Manager = private working set.
