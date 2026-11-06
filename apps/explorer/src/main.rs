@@ -4,6 +4,7 @@
 
 mod pane;
 mod settings;
+mod undo;
 mod view;
 
 use std::collections::{HashMap, HashSet};
@@ -28,7 +29,8 @@ enum Msg {
     /// A sign-in to a share finished.
     Connected(PathBuf, std::io::Result<()>),
     Drives(Vec<Drive>),
-    OpDone(String, std::io::Result<bool>),
+    /// A file operation finished, with what it did if that can be undone.
+    OpDone(String, std::io::Result<bool>, Option<undo::Undoable>),
     /// The watched folder changed on disk.
     Changed(PathBuf),
     Icon(IconKey, Option<explorer_sys::IconImage>),
@@ -142,6 +144,8 @@ struct App {
     pub col_attrs: bool,
     pub pane: pane::Pane,
     pub persist: settings::Persist,
+    pub undo_stack: Vec<undo::Undoable>,
+    pub redo_stack: Vec<undo::Undoable>,
     preview: Option<(PathBuf, pane::PreviewState)>,
 
     /// Selected names (names survive refreshes; indices don't).
@@ -221,6 +225,8 @@ impl App {
             col_attrs: false,
             pane: pane::Pane::None,
             persist: settings::Persist::new(settings.clone()),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
             preview: None,
             selected: HashSet::new(),
             cursor: None,
@@ -530,8 +536,11 @@ impl App {
         thread::Builder::new()
             .name("file-op".into())
             .spawn(move || {
+                let pre = undo::snapshot_targets(&sources, dest.as_deref());
                 let r = explorer_sys::file_op(op, &sources, dest.as_deref());
-                let _ = tx.send(Msg::OpDone(desc, r));
+                // Recorded even when cancelled part-way: whatever was done can be undone.
+                let rec = if r.is_ok() { undo::record(op, &sources, dest.as_deref(), &pre) } else { None };
+                let _ = tx.send(Msg::OpDone(desc, r, rec));
                 ctx.request_repaint();
             })
             .expect("spawn file-op thread");
@@ -617,9 +626,14 @@ impl App {
                     };
                     self.icons.insert(key, state);
                 }
-                Msg::OpDone(desc, r) => {
+                Msg::OpDone(desc, r, rec) => {
                     self.ops_running -= 1;
+                    if let Some(u) = rec {
+                        self.push_undo(u);
+                    }
                     self.status = Some(match r {
+                        // An undo/redo step: keep the "Undo …" message.
+                        Ok(true) if desc.is_empty() => self.status.take().unwrap_or_default(),
                         Ok(true) => desc,
                         Ok(false) => "Cancelled".into(),
                         Err(e) => format!("Error: {e}"),
@@ -1051,7 +1065,7 @@ impl App {
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         thread::spawn(move || {
             let r = explorer_sys::map_drive(letter, &remote, persistent, true).map(|()| true);
-            let _ = tx.send(Msg::OpDone(format!("Mapped {letter}: to {}", remote.display()), r));
+            let _ = tx.send(Msg::OpDone(format!("Mapped {letter}: to {}", remote.display()), r, None));
             ctx.request_repaint();
         });
     }
@@ -1112,6 +1126,7 @@ impl App {
                 }
                 match std::fs::rename(&from, &to) {
                     Ok(()) => {
+                        self.push_undo(undo::Undoable::Rename { from: from.clone(), to: to.clone() });
                         self.selected.clear();
                         let parent = Path::new(original).parent().unwrap_or(Path::new(""));
                         self.pending_select = Some(parent.join(new).to_string_lossy().into_owned());
@@ -1132,6 +1147,7 @@ impl App {
                 }
                 match std::fs::create_dir(self.cur.join(name)) {
                     Ok(()) => {
+                        self.push_undo(undo::Undoable::NewFolder(self.cur.join(name)));
                         self.selected.clear();
                         self.pending_select = Some(name.to_string());
                         self.refresh();
@@ -1272,6 +1288,9 @@ impl App {
                 (Modifiers::SHIFT, Key::Delete, "nuke"),
                 (Modifiers::NONE, Key::Delete, "delete"),
                 (ctrl, Key::A, "all"),
+                (ctrl | Modifiers::SHIFT, Key::Z, "redo"),
+                (ctrl, Key::Z, "undo"),
+                (ctrl, Key::Y, "redo"),
                 (Modifiers::ALT, Key::Enter, "props"),
                 (Modifiers::NONE, Key::Escape, "none"),
             ] {
@@ -1327,6 +1346,8 @@ impl App {
                 "all" => {
                     self.selected = self.view.iter().map(|&i| self.entries[i].name.clone()).collect();
                 }
+                "undo" => self.undo(),
+                "redo" => self.redo(),
                 "props" => match self.selected_paths().as_slice() {
                     [p] => {
                         let p = p.clone();

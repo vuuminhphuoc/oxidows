@@ -120,6 +120,27 @@ pub fn toolbar(app: &mut App, ui: &mut Ui) {
                 }
                 ui.separator();
                 ui.horizontal(|ui| {
+                    let undo = app.undo_stack.last().map(|u| u.label());
+                    if ui
+                        .add_enabled(undo.is_some(), egui::Button::new(format!("Undo {}", undo.unwrap_or_default())))
+                        .on_hover_text("Ctrl+Z")
+                        .clicked()
+                    {
+                        app.undo();
+                        ui.close();
+                    }
+                    let redo = app.redo_stack.last().map(|u| u.label());
+                    if ui
+                        .add_enabled(redo.is_some(), egui::Button::new(format!("Redo {}", redo.unwrap_or_default())))
+                        .on_hover_text("Ctrl+Y")
+                        .clicked()
+                    {
+                        app.redo();
+                        ui.close();
+                    }
+                });
+                ui.separator();
+                ui.horizontal(|ui| {
                     ui.label("View:");
                     ui.selectable_value(&mut app.view_mode, ViewMode::Details, "Details");
                     ui.selectable_value(&mut app.view_mode, ViewMode::Icons, "Large icons");
