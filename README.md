@@ -7,6 +7,18 @@ Clean-room: behaviour is matched by observation; no Microsoft code, icons or res
 | --- | --- | --- |
 | Task Manager | v0.1: Processes + Performance tabs | [`apps/taskmgr`](apps/taskmgr) |
 
+## Download
+
+Get `oxi-taskmgr.exe` from the [latest release](https://github.com/vuuminhphuoc/oxidows/releases/latest)
+(Windows 10/11 x64, no installer). The exe is not code-signed yet, so SmartScreen may ask you to
+confirm on first run. Run it as administrator to see and end elevated processes.
+
+| Processes | Performance |
+| --- | --- |
+| ![Processes tab](docs/images/taskmgr-processes.png) | ![Performance tab](docs/images/taskmgr-performance.png) |
+
+<sub>Screenshots from a Linux development build; the Windows build looks the same.</sub>
+
 ## Layout
 
 - `apps/<name>`: one executable per rewritten app.
@@ -21,3 +33,8 @@ cargo build --release -p oxi-taskmgr
 ```
 
 CI (`.github/workflows/ci.yml`) runs clippy, tests and a release build on `windows-latest`.
+Pushing a tag such as `v0.1.0` publishes the exe as a GitHub Release.
+
+## License
+
+Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.

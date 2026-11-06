@@ -178,7 +178,7 @@ impl Pdh {
         unsafe {
             let mut v: PDH_FMT_COUNTERVALUE = zeroed();
             let st = PdhGetFormattedCounterValue(counter, PDH_FMT_DOUBLE | PDH_FMT_NOCAP100, null_mut(), &mut v);
-            (st == 0 && v.CStatus == 0).then(|| v.Anonymous.doubleValue)
+            (st == 0 && v.CStatus == 0).then_some(v.Anonymous.doubleValue)
         }
     }
 
@@ -201,7 +201,7 @@ impl Pdh {
                     if self.item_buf.is_empty() { null_mut() } else { self.item_buf.as_mut_ptr().cast() },
                 )
             };
-            if st == PDH_MORE_DATA as u32 {
+            if st == PDH_MORE_DATA {
                 self.item_buf.resize(size as usize + 1024, 0);
                 size = self.item_buf.len() as u32;
                 continue;
