@@ -9,6 +9,13 @@ pub fn area(ui: &mut Ui, size: Vec2, ring: &Ring, max: f32, color: Color32, grid
     resp
 }
 
+/// Utilization with its kernel-mode part drawn darker on top ("Show kernel times").
+pub fn with_kernel(ui: &mut Ui, size: Vec2, ring: &Ring, kernel: &Ring, color: Color32, grid: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::hover());
+    paint(ui, rect, &[(ring, color), (kernel, color.gamma_multiply(0.6))], 100.0, grid);
+    resp
+}
+
 /// Several series on one set of axes (network send + receive).
 pub fn multi(ui: &mut Ui, size: Vec2, series: &[(&Ring, Color32)], max: f32) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(size, Sense::hover());

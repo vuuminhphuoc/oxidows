@@ -61,6 +61,10 @@ impl Collector {
             memory: num(21) * self.page_size,
             io_read_bytes: read,
             io_write_bytes: write,
+            net_bytes: 0,
+            suspended: false,
+            efficiency: false,
+            counters: Default::default(),
             threads: num(17) as u32,
             handles,
             session_id: num(3) as u32,
@@ -81,7 +85,9 @@ impl Collector {
             }
             let v: Vec<u64> = it.map(|x| x.parse().unwrap_or(0)).collect();
             let idle = v.get(3).copied().unwrap_or(0) + v.get(4).copied().unwrap_or(0);
-            let times = CpuTimes { idle, total: v.iter().take(8).sum() };
+            // system + irq + softirq
+            let kernel = [2, 5, 6].iter().map(|&i| v.get(i).copied().unwrap_or(0)).sum();
+            let times = CpuTimes { idle, total: v.iter().take(8).sum(), kernel };
             if label == "cpu" {
                 sys.cpu = times;
             } else {
@@ -296,4 +302,40 @@ pub fn is_running(name: &str) -> bool {
         .flatten()
         .flatten()
         .any(|e| std::fs::read_to_string(e.path().join("comm")).is_ok_and(|c| c.trim().eq_ignore_ascii_case(name)))
+}
+pub fn shutdown() {}
+pub fn adapter_info(_name: &str) -> taskmgr_core::AdapterInfo {
+    taskmgr_core::AdapterInfo::default()
+}
+pub mod tray {
+    pub fn install(_hwnd: isize) -> bool {
+        false
+    }
+    pub fn update(_cpu_pct: f32, _tip: &str) {}
+    pub fn hide_window() {}
+}
+pub fn app_history() -> io::Result<taskmgr_core::AppHistory> {
+    unsupported()
+}
+pub fn switch_to(_pid: u32) -> io::Result<()> {
+    unsupported()
+}
+pub fn file_properties(_path: &str) -> io::Result<()> {
+    unsupported()
+}
+pub fn disk_info(_number: u32) -> io::Result<taskmgr_core::DiskInfo> {
+    unsupported()
+}
+pub fn memory_info() -> taskmgr_core::MemoryInfo {
+    taskmgr_core::MemoryInfo::default()
+}
+
+pub fn wait_chain(_pid: u32) -> io::Result<Vec<taskmgr_core::WaitChain>> {
+    unsupported()
+}
+pub fn uac_virtualization(_pid: u32) -> Option<bool> {
+    None
+}
+pub fn set_uac_virtualization(_pid: u32, _on: bool) -> io::Result<()> {
+    unsupported()
 }

@@ -90,6 +90,7 @@ impl State {
                     || s.name.to_lowercase().contains(&f)
                     || s.display_name.to_lowercase().contains(&f)
                     || s.pid.to_string() == f
+                    || s.group.to_lowercase().contains(&f)
             })
             .collect();
         let mut action = None;
@@ -102,8 +103,9 @@ impl State {
             .column(Column::exact(70.0))
             .column(Column::remainder().clip(true))
             .column(Column::exact(90.0))
+            .column(Column::initial(170.0).clip(true))
             .header(20.0, |mut h| {
-                for t in ["Name", "PID", "Description", "Status"] {
+                for t in ["Name", "PID", "Description", "Status", "Group"] {
                     h.col(|ui| {
                         ui.label(RichText::new(t).strong());
                     });
@@ -124,6 +126,9 @@ impl State {
                     });
                     row.col(|ui| {
                         ui.label(s.state.label());
+                    });
+                    row.col(|ui| {
+                        ui.label(&s.group);
                     });
                     let resp = row.response();
                     if resp.clicked() {

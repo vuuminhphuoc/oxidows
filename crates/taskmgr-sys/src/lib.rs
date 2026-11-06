@@ -96,6 +96,72 @@ impl Collector {
     }
 }
 
+/// IP addresses, DNS suffix and Wi-Fi SSID of the adapter named `name` (its alias).
+pub fn adapter_info(name: &str) -> taskmgr_core::AdapterInfo {
+    imp::adapter_info(name)
+}
+
+/// Notification-area icon showing CPU usage (Windows only; no-ops elsewhere).
+pub mod tray {
+    /// Adds the icon for the window with this raw handle (HWND).
+    pub fn install(hwnd: isize) -> bool {
+        super::imp::tray::install(hwnd)
+    }
+    /// Redraws the icon for this CPU percentage, with a tooltip. Callable from any thread.
+    pub fn update(cpu_pct: f32, tip: &str) {
+        super::imp::tray::update(cpu_pct, tip);
+    }
+    /// Hides the main window; the icon brings it back.
+    pub fn hide_window() {
+        super::imp::tray::hide_window();
+    }
+}
+
+/// App history from Windows' resource usage database (SRUM). Needs administrator; takes seconds
+/// (it reads a shadow copy), so call it off the UI thread.
+pub fn app_history() -> io::Result<taskmgr_core::AppHistory> {
+    imp::app_history()
+}
+
+/// "Switch to": brings the process's main window to the front.
+pub fn switch_to(pid: u32) -> io::Result<()> {
+    imp::switch_to(pid)
+}
+
+/// Opens the file's Properties dialog.
+pub fn file_properties(path: &str) -> io::Result<()> {
+    imp::file_properties(path)
+}
+
+/// Model, capacity, SSD / HDD and bus of physical disk `number`.
+pub fn disk_info(number: u32) -> io::Result<taskmgr_core::DiskInfo> {
+    imp::disk_info(number)
+}
+
+/// Memory speed, slots and form factor from the firmware tables.
+pub fn memory_info() -> taskmgr_core::MemoryInfo {
+    imp::memory_info()
+}
+
+/// Blocked threads of a process and what they wait on ("Analyze wait chain").
+pub fn wait_chain(pid: u32) -> io::Result<Vec<taskmgr_core::WaitChain>> {
+    imp::wait_chain(pid)
+}
+
+/// None when UAC virtualization is not allowed for the process.
+pub fn uac_virtualization(pid: u32) -> Option<bool> {
+    imp::uac_virtualization(pid)
+}
+
+pub fn set_uac_virtualization(pid: u32, on: bool) -> io::Result<()> {
+    imp::set_uac_virtualization(pid, on)
+}
+
+/// Stops background work (the ETW network trace on Windows). Call on exit.
+pub fn shutdown() {
+    imp::shutdown();
+}
+
 /// Ends a process immediately (Windows `TerminateProcess`, Unix `SIGKILL`).
 pub fn end_process(pid: u32) -> io::Result<()> {
     imp::end_process(pid)

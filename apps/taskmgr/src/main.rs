@@ -4,6 +4,7 @@
 
 mod details;
 mod graph;
+mod history;
 mod performance;
 mod processes;
 mod services;
@@ -29,6 +30,7 @@ static WANT_SESSIONS: AtomicBool = AtomicBool::new(false);
 enum Tab {
     Processes,
     Performance,
+    AppHistory,
     Startup,
     Users,
     Details,
@@ -37,13 +39,22 @@ enum Tab {
 }
 
 impl Tab {
-    const ALL: [Tab; 7] =
-        [Tab::Processes, Tab::Performance, Tab::Startup, Tab::Users, Tab::Details, Tab::Services, Tab::Settings];
+    const ALL: [Tab; 8] = [
+        Tab::Processes,
+        Tab::Performance,
+        Tab::AppHistory,
+        Tab::Startup,
+        Tab::Users,
+        Tab::Details,
+        Tab::Services,
+        Tab::Settings,
+    ];
 
     fn label(self) -> &'static str {
         match self {
             Tab::Processes => "Processes",
             Tab::Performance => "Performance",
+            Tab::AppHistory => "App history",
             Tab::Startup => "Startup apps",
             Tab::Users => "Users",
             Tab::Details => "Details",
@@ -69,9 +80,27 @@ impl Tab {
 
 /// A modal-ish window opened from a menu.
 pub enum Dialog {
-    RunTask { command: String, admin: bool },
-    Affinity { pid: u32, name: String, mask: u64, system: u64 },
-    Confirm { text: String, action: ConfirmAction },
+    RunTask {
+        command: String,
+        admin: bool,
+    },
+    Affinity {
+        pid: u32,
+        name: String,
+        mask: u64,
+        system: u64,
+    },
+    Confirm {
+        text: String,
+        action: ConfirmAction,
+    },
+    /// Result of "Analyze wait chain"; `names` labels the blocking processes.
+    WaitChain {
+        pid: u32,
+        name: String,
+        chains: Vec<taskmgr_core::WaitChain>,
+        names: Vec<(u32, String)>,
+    },
 }
 
 /// Actions that lose someone's work, so they ask first.
@@ -88,6 +117,8 @@ pub struct Status {
     dialog: Arc<Mutex<Option<Dialog>>>,
     goto_details: Arc<Mutex<Option<u32>>>,
     goto_services: Arc<Mutex<Option<u32>>>,
+    /// "Switch to" brought another window forward ("Minimize on use" acts on it).
+    used: Arc<AtomicBool>,
 }
 
 impl Status {
@@ -103,6 +134,9 @@ impl Status {
         if let Ok(mut m) = self.dialog.lock() {
             *m = Some(d);
         }
+    }
+    pub fn used(&self) {
+        self.used.store(true, Ordering::Relaxed);
     }
     pub fn goto_services(&self, pid: u32) {
         if let Ok(mut m) = self.goto_services.lock() {
@@ -125,6 +159,7 @@ struct App {
     elevated: bool,
     processes: processes::State,
     performance: performance::State,
+    history: history::State,
     details: details::State,
     services: services::State,
     startup: startup::State,
@@ -132,10 +167,12 @@ struct App {
     settings: settings::Settings,
     /// Whether Ctrl+Shift+Esc opens this exe; None where that cannot be changed.
     replaces_taskmgr: Option<bool>,
+    tray: bool,
     started: Instant,
     first_data_logged: bool,
     /// OXI_TASKMGR_TIMING: frames drawn since `frames_since`.
     frames: u32,
+    frame_cpu: f32,
     frames_since: Instant,
 }
 
@@ -181,13 +218,53 @@ fn spawn_sampler(ctx: egui::Context, tx: Sender<Result<Arc<Snapshot>, String>>) 
                     spent += t0.elapsed();
                     if since.elapsed() >= Duration::from_secs(5) {
                         eprintln!("sampler: {n} samples, {:.1} ms each", spent.as_secs_f64() * 1000.0 / f64::from(n));
+                        if let Ok(s) = &msg {
+                            let busy: Vec<String> = s
+                                .processes
+                                .iter()
+                                .filter(|p| p.net_bps > 0.0)
+                                .take(5)
+                                .map(|p| format!("{} {:.0} B/s", p.name, p.net_bps))
+                                .collect();
+                            let suspended = s.processes.iter().filter(|p| p.suspended).count();
+                            let gpus: Vec<String> = s
+                                .system
+                                .gpus
+                                .iter()
+                                .map(|g| {
+                                    format!(
+                                        "{} {:.0}% driver {} {} dx {}",
+                                        g.name, g.util, g.driver_version, g.driver_date, g.directx
+                                    )
+                                })
+                                .collect();
+                            eprintln!("gpus: [{}]", gpus.join(", "));
+                            if let Some(a) = s.system.adapters.first() {
+                                eprintln!("adapter {}: {:?}", a.name, taskmgr_sys::adapter_info(&a.name));
+                            }
+                            eprintln!(
+                                "per-process network: {}, active: [{}]; suspended processes: {suspended}",
+                                s.system.per_process_net,
+                                busy.join(", ")
+                            );
+                        }
                         (n, spent, since) = (0, Duration::ZERO, Instant::now());
                     }
+                }
+                if let Ok(s) = &msg {
+                    let sys = &s.system;
+                    let mem = if sys.mem_total == 0 { 0.0 } else { sys.mem_used as f64 * 100.0 / sys.mem_total as f64 };
+                    taskmgr_sys::tray::update(
+                        sys.cpu_pct,
+                        &format!("Task Manager (oxidows)\nCPU: {:.0}%  Memory: {mem:.0}%", sys.cpu_pct),
+                    );
                 }
                 if tx.send(msg).is_err() {
                     return; // window closed
                 }
-                ctx.request_repaint();
+                // A zero-delay request makes egui paint two frames; a tiny delay paints one, which
+                // halves idle CPU where rendering is expensive (software rendering in VMs and RDP).
+                ctx.request_repaint_after(Duration::from_millis(1));
                 if first {
                     // A second sample right away gives real CPU % on screen within ~250 ms.
                     first = false;
@@ -202,12 +279,26 @@ fn spawn_sampler(ctx: egui::Context, tx: Sender<Result<Arc<Snapshot>, String>>) 
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        if std::env::var_os("OXI_TASKMGR_TIMING").is_some() {
+            match &cc.wgpu_render_state {
+                Some(rs) => {
+                    let i = rs.adapter.get_info();
+                    eprintln!("renderer: wgpu {:?} {} ({:?}, driver {})", i.backend, i.name, i.device_type, i.driver);
+                    for a in &rs.available_adapters {
+                        let i = a.get_info();
+                        eprintln!("  available: {:?} {} ({:?})", i.backend, i.name, i.device_type);
+                    }
+                }
+                None => eprintln!("renderer: glow"),
+            }
+        }
         let settings = settings::Settings::load();
         settings.apply_theme(&cc.egui_ctx);
         if settings.always_on_top {
             settings.apply_on_top(&cc.egui_ctx);
         }
-        INTERVAL_MS.store(settings.interval_ms, Ordering::Relaxed);
+        let interval = std::env::var("OXI_TASKMGR_INTERVAL_MS").ok().and_then(|v| v.parse().ok());
+        INTERVAL_MS.store(interval.unwrap_or(settings.interval_ms), Ordering::Relaxed);
         let tab = Tab::initial(&settings.default_tab);
         WANT_SERVICES.store(tab == Tab::Services, Ordering::Relaxed);
         WANT_SESSIONS.store(tab == Tab::Users, Ordering::Relaxed);
@@ -220,18 +311,21 @@ impl App {
             error: None,
             tab,
             elevated: taskmgr_sys::is_elevated(),
-            processes: processes::State::new(status.clone(), settings.group_by_type),
+            processes: processes::State::new(status.clone(), settings.group_by_type, settings.values_pct),
             performance: performance::State::default(),
-            details: details::State::new(status.clone()),
+            history: history::State::new(cc.egui_ctx.clone()),
+            details: details::State::new(status.clone(), details::parse_columns(&settings.details_columns)),
             services: services::State::new(status.clone(), cc.egui_ctx.clone()),
             startup: startup::State::new(status.clone()),
             users: users::State::new(status.clone()),
             settings,
             replaces_taskmgr: cfg!(windows).then(taskmgr_sys::replaces_taskmgr),
+            tray: false,
             status,
             started: Instant::now(),
             first_data_logged: false,
             frames: 0,
+            frame_cpu: 0.0,
             frames_since: Instant::now(),
         }
     }
@@ -352,6 +446,41 @@ impl App {
                     });
                 });
             }
+            Some(Dialog::WaitChain { pid, name, chains, names }) => {
+                egui::Window::new("Analyze wait chain").collapsible(false).resizable(true).show(ctx, |ui| {
+                    if chains.is_empty() {
+                        ui.label(format!(
+                            "{name} ({pid}) is running normally: none of its threads are waiting on another process."
+                        ));
+                    } else {
+                        ui.label(format!("{name} ({pid}) has {} blocked thread(s).", chains.len()));
+                        egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
+                            for c in chains.iter() {
+                                let cycle = if c.cycle { "  (deadlock)" } else { "" };
+                                ui.label(format!("Thread {}: waits on {}{cycle}", c.thread, c.steps.join(" -> ")));
+                            }
+                        });
+                        if !names.is_empty() {
+                            ui.separator();
+                            ui.label("Ending one of these processes may let it continue:");
+                            for (p, n) in names.iter() {
+                                ui.horizontal(|ui| {
+                                    ui.label(format!("{n} ({p})"));
+                                    if ui.button("End process").clicked() {
+                                        self.status.set(match taskmgr_sys::end_process(*p) {
+                                            Ok(()) => format!("Ended {n} ({p})"),
+                                            Err(e) => format!("Could not end {n} ({p}): {e}"),
+                                        });
+                                    }
+                                });
+                            }
+                        }
+                    }
+                    if ui.button("Close").clicked() {
+                        close = true;
+                    }
+                });
+            }
         }
         if close {
             *slot = None;
@@ -360,13 +489,37 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        taskmgr_sys::shutdown();
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.drain();
+        if !self.tray
+            && let Ok(h) = raw_window_handle::HasWindowHandle::window_handle(frame)
+        {
+            self.tray = true; // one attempt
+            if let raw_window_handle::RawWindowHandle::Win32(w) = h.as_raw() {
+                taskmgr_sys::tray::install(w.hwnd.get());
+            }
+        }
+        if self.status.used.swap(false, Ordering::Relaxed) && self.settings.minimize_on_use {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        }
+        if self.settings.hide_when_minimized && ui.ctx().input(|i| i.viewport().minimized == Some(true)) {
+            taskmgr_sys::tray::hide_window();
+        }
         if self.first_data_logged && std::env::var_os("OXI_TASKMGR_TIMING").is_some() {
             self.frames += 1;
+            self.frame_cpu += frame.info().cpu_usage.unwrap_or(0.0);
             if self.frames_since.elapsed() >= Duration::from_secs(5) {
-                eprintln!("ui: {} frames in {:.1} s", self.frames, self.frames_since.elapsed().as_secs_f64());
-                (self.frames, self.frames_since) = (0, Instant::now());
+                eprintln!(
+                    "ui: {} frames in {:.1} s, {:.1} ms app time each",
+                    self.frames,
+                    self.frames_since.elapsed().as_secs_f64(),
+                    self.frame_cpu * 1000.0 / self.frames as f32
+                );
+                (self.frames, self.frame_cpu, self.frames_since) = (0, 0.0, Instant::now());
             }
         }
         let snap = self.snapshot.clone();
@@ -383,50 +536,54 @@ impl eframe::App for App {
             self.tab = Tab::ALL[if next { (i + 1) % n } else { (i + n - 1) % n }];
         }
 
-        egui::Panel::top("tabs").show(ui, |ui| {
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                for t in Tab::ALL {
-                    ui.selectable_value(&mut self.tab, t, t.label());
-                }
-                ui.separator();
-                if ui.button("Run new task").clicked() {
-                    self.status.open(Dialog::RunTask { command: String::new(), admin: false });
-                }
-                let mut ms = INTERVAL_MS.load(Ordering::Relaxed);
-                let label = match ms {
-                    0 => "Paused",
-                    500 => "Update: 0.5 s",
-                    1000 => "Update: 1 s",
-                    _ => "Update: 2 s",
-                };
-                egui::ComboBox::from_id_salt("interval").selected_text(label).show_ui(ui, |ui| {
-                    ui.selectable_value(&mut ms, 500, "0.5 s");
-                    ui.selectable_value(&mut ms, 1000, "1 s");
-                    ui.selectable_value(&mut ms, 2000, "2 s");
-                    ui.selectable_value(&mut ms, 0, "Paused");
-                });
-                if ms != INTERVAL_MS.load(Ordering::Relaxed) {
-                    INTERVAL_MS.store(ms, Ordering::Relaxed);
-                    self.settings.interval_ms = ms;
-                    self.save_settings();
-                }
-                if !self.elevated
-                    && ui
-                        .button("Run as administrator")
-                        .on_hover_text(
-                            "Needed to end elevated processes, control services and edit machine-wide startup apps",
-                        )
-                        .clicked()
-                {
-                    match taskmgr_sys::restart_elevated() {
-                        Ok(()) => std::process::exit(0),
-                        Err(e) => self.status.set(e.to_string()),
+        // Summary view: the Performance list alone, as in Task Manager.
+        let summary = self.tab == Tab::Performance && self.performance.summary;
+        if !summary {
+            egui::Panel::top("tabs").show(ui, |ui| {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    for t in Tab::ALL {
+                        ui.selectable_value(&mut self.tab, t, t.label());
                     }
-                }
+                    ui.separator();
+                    if ui.button("Run new task").clicked() {
+                        self.status.open(Dialog::RunTask { command: String::new(), admin: false });
+                    }
+                    let mut ms = INTERVAL_MS.load(Ordering::Relaxed);
+                    let label = match ms {
+                        0 => "Paused",
+                        500 => "Update: 0.5 s",
+                        1000 => "Update: 1 s",
+                        _ => "Update: 2 s",
+                    };
+                    egui::ComboBox::from_id_salt("interval").selected_text(label).show_ui(ui, |ui| {
+                        ui.selectable_value(&mut ms, 500, "0.5 s");
+                        ui.selectable_value(&mut ms, 1000, "1 s");
+                        ui.selectable_value(&mut ms, 2000, "2 s");
+                        ui.selectable_value(&mut ms, 0, "Paused");
+                    });
+                    if ms != INTERVAL_MS.load(Ordering::Relaxed) {
+                        INTERVAL_MS.store(ms, Ordering::Relaxed);
+                        self.settings.interval_ms = ms;
+                        self.save_settings();
+                    }
+                    if !self.elevated
+                        && ui
+                            .button("Run as administrator")
+                            .on_hover_text(
+                                "Needed to end elevated processes, control services and edit machine-wide startup apps",
+                            )
+                            .clicked()
+                    {
+                        match taskmgr_sys::restart_elevated() {
+                            Ok(()) => std::process::exit(0),
+                            Err(e) => self.status.set(e.to_string()),
+                        }
+                    }
+                });
+                ui.add_space(2.0);
             });
-            ui.add_space(2.0);
-        });
+        }
         if let Some(pid) = self.status.goto_details.lock().ok().and_then(|mut g| g.take()) {
             self.tab = Tab::Details;
             self.details.select(pid, &snap);
@@ -439,31 +596,39 @@ impl eframe::App for App {
         WANT_SERVICES.store(self.tab == Tab::Services, Ordering::Relaxed);
         WANT_SESSIONS.store(self.tab == Tab::Users, Ordering::Relaxed);
 
-        egui::Panel::bottom("status").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let s = &snap.system;
-                ui.label(format!(
-                    "Processes: {}   CPU: {:.0}%   Memory: {:.0}%",
-                    s.process_count,
-                    s.cpu_pct,
-                    if s.mem_total == 0 { 0.0 } else { s.mem_used as f64 * 100.0 / s.mem_total as f64 }
-                ));
-                if let Some(e) = &self.error {
-                    ui.colored_label(ui.visuals().error_fg_color, e);
-                }
-                if let Some(msg) = self.status.get() {
-                    ui.separator();
-                    ui.label(msg);
-                }
+        if !summary {
+            egui::Panel::bottom("status").show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let s = &snap.system;
+                    ui.label(format!(
+                        "Processes: {}   CPU: {:.0}%   Memory: {:.0}%",
+                        s.process_count,
+                        s.cpu_pct,
+                        if s.mem_total == 0 { 0.0 } else { s.mem_used as f64 * 100.0 / s.mem_total as f64 }
+                    ));
+                    if let Some(e) = &self.error {
+                        ui.colored_label(ui.visuals().error_fg_color, e);
+                    }
+                    if let Some(msg) = self.status.get() {
+                        ui.separator();
+                        ui.label(msg);
+                    }
+                });
             });
-        });
+        }
 
         egui::CentralPanel::default().show(ui, |ui| match self.tab {
             Tab::Processes => self.processes.show(ui, &snap),
             Tab::Performance => self.performance.show(ui, &snap),
+            Tab::AppHistory => self.history.show(ui, self.elevated),
             Tab::Startup => self.startup.show(ui),
             Tab::Users => self.users.show(ui, &snap),
-            Tab::Details => self.details.show(ui, &snap),
+            Tab::Details => {
+                if self.details.show(ui, &snap) {
+                    self.settings.details_columns = details::columns_text(&self.details.columns);
+                    self.save_settings();
+                }
+            }
             Tab::Services => self.services.show(ui, &snap),
             Tab::Settings => {
                 let tabs: Vec<&str> = Tab::ALL.iter().filter(|t| **t != Tab::Settings).map(|t| t.label()).collect();
@@ -478,6 +643,7 @@ impl eframe::App for App {
                     }
                     INTERVAL_MS.store(s.interval_ms, Ordering::Relaxed);
                     self.processes.set_group(s.group_by_type);
+                    self.processes.percent = s.values_pct;
                     self.save_settings();
                 }
             }
@@ -498,7 +664,7 @@ fn renderer() -> eframe::Renderer {
 }
 
 fn main() -> eframe::Result {
-    let options = eframe::NativeOptions {
+    let mut options = eframe::NativeOptions {
         renderer: renderer(),
         viewport: egui::ViewportBuilder::default()
             .with_title("Task Manager (oxidows)")
@@ -506,5 +672,16 @@ fn main() -> eframe::Result {
             .with_min_inner_size([560.0, 360.0]),
         ..Default::default()
     };
+    // OXI_PRESENT=immediate|mailbox|fifo|novsync: tuning knob for software rendering (WARP).
+    let present = match std::env::var("OXI_PRESENT").as_deref() {
+        Ok("immediate") => Some(eframe::wgpu::PresentMode::Immediate),
+        Ok("mailbox") => Some(eframe::wgpu::PresentMode::Mailbox),
+        Ok("fifo") => Some(eframe::wgpu::PresentMode::Fifo),
+        Ok("novsync") => Some(eframe::wgpu::PresentMode::AutoNoVsync),
+        _ => None,
+    };
+    if let Some(mode) = present {
+        options.wgpu_options.surface.present_mode = mode;
+    }
     eframe::run_native("oxi-taskmgr", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
 }

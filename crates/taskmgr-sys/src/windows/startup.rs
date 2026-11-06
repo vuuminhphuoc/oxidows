@@ -9,14 +9,17 @@ use std::ptr::{null, null_mut};
 use taskmgr_core::StartupItem;
 use windows_sys::Win32::Foundation::ERROR_SUCCESS;
 use windows_sys::Win32::System::Registry::{
-    HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_SET_VALUE, KEY_WOW64_64KEY, REG_BINARY,
-    REG_OPTION_NON_VOLATILE, RegCloseKey, RegCreateKeyExW, RegEnumValueW, RegOpenKeyExW, RegQueryValueExW,
-    RegSetValueExW,
+    HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_SET_VALUE, KEY_WOW64_64KEY, REG_BINARY, REG_DWORD,
+    REG_OPTION_NON_VOLATILE, RegCloseKey, RegCreateKeyExW, RegEnumKeyExW, RegEnumValueW, RegOpenKeyExW,
+    RegQueryValueExW, RegSetValueExW,
 };
 
 const RUN: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const RUN32: &str = r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run";
 const APPROVED: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved";
+/// Packaged (Store) apps' startup tasks: `<package family>\<task id>` with a `State` DWORD.
+const APPX: &str = r"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\SystemAppData";
+const APPX_PREFIX: &str = "Packaged app: ";
 
 struct Key(HKEY);
 impl Drop for Key {
@@ -72,6 +75,65 @@ fn approved(root: HKEY, sub: &str, name: &str) -> bool {
     // SAFETY: buffer of `len` bytes.
     let r = unsafe { RegQueryValueExW(k.0, n.as_ptr(), null(), null_mut(), data.as_mut_ptr(), &mut len) };
     r != ERROR_SUCCESS || len == 0 || data[0] & 1 == 0
+}
+
+fn subkeys(key: &Key) -> Vec<String> {
+    let mut out = Vec::new();
+    for i in 0.. {
+        let mut name = vec![0u16; 512];
+        let mut len = name.len() as u32;
+        // SAFETY: buffer of `len` characters.
+        let r =
+            unsafe { RegEnumKeyExW(key.0, i, name.as_mut_ptr(), &mut len, null(), null_mut(), null_mut(), null_mut()) };
+        if r != ERROR_SUCCESS {
+            break;
+        }
+        out.push(String::from_utf16_lossy(&name[..len as usize]));
+    }
+    out
+}
+
+fn dword(key: &Key, value: &str) -> Option<u32> {
+    let n = wide(value);
+    let mut v = 0u32;
+    let mut len = 4u32;
+    // SAFETY: 4-byte buffer.
+    let r = unsafe { RegQueryValueExW(key.0, n.as_ptr(), null(), null_mut(), (&raw mut v).cast(), &mut len) };
+    (r == ERROR_SUCCESS).then_some(v)
+}
+
+/// Startup tasks of packaged apps. State: 0 disabled, 1 disabled by user, 2 enabled,
+/// 3 disabled by policy, 4 enabled by policy.
+fn packaged_items() -> Vec<StartupItem> {
+    let mut out = Vec::new();
+    let Some(root) = open(HKEY_CURRENT_USER, APPX, KEY_READ) else {
+        return out;
+    };
+    for family in subkeys(&root) {
+        let Some(fk) = open(HKEY_CURRENT_USER, &format!(r"{APPX}\{family}"), KEY_READ) else {
+            continue;
+        };
+        for task in subkeys(&fk) {
+            let Some(tk) = open(HKEY_CURRENT_USER, &format!(r"{APPX}\{family}\{task}"), KEY_READ) else {
+                continue;
+            };
+            let Some(state) = dword(&tk, "State") else {
+                continue;
+            };
+            // "Microsoft.Teams_8wekyb3d8bbwe" -> "Microsoft.Teams".
+            let name = family.split('_').next().unwrap_or(&family).to_string();
+            out.push(StartupItem {
+                name,
+                command: format!(r"shell:AppsFolder\{family}"),
+                location: format!(r"{APPX_PREFIX}{family}\{task}"),
+                enabled: matches!(state, 2 | 4),
+                // Policy-controlled tasks cannot be changed here.
+                per_user: state <= 2,
+                publisher: String::new(),
+            });
+        }
+    }
+    out
 }
 
 fn root_name(root: HKEY) -> &'static str {
@@ -133,6 +195,7 @@ pub fn startup_items() -> Vec<StartupItem> {
     for it in &mut out {
         it.publisher = super::exe_publisher(&exe_of(&it.command));
     }
+    out.extend(packaged_items());
     out.sort_by_cached_key(|s| s.name.to_lowercase());
     out
 }
@@ -161,6 +224,14 @@ pub fn exe_of(command: &str) -> String {
 }
 
 pub fn set_startup_enabled(item: &StartupItem, enabled: bool) -> io::Result<()> {
+    if let Some(task) = item.location.strip_prefix(APPX_PREFIX) {
+        let k = open(HKEY_CURRENT_USER, &format!(r"{APPX}\{task}"), KEY_SET_VALUE)
+            .ok_or_else(|| io::Error::other("startup task not found"))?;
+        let v: u32 = if enabled { 2 } else { 1 };
+        // SAFETY: 4-byte REG_DWORD value.
+        let r = unsafe { RegSetValueExW(k.0, wide("State").as_ptr(), 0, REG_DWORD, (&raw const v).cast(), 4) };
+        return if r != ERROR_SUCCESS { Err(io::Error::from_raw_os_error(r as i32)) } else { Ok(()) };
+    }
     let root = if item.per_user { HKEY_CURRENT_USER } else { HKEY_LOCAL_MACHINE };
     let (sub, value_name) = if item.location.ends_with("Startup") {
         // Folder items are keyed by file name.

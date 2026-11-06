@@ -8,7 +8,7 @@ as the feature.
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| Pages: Processes, Performance, App history, Startup apps, Users, Details, Services, Settings | partial | App history todo |
+| Pages: Processes, Performance, App history, Startup apps, Users, Details, Services, Settings | done | |
 | Real-time update speed (High / Normal / Low / Paused) | done | 0.5 s / 1 s / 2 s / paused |
 | Run as administrator | done | relaunch through UAC |
 | Run new task (with "create with administrative privileges") | done | `ShellExecuteW`, `runas` verb |
@@ -16,10 +16,11 @@ as the feature.
 | Status bar (process count, CPU, memory) | done | |
 | Settings: default start page, update speed, always on top | done | |
 | Settings: theme (light / dark / system) | done | |
-| Settings: minimize on use, hide when minimized | todo | needs "Switch to" and a tray icon |
+| Settings: hide when minimized | done | the tray icon brings the window back |
+| Settings: minimize on use | done | after Switch to |
 | Settings persisted between runs | done | `%APPDATA%\oxidows\taskmgr.ini` |
 | Replace Ctrl+Shift+Esc / taskmgr.exe | done | opt-in on Settings, IFEO `Debugger`, needs admin |
-| Notification-area icon with CPU usage | todo | |
+| Notification-area icon with CPU usage | done | left click shows, right click Show / Exit |
 | Keyboard: Delete = End task, Ctrl+Tab / Ctrl+Shift+Tab between pages | done | |
 
 ## Processes
@@ -32,10 +33,10 @@ as the feature.
 | End task | done | button, Delete key, right-click |
 | Groups: Apps / Background processes / Windows processes | done | collapsible, can be turned off |
 | Friendly names (file description) | done | hover shows the image name |
-| Expand an app to its child processes and windows | todo | |
-| Network column | todo | needs per-process ETW network accounting |
-| GPU engine column | todo | per-process engine type |
-| Status column (Suspended, Efficiency mode) | todo | |
+| Expand an app to its child processes | done | children fold into the app row; windows are not listed |
+| Network column | done | ETW Microsoft-Windows-Kernel-Network; needs administrator (Task Manager uses a system service) |
+| GPU engine column | done | busiest engine per process, from PDH `GPU Engine(*)` |
+| Status column | done | Suspended, Efficiency |
 | Publisher column | done | version resource CompanyName |
 | Power usage, Power usage trend | won't (for now) | no public per-process energy API |
 | End process tree | done | children first, PID-reuse guard |
@@ -45,7 +46,7 @@ as the feature.
 | Create memory dump file | done | `MiniDumpWriteDump` to `%TEMP%` |
 | Go to details | done | |
 | Restart (for Windows Explorer) | done | starts a new shell only if Windows did not |
-| Resource values as % or absolute | todo | |
+| Resource values as % or absolute | done | Settings; Memory, Disk, Network |
 
 ## Performance
 
@@ -54,27 +55,30 @@ as the feature.
 | CPU graph 60 s, per-logical-processor view | done | |
 | CPU utilization, speed, processes, threads, handles, up time | done | |
 | CPU name, base speed, sockets, cores, logical processors, L1/L2/L3 cache, virtualization | done | |
-| Kernel times overlay | todo | |
+| Kernel times overlay | done | checkbox on the CPU page, also per processor |
 | Memory graph, in use, available, committed | done | |
 | Memory cached, paged / non-paged pool, composition bar, hardware reserved | done | `GetPerformanceInfo` |
-| Memory speed, slots, form factor | todo | SMBIOS |
+| Memory speed, slots, form factor | done | SMBIOS type 17 |
 | One entry per physical disk: active time, response time, read / write speed | done | PDH `PhysicalDisk(*)` |
-| Disk capacity, type (SSD / HDD), system disk flag | todo | |
+| Disk model, capacity, type (SSD / HDD), bus, system disk, page file | done | `IOCTL_STORAGE_QUERY_PROPERTY` |
 | One entry per adapter: send / receive, link speed | done | `GetIfTable2` |
-| Adapter IPv4 / IPv6, SSID | todo | |
+| Adapter IPv4 / IPv6, DNS name, SSID | done | `GetAdaptersAddresses`, WLAN API |
 | GPU utilization, engines (3D, Copy, Video…), dedicated / shared memory | done | PDH `GPU Engine(*)`, `GPU Adapter Memory(*)` |
-| One entry per GPU adapter, adapter name, driver version | todo | one combined GPU entry today |
-| NPU | todo | where present |
+| One entry per GPU adapter with name, dedicated / shared memory used of total | done | DXGI + PDH split by LUID |
+| GPU driver version, driver date, DirectX version | done | DXGI `CheckInterfaceSupport`, the display driver key, D3D12 feature-level probe |
+| GPU physical location | todo | needs SetupAPI |
+| NPU | partial | its engines show up as an extra, unnamed GPU entry; no own page yet |
 | Copy to clipboard | done | |
-| Summary view | todo | |
+| Summary view | done | button or double-click; double-click again to come back |
 | Open Resource Monitor | done | launches `resmon` |
 
 ## App history
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| CPU time, network, metered network per app since a date | todo | data lives in SRUM (`sru\SRUDB.dat`, ESE database) |
-| Delete usage history | todo | |
+| CPU time, network, uploads, downloads per app since a date | done | SRUM (`sru\SRUDB.dat`) copied with `esentutl /vss`, read with the ESE API; needs administrator |
+| Metered network | partial | by interface type and `DefaultMediaCost`; a Wi-Fi network set to metered by hand is not seen |
+| Delete usage history | done | keeps a baseline and subtracts it (Windows' own SRUM is left alone) |
 
 ## Startup apps
 
@@ -84,16 +88,17 @@ as the feature.
 | Enable / Disable | done | `StartupApproved`, same store as Windows |
 | Startup impact, Disk I/O and CPU at startup | won't (for now) | Windows computes these from boot traces it does not expose |
 | Last BIOS time | done | registry `Power\FwPOSTTime` |
-| Scheduled-task and UWP startup entries | todo | |
+| Packaged (Store) app startup tasks | done | `AppModel\SystemAppData`, enable / disable |
+| Scheduled-task startup entries | won't | Task Manager does not list them either |
 | Open file location, Search online | done | |
-| Properties | todo | |
+| Properties | done | shell Properties sheet |
 
 ## Users
 
 | Feature | Status | Notes |
 | --- | --- | --- |
 | Signed-in sessions with status, CPU, memory, disk, process count | done | |
-| Network per user | todo | needs per-process network |
+| Network per user | done | needs administrator, like the Network column |
 | Expand a user to their processes | done | |
 | Disconnect, Sign off | done | asks first |
 
@@ -102,17 +107,17 @@ as the feature.
 | Feature | Status | Notes |
 | --- | --- | --- |
 | Name, PID, user, session, CPU, memory, threads, handles, priority, path, command line | done | |
-| Choose columns (~40 in the original) | todo | |
+| Choose columns | done | 34 columns, saved between runs |
 | Same right-click actions as Processes | done | end, tree, efficiency, priority, affinity, dump, search |
 | Go to service(s) | done | svchost.exe rows |
-| UAC virtualization, Analyze wait chain | todo | |
-| Properties | todo | |
+| UAC virtualization (column and toggle), Analyze wait chain | done | Wait Chain Traversal; offers to end the blocking process |
+| Properties | done | |
 
 ## Services
 
 | Feature | Status | Notes |
 | --- | --- | --- |
 | Name, PID, Description, Status | done | search by name, description or PID |
-| Group column | todo | |
+| Group column | done | svchost `-k` group from the image path |
 | Start, Stop, Restart | done | worker thread |
 | Open Services, Search online, Go to details | done | |

@@ -1,16 +1,28 @@
 //! Windows reader: NT native API for processes and per-core CPU, Win32 for memory and network,
 //! PDH for disk and GPU rates.
 
+mod adapters;
+mod gpu;
 mod hw;
+mod net;
 mod procinfo;
 mod services;
 mod sessions;
+mod srum;
 mod startup;
+pub mod tray;
+mod waitchain;
 
-pub use hw::cpu_info;
+pub use adapters::adapter_info;
+pub use hw::{cpu_info, disk_info, memory_info};
+pub use waitchain::{set_uac_virtualization, uac_virtualization, wait_chain};
+
+pub fn app_history() -> io::Result<taskmgr_core::AppHistory> {
+    srum::app_history(f64::from(hw::base_mhz()) * 1e6)
+}
 pub use procinfo::{
-    affinity, create_dump, efficiency_mode, is_elevated, is_running, open_url, restart_elevated, run_new_task,
-    set_affinity, set_efficiency_mode, set_priority, static_info,
+    affinity, create_dump, efficiency_mode, file_properties, is_elevated, is_running, open_url, restart_elevated,
+    run_new_task, set_affinity, set_efficiency_mode, set_priority, static_info, switch_to,
 };
 pub use services::{list_services, service_control};
 pub use sessions::{disconnect_session, list_sessions, logoff_session};
@@ -284,6 +296,9 @@ pub struct Collector {
     cores: NtBuffer,
     pdh: Option<Pdh>,
     base_mhz: u32,
+    /// The ETW network session is running.
+    net: bool,
+    gpus: Vec<taskmgr_core::GpuAdapter>,
 }
 
 // The PDH handles are only ever used from the thread that owns the collector.
@@ -293,6 +308,31 @@ fn filetime(ft: FILETIME) -> u64 {
     (u64::from(ft.dwHighDateTime) << 32) | u64::from(ft.dwLowDateTime)
 }
 
+/// SYSTEM_THREAD_INFORMATION (x64): 0x50 bytes; ThreadState at 0x44, WaitReason at 0x48.
+const THREAD_INFO_SIZE: usize = 0x50;
+const THREAD_STATE_WAITING: u32 = 5;
+const WAIT_REASON_SUSPENDED: u32 = 5;
+
+/// A process is "Suspended" when every one of its threads waits because it was suspended.
+fn all_threads_suspended(bytes: &[u8], offset: usize, p: &SystemProcessInformation) -> bool {
+    let n = p.number_of_threads as usize;
+    let start = offset + size_of::<SystemProcessInformation>();
+    if n == 0 || start + n * THREAD_INFO_SIZE > bytes.len() {
+        return false;
+    }
+    let u32_at = |o: usize| u32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]);
+    (0..n).all(|i| {
+        let t = start + i * THREAD_INFO_SIZE;
+        u32_at(t + 0x44) == THREAD_STATE_WAITING && u32_at(t + 0x48) == WAIT_REASON_SUSPENDED
+    })
+}
+
+/// Stops background tracing started by the collector.
+pub fn shutdown() {
+    net::stop();
+    tray::remove();
+}
+
 impl Collector {
     pub fn new() -> io::Result<Self> {
         Ok(Self {
@@ -300,6 +340,9 @@ impl Collector {
             cores: NtBuffer::new(4096),
             pdh: Pdh::open(),
             base_mhz: hw::base_mhz(),
+            // OXI_TASKMGR_NO_NET=1 turns per-process network off (diagnostics).
+            net: std::env::var_os("OXI_TASKMGR_NO_NET").is_none() && procinfo::is_elevated() && net::start(),
+            gpus: gpu::gpu_adapters(),
         })
     }
 
@@ -309,8 +352,17 @@ impl Collector {
         let windows = procinfo::window_pids();
         for p in &mut processes {
             p.has_window = windows.contains(&p.pid);
+            p.efficiency = procinfo::efficiency_mode(p.pid).unwrap_or(false);
         }
-        let system = self.read_system()?;
+        if self.net {
+            net::with_totals(|t| {
+                for p in &mut processes {
+                    p.net_bytes = t.get(&p.pid).copied().unwrap_or(0);
+                }
+            });
+        }
+        let mut system = self.read_system()?;
+        system.per_process_net = self.net;
         Ok(RawSample { at, processes, system })
     }
 
@@ -344,6 +396,22 @@ impl Collector {
                     memory: p.working_set_private_size as u64,
                     io_read_bytes: p.read_transfer_count as u64,
                     io_write_bytes: p.write_transfer_count as u64,
+                    net_bytes: 0,
+                    suspended: all_threads_suspended(bytes, offset, p),
+                    efficiency: false,
+                    counters: taskmgr_core::ProcCounters {
+                        working_set: p.working_set_size as u64,
+                        peak_working_set: p.peak_working_set_size as u64,
+                        commit: p.pagefile_usage as u64,
+                        paged_pool: p.quota_paged_pool_usage as u64,
+                        nonpaged_pool: p.quota_non_paged_pool_usage as u64,
+                        page_faults: p.page_fault_count,
+                        hard_faults: p.hard_fault_count,
+                        read_ops: p.read_operation_count as u64,
+                        write_ops: p.write_operation_count as u64,
+                        other_ops: p.other_operation_count as u64,
+                        other_bytes: p.other_transfer_count as u64,
+                    },
                     threads: p.number_of_threads,
                     handles: p.handle_count,
                     session_id: p.session_id,
@@ -366,7 +434,9 @@ impl Collector {
         let (mut idle, mut kernel, mut user) = (FILETIME::default(), FILETIME::default(), FILETIME::default());
         // SAFETY: out-pointers to locals.
         if unsafe { GetSystemTimes(&mut idle, &mut kernel, &mut user) } != 0 {
-            sys.cpu = CpuTimes { idle: filetime(idle), total: filetime(kernel) + filetime(user) };
+            // The kernel figure includes idle time.
+            let (i, k) = (filetime(idle), filetime(kernel));
+            sys.cpu = CpuTimes { idle: i, total: k + filetime(user), kernel: k.saturating_sub(i) };
         }
 
         let bytes = self.cores.query(SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION_CLASS)?;
@@ -375,7 +445,11 @@ impl Collector {
         for i in 0..n {
             // SAFETY: `n` whole entries fit in the returned length.
             let c = unsafe { *ptr.add(i) };
-            sys.cores.push(CpuTimes { idle: c.idle_time as u64, total: (c.kernel_time + c.user_time) as u64 });
+            sys.cores.push(CpuTimes {
+                idle: c.idle_time as u64,
+                total: (c.kernel_time + c.user_time) as u64,
+                kernel: (c.kernel_time - c.idle_time).max(0) as u64,
+            });
         }
 
         // SAFETY: POD out-struct with its length set, as the API requires.
@@ -444,17 +518,25 @@ impl Collector {
                 sys.disk_active_pct = Pdh::value(pdh.disk_time).map(|v| v as f32);
                 sys.disk_read_bps = Pdh::value(pdh.disk_read);
                 sys.disk_write_bps = Pdh::value(pdh.disk_write);
-                let gpu = pdh.gpu;
+                let (gpu, ded, shared) = (pdh.gpu, pdh.gpu_dedicated, pdh.gpu_shared);
+                let ded_items = pdh.items(ded);
+                let shared_items = pdh.items(shared);
+                sys.gpu_dedicated_used = ded_items.as_ref().map(|v| v.iter().map(|(_, b)| *b as u64).sum());
+                sys.gpu_shared_used = shared_items.as_ref().map(|v| v.iter().map(|(_, b)| *b as u64).sum());
                 if let Some(engines) = pdh.items(gpu) {
-                    let taskmgr_core::GpuUsage { total, per_pid, engines: by_engine } =
+                    sys.gpus = taskmgr_core::split_gpus(
+                        &self.gpus,
+                        &engines,
+                        ded_items.as_deref().unwrap_or_default(),
+                        shared_items.as_deref().unwrap_or_default(),
+                    );
+                    let taskmgr_core::GpuUsage { total, per_pid, engines: by_engine, engine_per_pid } =
                         taskmgr_core::gpu_from_engines(&engines);
+                    sys.gpu_engine_per_pid = engine_per_pid;
                     sys.gpu_pct = Some(total);
                     sys.gpu_per_pid = per_pid;
                     sys.gpu_engines = by_engine;
                 }
-                let (ded, shared) = (pdh.gpu_dedicated, pdh.gpu_shared);
-                sys.gpu_dedicated_used = pdh.items(ded).map(|v| v.iter().map(|(_, b)| *b as u64).sum());
-                sys.gpu_shared_used = pdh.items(shared).map(|v| v.iter().map(|(_, b)| *b as u64).sum());
                 if self.base_mhz > 0 {
                     sys.cpu_mhz = Pdh::value(pdh.cpu_perf).map(|p| (p * f64::from(self.base_mhz) / 100.0) as f32);
                 }

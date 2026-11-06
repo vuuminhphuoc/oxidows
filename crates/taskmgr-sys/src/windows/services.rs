@@ -95,10 +95,12 @@ pub fn list_services() -> io::Result<Vec<Service>> {
                     display_name: wstr(e.lpDisplayName),
                     state: state(e.ServiceStatusProcess.dwCurrentState),
                     pid: e.ServiceStatusProcess.dwProcessId,
+                    group: String::new(),
                 });
             }
         }
         out.sort_by_cached_key(|s| s.name.to_lowercase());
+        fill_groups(&mut out);
         return Ok(out);
     }
 }
@@ -148,5 +150,22 @@ pub fn service_control(name: &str, action: ServiceAction) -> io::Result<()> {
             }
             start()
         }
+    }
+}
+
+/// Image paths do not change while services run, so each service's group is read from the registry once.
+fn fill_groups(services: &mut [Service]) {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    let mut cache = CACHE.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    for s in services {
+        s.group = cache
+            .entry(s.name.clone())
+            .or_insert_with(|| {
+                let key = format!(r"SYSTEM\CurrentControlSet\Services\{}", s.name);
+                taskmgr_core::service_group(&super::hw::reg_string(&key, "ImagePath").unwrap_or_default())
+            })
+            .clone();
     }
 }

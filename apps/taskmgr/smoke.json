@@ -1,10 +1,82 @@
 {
   "views": [
-    { "name": "performance", "env": { "OXI_TASKMGR_TAB": "performance" } },
-    { "name": "startup", "env": { "OXI_TASKMGR_TAB": "startup" } },
-    { "name": "users", "env": { "OXI_TASKMGR_TAB": "users" } },
-    { "name": "details", "env": { "OXI_TASKMGR_TAB": "details" } },
-    { "name": "services", "env": { "OXI_TASKMGR_TAB": "services" } },
-    { "name": "settings", "env": { "OXI_TASKMGR_TAB": "settings" } }
+    {
+      "name": "performance",
+      "env": {
+        "OXI_TASKMGR_TAB": "performance"
+      }
+    },
+    {
+      "name": "performance-memory",
+      "env": {
+        "OXI_TASKMGR_TAB": "performance",
+        "OXI_TASKMGR_RES": "memory"
+      }
+    },
+    {
+      "name": "performance-disk",
+      "env": {
+        "OXI_TASKMGR_TAB": "performance",
+        "OXI_TASKMGR_RES": "disk0"
+      }
+    },
+    {
+      "name": "performance-network",
+      "env": {
+        "OXI_TASKMGR_TAB": "performance",
+        "OXI_TASKMGR_RES": "net0"
+      }
+    },
+    {
+      "name": "performance-gpu",
+      "env": {
+        "OXI_TASKMGR_TAB": "performance",
+        "OXI_TASKMGR_RES": "gpu0"
+      }
+    },
+    {
+      "name": "performance-summary",
+      "env": {
+        "OXI_TASKMGR_TAB": "performance",
+        "OXI_TASKMGR_SUMMARY": "1"
+      }
+    },
+    {
+      "name": "app-history",
+      "env": {
+        "OXI_TASKMGR_TAB": "app"
+      },
+      "settle": 25
+    },
+    {
+      "name": "startup",
+      "env": {
+        "OXI_TASKMGR_TAB": "startup"
+      }
+    },
+    {
+      "name": "users",
+      "env": {
+        "OXI_TASKMGR_TAB": "users"
+      }
+    },
+    {
+      "name": "details",
+      "env": {
+        "OXI_TASKMGR_TAB": "details"
+      }
+    },
+    {
+      "name": "services",
+      "env": {
+        "OXI_TASKMGR_TAB": "services"
+      }
+    },
+    {
+      "name": "settings",
+      "env": {
+        "OXI_TASKMGR_TAB": "settings"
+      }
+    }
   ]
 }

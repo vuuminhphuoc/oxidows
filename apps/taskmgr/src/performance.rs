@@ -2,7 +2,11 @@
 //! each network adapter, GPU), the selected one large on the right with its figures underneath.
 
 use egui::{Color32, RichText, Ui, Vec2};
-use taskmgr_core::{CpuInfo, Ring, Snapshot, format_bits_per_sec, format_bytes, format_uptime};
+use std::time::{Duration, Instant};
+
+use taskmgr_core::{
+    AdapterInfo, CpuInfo, DiskInfo, MemoryInfo, Ring, Snapshot, format_bits_per_sec, format_bytes, format_uptime,
+};
 
 use crate::graph;
 
@@ -21,18 +25,48 @@ enum Res {
     /// Index into `disks`; `usize::MAX` = the combined figure when PDH has no per-disk data.
     Disk(usize),
     Adapter(usize),
-    Gpu,
+    /// Index into `gpus`; `usize::MAX` = the combined figure when GPUs cannot be told apart.
+    Gpu(usize),
 }
 
 pub struct State {
     selected: Res,
+    /// Only the resource list, without tabs or details (double-click to leave).
+    pub summary: bool,
     per_core: bool,
+    /// Draw kernel-mode time over the CPU graphs.
+    kernel: bool,
     cpu: CpuInfo,
+    /// Addresses of the shown adapter, re-read every few seconds.
+    adapter: Option<(String, Instant, AdapterInfo)>,
+    /// Model, capacity and type per disk number, read once.
+    disk_info: std::collections::HashMap<u32, Option<DiskInfo>>,
+    /// Speed and slots from SMBIOS, read once.
+    memory: Option<MemoryInfo>,
 }
 
 impl Default for State {
     fn default() -> Self {
-        Self { selected: Res::Cpu, per_core: false, cpu: taskmgr_sys::cpu_info() }
+        // OXI_TASKMGR_RES picks the page shown first: memory, disk0, net0, gpu0... (used by smoke tests).
+        let v = std::env::var("OXI_TASKMGR_RES").unwrap_or_default().to_lowercase();
+        let n = |p: &str| v.strip_prefix(p).and_then(|r| r.parse::<usize>().ok()).unwrap_or(0);
+        let selected = match v.as_str() {
+            "memory" => Res::Memory,
+            _ if v.starts_with("disk") => Res::Disk(n("disk")),
+            _ if v.starts_with("net") => Res::Adapter(n("net")),
+            _ if v.starts_with("gpu") => Res::Gpu(n("gpu")),
+            _ => Res::Cpu,
+        };
+        Self {
+            summary: std::env::var_os("OXI_TASKMGR_SUMMARY").is_some(),
+            selected,
+            per_core: false,
+            kernel: false,
+            cpu: taskmgr_sys::cpu_info(),
+            adapter: None,
+            disk_info: Default::default(),
+            memory: None,
+        }
     }
 }
 
@@ -58,6 +92,44 @@ struct Entry<'a> {
 }
 
 impl State {
+    /// The resource entries with sparklines; in summary view they stretch to the window width.
+    fn list(&mut self, ui: &mut Ui, entries: &[Entry]) {
+        let spark =
+            if self.summary { Vec2::new((ui.available_width() * 0.45).max(70.0), 44.0) } else { Vec2::new(70.0, 44.0) };
+        for e in entries {
+            let sel = self.selected == e.res;
+            let frame = egui::Frame::new().inner_margin(6).fill(if sel && !self.summary {
+                ui.visuals().selection.bg_fill.gamma_multiply(0.35)
+            } else {
+                Color32::TRANSPARENT
+            });
+            let r = frame
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        graph::area(ui, spark, e.ring, e.max, e.color, false);
+                        ui.vertical(|ui| {
+                            ui.label(RichText::new(&e.title).strong());
+                            ui.label(RichText::new(&e.value).small());
+                        });
+                    });
+                })
+                .response
+                .interact(egui::Sense::click());
+            if r.clicked() {
+                self.selected = e.res;
+            }
+            if r.double_clicked() {
+                self.selected = e.res;
+                self.summary = !self.summary;
+            }
+            r.context_menu(|ui| {
+                if ui.checkbox(&mut self.summary, "Summary view").clicked() {
+                    ui.close();
+                }
+            });
+        }
+    }
+
     pub fn show(&mut self, ui: &mut Ui, snap: &Snapshot) {
         let s = &snap.system;
         let h = &snap.history;
@@ -139,44 +211,40 @@ impl State {
                 });
             }
         }
-        entries.push(Entry {
-            res: Res::Gpu,
-            title: "GPU".into(),
-            value: s.gpu_pct.map_or("n/a".to_string(), |g| format!("{g:.0}%")),
-            ring: &h.gpu_pct,
-            max: 100.0,
-            color: GPU,
-        });
+        if s.gpus.is_empty() {
+            entries.push(Entry {
+                res: Res::Gpu(usize::MAX),
+                title: "GPU".into(),
+                value: s.gpu_pct.map_or("n/a".to_string(), |g| format!("{g:.0}%")),
+                ring: &h.gpu_pct,
+                max: 100.0,
+                color: GPU,
+            });
+        }
+        for (i, g) in s.gpus.iter().enumerate() {
+            if let Some(ring) = h.gpus.get(i) {
+                entries.push(Entry {
+                    res: Res::Gpu(i),
+                    title: format!("GPU {i}"),
+                    value: format!("{}\n{:.0}%", g.name, g.util),
+                    ring,
+                    max: 100.0,
+                    color: GPU,
+                });
+            }
+        }
         if !entries.iter().any(|e| e.res == self.selected) {
             self.selected = Res::Cpu;
         }
 
-        egui::Panel::left("perf-list").exact_size(250.0).resizable(false).show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for e in &entries {
-                    let sel = self.selected == e.res;
-                    let frame = egui::Frame::new().inner_margin(6).fill(if sel {
-                        ui.visuals().selection.bg_fill.gamma_multiply(0.35)
-                    } else {
-                        Color32::TRANSPARENT
-                    });
-                    let r = frame
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                graph::area(ui, Vec2::new(70.0, 44.0), e.ring, e.max, e.color, false);
-                                ui.vertical(|ui| {
-                                    ui.label(RichText::new(&e.title).strong());
-                                    ui.label(RichText::new(&e.value).small());
-                                });
-                            });
-                        })
-                        .response
-                        .interact(egui::Sense::click());
-                    if r.clicked() {
-                        self.selected = e.res;
-                    }
-                }
+        if self.summary {
+            egui::CentralPanel::default().show(ui, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| self.list(ui, &entries));
             });
+            return;
+        }
+        egui::Panel::left("perf-list").exact_size(250.0).resizable(false).show(ui, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| self.list(ui, &entries));
         });
 
         egui::CentralPanel::default().show(ui, |ui| {
@@ -196,6 +264,16 @@ impl State {
             let summary = match self.selected {
                 Res::Cpu => self.cpu_view(ui, snap, w, big),
                 Res::Memory => {
+                    let m = self
+                        .memory
+                        .get_or_insert_with(|| {
+                            let m = taskmgr_sys::memory_info();
+                            if std::env::var_os("OXI_TASKMGR_TIMING").is_some() {
+                                eprintln!("memory info: {m:?}");
+                            }
+                            m
+                        })
+                        .clone();
                     header(ui, "Memory", &format_bytes(s.mem_total as f64));
                     ui.label(RichText::new("Memory usage over 60 seconds").small().weak());
                     graph::area(ui, big, &h.mem_pct, 100.0, MEM, true);
@@ -217,16 +295,49 @@ impl State {
                             ("Paged pool", opt_bytes(s.mem_paged_pool)),
                             ("Non-paged pool", opt_bytes(s.mem_nonpaged_pool)),
                             ("Hardware reserved", opt_bytes(s.mem_hw_reserved)),
+                            ("Speed", if m.speed_mts == 0 { "-".into() } else { format!("{} MT/s", m.speed_mts) }),
+                            (
+                                "Slots used",
+                                if m.slots_total == 0 {
+                                    "-".into()
+                                } else {
+                                    format!("{} of {}", m.slots_used, m.slots_total)
+                                },
+                            ),
+                            ("Form factor", if m.form_factor.is_empty() { "-".into() } else { m.form_factor }),
                         ],
                     )
                 }
                 Res::Disk(i) => match s.disks.get(i) {
                     Some(d) => {
-                        header(ui, &format!("Disk {}", d.name), "");
+                        // PDH names a disk "0 C: D:": the number, then its volumes.
+                        let mut parts = d.name.split_whitespace();
+                        let number = parts.next().and_then(|n| n.parse::<u32>().ok());
+                        let letters: Vec<String> = parts.map(|l| l.to_uppercase()).collect();
+                        let info = number
+                            .and_then(|n| {
+                                self.disk_info
+                                    .entry(n)
+                                    .or_insert_with(|| {
+                                        let i = taskmgr_sys::disk_info(n);
+                                        if std::env::var_os("OXI_TASKMGR_TIMING").is_some() {
+                                            eprintln!("disk info {n}: {i:?}");
+                                        }
+                                        i.ok()
+                                    })
+                                    .clone()
+                            })
+                            .unwrap_or_default();
+                        header(ui, &format!("Disk {}", d.name), &info.model);
                         ui.label(RichText::new("Active time over 60 seconds").small().weak());
                         if let Some(ring) = h.disks.get(i) {
                             graph::area(ui, big, ring, 100.0, DISK, true);
                         }
+                        let sys = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into()).to_uppercase();
+                        let is_sys = letters.contains(&sys);
+                        let pagefile =
+                            letters.iter().any(|l| std::path::Path::new(&format!("{l}\\pagefile.sys")).exists());
+                        let yes_no = |b: bool| if b { "Yes" } else { "No" }.to_string();
                         stats(
                             ui,
                             &[
@@ -234,6 +345,21 @@ impl State {
                                 ("Average response time", format!("{:.1} ms", d.response_ms)),
                                 ("Read speed", format!("{}/s", format_bytes(d.read_bps))),
                                 ("Write speed", format!("{}/s", format_bytes(d.write_bps))),
+                                (
+                                    "Capacity",
+                                    if info.capacity == 0 { "-".into() } else { format_bytes(info.capacity as f64) },
+                                ),
+                                (
+                                    "Type",
+                                    match (info.kind.is_empty(), info.bus.is_empty()) {
+                                        (true, true) => "-".into(),
+                                        (false, true) => info.kind.clone(),
+                                        (true, false) => info.bus.clone(),
+                                        (false, false) => format!("{} ({})", info.kind, info.bus),
+                                    },
+                                ),
+                                ("System disk", yes_no(is_sys)),
+                                ("Page file", yes_no(pagefile)),
                             ],
                         )
                     }
@@ -251,6 +377,14 @@ impl State {
                     }
                 },
                 Res::Adapter(i) => {
+                    let alias = s.adapters.get(i).map(|a| a.name.clone()).unwrap_or_default();
+                    let stale = self
+                        .adapter
+                        .as_ref()
+                        .is_none_or(|(n, at, _)| *n != alias || at.elapsed() > Duration::from_secs(10));
+                    if stale && !alias.is_empty() {
+                        self.adapter = Some((alias.clone(), Instant::now(), taskmgr_sys::adapter_info(&alias)));
+                    }
                     let (name, desc, rx, tx, link, rings) = match s.adapters.get(i) {
                         Some(a) => (
                             format!("{} ({})", a.kind, a.name),
@@ -279,26 +413,69 @@ impl State {
                         );
                         graph::multi(ui, big, &[(r, NET), (t, NET_TX)], max);
                     }
-                    stats(
-                        ui,
-                        &[
-                            ("Send", format_bits_per_sec(tx)),
-                            ("Receive", format_bits_per_sec(rx)),
-                            ("Link speed", if link == 0 { "-".into() } else { format_bits_per_sec(link as f64 / 8.0) }),
-                        ],
-                    )
-                }
-                Res::Gpu => {
-                    header(ui, "GPU", "");
-                    ui.label(RichText::new("Busiest engine over 60 seconds").small().weak());
-                    graph::area(ui, big, &h.gpu_pct, 100.0, GPU, true);
                     let mut items = vec![
-                        ("Utilization", s.gpu_pct.map_or("n/a".into(), |g| format!("{g:.0}%"))),
-                        ("Dedicated GPU memory", opt_bytes(s.gpu_dedicated_used)),
-                        ("Shared GPU memory", opt_bytes(s.gpu_shared_used)),
+                        ("Send", format_bits_per_sec(tx)),
+                        ("Receive", format_bits_per_sec(rx)),
+                        ("Link speed", if link == 0 { "-".into() } else { format_bits_per_sec(link as f64 / 8.0) }),
                     ];
+                    if let Some((n, _, info)) = &self.adapter
+                        && *n == alias
+                    {
+                        if let Some(ssid) = &info.ssid {
+                            items.push(("SSID", ssid.clone()));
+                        }
+                        if !info.dns_suffix.is_empty() {
+                            items.push(("DNS name", info.dns_suffix.clone()));
+                        }
+                        if !info.ipv4.is_empty() {
+                            items.push(("IPv4 address", info.ipv4.join(", ")));
+                        }
+                        if !info.ipv6.is_empty() {
+                            items.push(("IPv6 address", info.ipv6.join(", ")));
+                        }
+                    }
+                    stats(ui, &items)
+                }
+                Res::Gpu(i) => {
+                    let one = s.gpus.get(i);
+                    let ring = h.gpus.get(i).unwrap_or(&h.gpu_pct);
+                    let title = if one.is_some() { format!("GPU {i}") } else { "GPU".into() };
+                    header(ui, &title, one.map_or("", |g| g.name.as_str()));
+                    ui.label(RichText::new("Busiest engine over 60 seconds").small().weak());
+                    graph::area(ui, big, ring, 100.0, GPU, true);
+                    let of_total = |used: Option<u64>, total: u64| match (used, total) {
+                        (Some(u), t) if t > 0 => format!("{} / {}", format_bytes(u as f64), format_bytes(t as f64)),
+                        (u, _) => opt_bytes(u),
+                    };
+                    let (util, ded, shared, engines) = match one {
+                        Some(g) => (
+                            format!("{:.0}%", g.util),
+                            of_total(g.dedicated_used, g.dedicated_total),
+                            of_total(g.shared_used, g.shared_total),
+                            &g.engines,
+                        ),
+                        None => (
+                            s.gpu_pct.map_or("n/a".into(), |g| format!("{g:.0}%")),
+                            opt_bytes(s.gpu_dedicated_used),
+                            opt_bytes(s.gpu_shared_used),
+                            &s.gpu_engines,
+                        ),
+                    };
+                    let mut items =
+                        vec![("Utilization", util), ("Dedicated GPU memory", ded), ("Shared GPU memory", shared)];
+                    if let Some(g) = one {
+                        for (k, v) in [
+                            ("Driver version", &g.driver_version),
+                            ("Driver date", &g.driver_date),
+                            ("DirectX version", &g.directx),
+                        ] {
+                            if !v.is_empty() {
+                                items.push((k, v.clone()));
+                            }
+                        }
+                    }
                     let engines: Vec<(String, String)> =
-                        s.gpu_engines.iter().map(|(n, v)| (n.clone(), format!("{v:.0}%"))).collect();
+                        engines.iter().map(|(n, v)| (n.clone(), format!("{v:.0}%"))).collect();
                     items.extend(engines.iter().map(|(n, v)| (n.as_str(), v.clone())));
                     stats(ui, &items)
                 }
@@ -307,6 +484,13 @@ impl State {
             ui.horizontal(|ui| {
                 if ui.button("Copy").on_hover_text("Copy these figures as text").clicked() {
                     ui.ctx().copy_text(summary);
+                }
+                if ui
+                    .button("Summary view")
+                    .on_hover_text("Show only the graphs; double-click one to come back")
+                    .clicked()
+                {
+                    self.summary = true;
                 }
                 if ui.button("Open Resource Monitor").clicked() {
                     let _ = taskmgr_sys::run_new_task("resmon", false);
@@ -324,6 +508,7 @@ impl State {
         ui.horizontal(|ui| {
             ui.label(RichText::new("% Utilization over 60 seconds").small().weak());
             ui.checkbox(&mut self.per_core, "Logical processors");
+            ui.checkbox(&mut self.kernel, "Show kernel times");
         });
         if self.per_core && !h.cores.is_empty() {
             let n = h.cores.len();
@@ -334,12 +519,17 @@ impl State {
                 Vec2::new((w - gap * (cols - 1) as f32) / cols as f32, (big.y - gap * (rows - 1) as f32) / rows as f32);
             egui::Grid::new("cores").spacing([gap, gap]).show(ui, |ui| {
                 for (i, ring) in h.cores.iter().enumerate() {
-                    graph::area(ui, cell, ring, 100.0, CPU, false);
+                    match h.cores_kernel.get(i).filter(|_| self.kernel) {
+                        Some(k) => graph::with_kernel(ui, cell, ring, k, CPU, false),
+                        None => graph::area(ui, cell, ring, 100.0, CPU, false),
+                    };
                     if (i + 1) % cols == 0 {
                         ui.end_row();
                     }
                 }
             });
+        } else if self.kernel {
+            graph::with_kernel(ui, big, &h.cpu, &h.cpu_kernel, CPU, true);
         } else {
             graph::area(ui, big, &h.cpu, 100.0, CPU, true);
         }
