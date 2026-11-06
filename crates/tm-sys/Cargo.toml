@@ -1,0 +1,23 @@
+[package]
+name = "tm-sys"
+description = "Raw system readers: NT API + PDH on Windows, /proc on Linux (dev only)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+tm-core = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+  "Win32_Foundation",
+  "Win32_System_SystemInformation",
+  "Win32_System_Threading",
+  "Win32_System_Performance",
+  "Win32_NetworkManagement_IpHelper",
+  "Win32_NetworkManagement_Ndis",
+  "Win32_Networking_WinSock",
+] }
