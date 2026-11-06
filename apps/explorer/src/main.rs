@@ -912,8 +912,32 @@ impl App {
         if t.is_empty() {
             return;
         }
+        let env = |k: &str| std::env::var(k).ok();
+        // shell:startup, shell:sendto, …; redirected known folders come from the system.
+        let lower = t.to_ascii_lowercase();
+        let t = if let Some(name) = lower.strip_prefix("shell:") {
+            let (name, rest) = name.split_once(['\\', '/']).map_or((name, ""), |(n, r)| (n, r));
+            let known = self.places.iter().find(|(n, _)| n.eq_ignore_ascii_case(name.trim())).map(|(_, p)| p.clone());
+            let base = match known {
+                Some(p) => Some(p.to_string_lossy().into_owned()),
+                None => explorer_core::shell_folder_template(name).map(|tpl| explorer_core::expand_env(tpl, env)),
+            };
+            match base {
+                Some(b) if rest.is_empty() => b,
+                // Keep the user's spelling of the part after the folder name.
+                Some(b) => format!("{b}\\{}", &t[t.len() - rest.len()..]),
+                None => {
+                    self.status = Some(format!("Unknown shell folder '{name}'"));
+                    return;
+                }
+            }
+        } else {
+            explorer_core::expand_env(t, env)
+        };
+        let t = t.as_str();
         let p = PathBuf::from(t);
         let p = if t.eq_ignore_ascii_case("network") { PathBuf::from(explorer_core::NETWORK) } else { p };
+        let p = if t.eq_ignore_ascii_case("recycle bin") { PathBuf::from(explorer_core::RECYCLE_BIN) } else { p };
         let p = if p.is_relative() && classify(&p) == Place::Local { self.cur.join(p) } else { p };
         if matches!(classify(&p), Place::Network | Place::Server(_)) || p.is_dir() {
             self.navigate(p);
@@ -1167,6 +1191,19 @@ impl App {
         }
     }
 
+    pub fn invert_selection(&mut self) {
+        self.selected =
+            self.view.iter().map(|&i| &self.entries[i].name).filter(|n| !self.selected.contains(*n)).cloned().collect();
+    }
+
+    /// Ctrl+N: another window on the same folder.
+    pub fn new_window(&mut self) {
+        let r = std::env::current_exe().and_then(|exe| std::process::Command::new(exe).arg(&self.cur).spawn());
+        if let Err(e) = r {
+            self.status = Some(format!("Could not open a new window: {e}"));
+        }
+    }
+
     pub fn show_properties(&mut self, path: &Path) {
         if let Err(e) = explorer_sys::properties(path) {
             self.status = Some(format!("Properties: {e}"));
@@ -1296,6 +1333,7 @@ impl App {
                 (Modifiers::SHIFT, Key::Delete, "nuke"),
                 (Modifiers::NONE, Key::Delete, "delete"),
                 (ctrl, Key::A, "all"),
+                (ctrl, Key::N, "newwin"),
                 (ctrl | Modifiers::SHIFT, Key::Z, "redo"),
                 (ctrl, Key::Z, "undo"),
                 (ctrl, Key::Y, "redo"),
@@ -1354,6 +1392,7 @@ impl App {
                 "all" => {
                     self.selected = self.view.iter().map(|&i| self.entries[i].name.clone()).collect();
                 }
+                "newwin" => self.new_window(),
                 "undo" => self.undo(),
                 "redo" => self.redo(),
                 "props" => match self.selected_paths().as_slice() {
@@ -1489,8 +1528,11 @@ fn renderer() -> eframe::Renderer {
 }
 
 fn main() -> eframe::Result {
-    let start =
-        std::env::args_os().nth(1).map(PathBuf::from).filter(|p| p.is_dir()).unwrap_or_else(explorer_sys::home_dir);
+    let start = std::env::args_os()
+        .nth(1)
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir() || classify(p) != Place::Local)
+        .unwrap_or_else(explorer_sys::home_dir);
     let settings = settings::Settings::load();
     let options = eframe::NativeOptions {
         renderer: renderer(),

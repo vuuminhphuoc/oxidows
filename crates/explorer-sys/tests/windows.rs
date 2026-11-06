@@ -113,9 +113,8 @@ fn hidden_attribute_is_read() {
     let d = scratch("hidden");
     let f = d.join("secret.txt");
     fs::write(&f, b"x").unwrap();
-    let st = std::process::Command::new("attrib").arg("+h").arg(&f).status().unwrap();
-    assert!(st.success());
-    let st = std::process::Command::new("attrib").arg("+r").arg(&f).status().unwrap();
+    // One call: attrib refuses to change a hidden file's other attributes without +h.
+    let st = std::process::Command::new("attrib").args(["+h", "+r"]).arg(&f).status().unwrap();
     assert!(st.success());
     let e = &list(&d)[0];
     assert!(e.hidden);

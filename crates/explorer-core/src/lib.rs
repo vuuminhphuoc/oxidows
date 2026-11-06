@@ -555,6 +555,74 @@ pub fn decode_text(bytes: &[u8]) -> Option<String> {
     }
 }
 
+/// Expands `%NAME%` environment variables as the address bar does; unknown names stay as typed.
+pub fn expand_env(text: &str, var: impl Fn(&str) -> Option<String>) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find('%') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        match after.find('%') {
+            Some(end) if end > 0 => {
+                let name = &after[..end];
+                match var(name) {
+                    Some(v) => out.push_str(&v),
+                    None => {
+                        out.push('%');
+                        out.push_str(name);
+                        out.push('%');
+                    }
+                }
+                rest = &after[end + 1..];
+            }
+            _ => {
+                out.push('%');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `shell:` folder names (case-insensitive, after the colon) as a path template with
+/// environment variables, or one of the virtual places. Known folders that can be
+/// redirected (Desktop, Documents, …) are resolved by the caller from the system first.
+pub fn shell_folder_template(name: &str) -> Option<&'static str> {
+    let n = name.trim().to_ascii_lowercase().replace(' ', "");
+    Some(match n.as_str() {
+        "appdata" => "%APPDATA%",
+        "localappdata" => "%LOCALAPPDATA%",
+        "localappdatalow" => "%USERPROFILE%\\AppData\\LocalLow",
+        "profile" | "userprofiles" => "%USERPROFILE%",
+        "startup" => "%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup",
+        "commonstartup" => "%ProgramData%\\Microsoft\\Windows\\Start Menu\\Programs\\StartUp",
+        "programs" => "%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs",
+        "commonprograms" => "%ProgramData%\\Microsoft\\Windows\\Start Menu\\Programs",
+        "startmenu" => "%APPDATA%\\Microsoft\\Windows\\Start Menu",
+        "sendto" => "%APPDATA%\\Microsoft\\Windows\\SendTo",
+        "recent" => "%APPDATA%\\Microsoft\\Windows\\Recent",
+        "templates" => "%APPDATA%\\Microsoft\\Windows\\Templates",
+        "quicklaunch" => "%APPDATA%\\Microsoft\\Internet Explorer\\Quick Launch",
+        "fonts" => "%WINDIR%\\Fonts",
+        "windows" => "%WINDIR%",
+        "system" => "%WINDIR%\\System32",
+        "programfiles" => "%ProgramFiles%",
+        "programfilesx86" => "%ProgramFiles(x86)%",
+        "commonappdata" => "%ProgramData%",
+        "public" => "%PUBLIC%",
+        "downloads" => "%USERPROFILE%\\Downloads",
+        "desktop" => "%USERPROFILE%\\Desktop",
+        "personal" | "documents" => "%USERPROFILE%\\Documents",
+        "mypictures" | "pictures" => "%USERPROFILE%\\Pictures",
+        "mymusic" | "music" => "%USERPROFILE%\\Music",
+        "myvideo" | "videos" => "%USERPROFILE%\\Videos",
+        "recyclebinfolder" => RECYCLE_BIN,
+        "networkplacesfolder" => NETWORK,
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -693,5 +761,22 @@ mod tests {
         // "é" is C3 A9; a read that stops after C3 drops it.
         assert_eq!(decode_text(b"caf\xC3").as_deref(), Some("caf"));
         assert!(is_text_ext("rs") && !is_text_ext("exe"));
+    }
+
+    #[test]
+    fn address_expansion() {
+        let env = |k: &str| match k {
+            "TEMP" => Some(r"C:\T".to_string()),
+            "APPDATA" => Some(r"C:\U\R".to_string()),
+            _ => None,
+        };
+        assert_eq!(expand_env(r"%TEMP%\x", env), r"C:\T\x");
+        assert_eq!(expand_env("%NOPE%\\x %", env), "%NOPE%\\x %");
+        assert_eq!(expand_env("100%", env), "100%");
+        let t = shell_folder_template("Startup").unwrap();
+        assert_eq!(expand_env(t, env), r"C:\U\R\Microsoft\Windows\Start Menu\Programs\Startup");
+        assert_eq!(shell_folder_template("RecycleBinFolder"), Some(RECYCLE_BIN));
+        assert_eq!(shell_folder_template("common startup"), shell_folder_template("CommonStartup"));
+        assert_eq!(shell_folder_template("bogus"), None);
     }
 }

@@ -139,6 +139,24 @@ pub fn toolbar(app: &mut App, ui: &mut Ui) {
                         ui.close();
                     }
                 });
+                ui.horizontal(|ui| {
+                    if ui.button("Select all").on_hover_text("Ctrl+A").clicked() {
+                        app.selected = app.view.iter().map(|&i| app.entries[i].name.clone()).collect();
+                        ui.close();
+                    }
+                    if ui.button("Select none").clicked() {
+                        app.selected.clear();
+                        ui.close();
+                    }
+                    if ui.button("Invert selection").clicked() {
+                        app.invert_selection();
+                        ui.close();
+                    }
+                });
+                if ui.button("New window").on_hover_text("Ctrl+N").clicked() {
+                    app.new_window();
+                    ui.close();
+                }
                 ui.separator();
                 ui.horizontal(|ui| {
                     ui.label("View:");
