@@ -476,7 +476,7 @@ pub fn ctrl_v_down() -> bool {
 const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
 
 /// Reads a bitmap as 32-bit top-down BGRA.
-unsafe fn bitmap_bgra(dc: HDC, bmp: HBITMAP, w: i32, h: i32) -> Option<Vec<u8>> {
+pub(crate) unsafe fn bitmap_bgra(dc: HDC, bmp: HBITMAP, w: i32, h: i32) -> Option<Vec<u8>> {
     let mut bi: BITMAPINFO = unsafe { zeroed() };
     bi.bmiHeader = BITMAPINFOHEADER {
         biSize: size_of::<BITMAPINFOHEADER>() as u32,

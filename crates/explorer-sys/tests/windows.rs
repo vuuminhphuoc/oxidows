@@ -299,3 +299,12 @@ fn recycle_bin_list_and_restore() {
     assert!(!explorer_sys::recycle_bin_items().iter().any(|i| i.original == f));
     fs::remove_dir_all(&d).unwrap();
 }
+
+#[test]
+fn thumbnails() {
+    let w = watchdog("thumbnail", 60);
+    let t = explorer_sys::thumbnail(Path::new(r"C:\Windows\notepad.exe"), 96).expect("thumbnail");
+    w.store(true, Ordering::Relaxed);
+    assert!(t.width > 16 && t.width <= 96 && t.height <= 96, "{}x{}", t.width, t.height);
+    assert_eq!(t.rgba.len(), t.width * t.height * 4);
+}

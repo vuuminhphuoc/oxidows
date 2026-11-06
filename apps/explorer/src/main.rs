@@ -30,6 +30,7 @@ enum Msg {
     /// The watched folder changed on disk.
     Changed(PathBuf),
     Icon(IconKey, Option<explorer_sys::IconImage>),
+    Thumb(PathBuf, Option<explorer_sys::IconImage>),
     /// Subfolder names for the navigation tree.
     Tree(PathBuf, Vec<String>),
 }
@@ -54,6 +55,12 @@ impl IconKey {
             IconKey::Ext(ext)
         }
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ViewMode {
+    Details,
+    Icons,
 }
 
 pub enum IconState {
@@ -149,6 +156,11 @@ struct App {
     ops_running: usize,
 
     pub icons: HashMap<IconKey, IconState>,
+    pub view_mode: ViewMode,
+    /// Thumbnails for the Icons view, per file; cleared when leaving a folder.
+    pub thumbs: HashMap<PathBuf, IconState>,
+    pub thumb_wanted: Vec<PathBuf>,
+    thumb_tx: Option<Sender<PathBuf>>,
     icon_tx: Option<Sender<IconKey>>,
     drives: Vec<Drive>,
     places: Vec<(&'static str, PathBuf)>,
@@ -210,6 +222,10 @@ impl App {
             status: None,
             ops_running: 0,
             icons: HashMap::new(),
+            view_mode: ViewMode::Details,
+            thumbs: HashMap::new(),
+            thumb_wanted: Vec::new(),
+            thumb_tx: None,
             icon_tx: None,
             drives: Vec::new(),
             places: explorer_sys::known_folders(),
@@ -404,6 +420,33 @@ impl App {
             })
             .expect("spawn icon thread");
         self.icon_tx = Some(req_tx);
+
+        let (thumb_tx, thumb_rx) = channel::<PathBuf>();
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        thread::Builder::new()
+            .name("thumbs".into())
+            .spawn(move || {
+                while let Ok(p) = thumb_rx.recv() {
+                    let img = explorer_sys::thumbnail(&p, 96);
+                    if tx.send(Msg::Thumb(p, img)).is_err() {
+                        return;
+                    }
+                    ctx.request_repaint();
+                }
+            })
+            .expect("spawn thumbnail thread");
+        self.thumb_tx = Some(thumb_tx);
+    }
+
+    pub fn request_thumbs(&mut self) {
+        let wanted = std::mem::take(&mut self.thumb_wanted);
+        let Some(tx) = &self.thumb_tx else { return };
+        for p in wanted {
+            if let std::collections::hash_map::Entry::Vacant(slot) = self.thumbs.entry(p) {
+                let _ = tx.send(slot.key().clone());
+                slot.insert(IconState::Pending);
+            }
+        }
     }
 
     pub fn request_icons(&mut self, keys: Vec<IconKey>) {
@@ -518,6 +561,20 @@ impl App {
                     self.changed_at.get_or_insert_with(Instant::now);
                 }
                 Msg::Changed(_) => {}
+                Msg::Thumb(p, img) => {
+                    // Only keep it if we're still in that folder (thumbnails are big).
+                    if self.thumbs.contains_key(&p) {
+                        let state = match img {
+                            Some(i) => IconState::Ready(self.ctx.load_texture(
+                                format!("thumb-{}", p.display()),
+                                egui::ColorImage::from_rgba_premultiplied([i.width, i.height], &i.rgba),
+                                egui::TextureOptions::LINEAR,
+                            )),
+                            None => IconState::Failed,
+                        };
+                        self.thumbs.insert(p, state);
+                    }
+                }
                 Msg::Tree(dir, names) => {
                     self.tree_pending.remove(&dir);
                     self.tree.insert(dir, names);
@@ -636,6 +693,8 @@ impl App {
         self.pending_select = select;
         self.scroll_to = Some(0);
         self.changed_at = None;
+        self.thumbs.clear();
+        self.thumb_wanted.clear();
         self.start_listing(false);
         self.start_watch();
     }
@@ -1067,6 +1126,15 @@ impl App {
         let ctrl = Modifiers::COMMAND;
 
         // These work everywhere, even while typing in the search box.
+        let (icons_view, details_view) = ui.input_mut(|i| {
+            (i.consume_key(ctrl | Modifiers::SHIFT, Key::Num2), i.consume_key(ctrl | Modifiers::SHIFT, Key::Num6))
+        });
+        if icons_view {
+            self.view_mode = ViewMode::Icons;
+        }
+        if details_view {
+            self.view_mode = ViewMode::Details;
+        }
         let (new_tab, close_tab, next_tab, prev_tab) = ui.input_mut(|i| {
             (
                 i.consume_key(ctrl, Key::T),

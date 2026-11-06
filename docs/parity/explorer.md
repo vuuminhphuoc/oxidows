@@ -43,8 +43,8 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Resize columns | ✅ | |
 | More columns (Date created, Attributes, Owner, …), choose columns | ❌ | |
 | Group by (type, date, …) | ❌ | |
-| Large icons / Medium / Small / List / Tiles / Content views | ❌ | |
-| Thumbnails for images and videos | ❌ | |
+| Large icons / Medium / Small / List / Tiles / Content views | 🟡 | Details and Large icons (Ctrl+Shift+6 / Ctrl+Shift+2) |
+| Thumbnails for images and videos | ✅ | the shell's thumbnail cache (`IShellItemImageFactory`), Large icons view |
 | System file icons | ✅ | `SHGetFileInfoW`, cached per extension |
 | Overlay icons (shortcut arrow, OneDrive status) | ❌ | |
 | Show/hide hidden items | ✅ | |

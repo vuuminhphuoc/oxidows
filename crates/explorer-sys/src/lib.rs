@@ -22,6 +22,8 @@ use windows as imp;
 
 #[cfg(windows)]
 mod shell_menu;
+#[cfg(windows)]
+mod thumbs;
 
 #[cfg(not(windows))]
 mod unix;
@@ -310,6 +312,21 @@ pub fn parse_bin_info(bytes: &[u8]) -> Option<(u64, i64, PathBuf)> {
     };
     let units: Vec<u16> = wide.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).take_while(|&c| c != 0).collect();
     Some((size, deleted, PathBuf::from(String::from_utf16_lossy(&units))))
+}
+
+/// A thumbnail at most `size` px on its longer side (pictures, videos, documents; for other
+/// files the shell returns the large icon). RGBA, alpha premultiplied. Call from a worker
+/// thread; `None` off Windows or on failure.
+pub fn thumbnail(path: &Path, size: u32) -> Option<IconImage> {
+    #[cfg(windows)]
+    {
+        thumbs::thumbnail(path, size)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (path, size);
+        None
+    }
 }
 
 #[cfg(test)]
