@@ -71,11 +71,12 @@ pub enum ViewMode {
     List,
     Details,
     Tiles,
+    Content,
 }
 
 impl ViewMode {
     /// In Explorer's order, with their Ctrl+Shift+number shortcuts.
-    pub const ALL: [(ViewMode, &'static str, &'static str); 7] = [
+    pub const ALL: [(ViewMode, &'static str, &'static str); 8] = [
         (ViewMode::ExtraLarge, "Extra large icons", "Ctrl+Shift+1"),
         (ViewMode::Large, "Large icons", "Ctrl+Shift+2"),
         (ViewMode::Medium, "Medium icons", "Ctrl+Shift+3"),
@@ -83,6 +84,7 @@ impl ViewMode {
         (ViewMode::List, "List", "Ctrl+Shift+5"),
         (ViewMode::Details, "Details", "Ctrl+Shift+6"),
         (ViewMode::Tiles, "Tiles", "Ctrl+Shift+7"),
+        (ViewMode::Content, "Content", "Ctrl+Shift+8"),
     ];
 
     pub fn name(self) -> &'static str {
@@ -94,6 +96,7 @@ impl ViewMode {
             ViewMode::List => "list",
             ViewMode::Details => "details",
             ViewMode::Tiles => "tiles",
+            ViewMode::Content => "content",
         }
     }
 
@@ -1442,7 +1445,7 @@ impl App {
         let ctrl = Modifiers::COMMAND;
 
         // These work everywhere, even while typing in the search box.
-        let keys = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7];
+        let keys = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8];
         if let Some(k) = ui.input_mut(|i| keys.iter().position(|&k| i.consume_key(ctrl | Modifiers::SHIFT, k))) {
             self.view_mode = ViewMode::ALL[k].0;
         }

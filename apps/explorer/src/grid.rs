@@ -1,6 +1,7 @@
 //! Every view except Details: Extra large / Large / Medium icons (image above the name),
 //! Small icons and List (icon left of the name; List fills columns top to bottom and scrolls
-//! sideways), and Tiles (icon with name, type and size). Virtualised, with rubber-band
+//! sideways), Tiles (icon with name, type and size) and Content (one full-width row per item
+//! with name and type on the left, date and size on the right). Virtualised, with rubber-band
 //! (drag a rectangle) selection on the background.
 
 use std::collections::HashSet;
@@ -20,6 +21,8 @@ enum Style {
     Inline,
     /// Icon on the left, name, type and size.
     Tile,
+    /// A full-width row: name and type, then date modified and size.
+    Content,
 }
 
 struct Spec {
@@ -39,6 +42,8 @@ fn spec(mode: ViewMode) -> Spec {
         ViewMode::Small => s(220.0, 22.0, 16.0, Style::Inline, false),
         ViewMode::List => s(240.0, 22.0, 16.0, Style::Inline, true),
         ViewMode::Tiles | ViewMode::Details => s(260.0, 58.0, 48.0, Style::Tile, false),
+        // Width is the pane's, set when drawing.
+        ViewMode::Content => s(0.0, 62.0, 48.0, Style::Content, false),
     }
 }
 
@@ -52,7 +57,7 @@ pub fn thumb_px(mode: ViewMode) -> u32 {
 
 /// Whether the view draws shell thumbnails (otherwise small system icons).
 fn uses_thumbs(mode: ViewMode) -> bool {
-    matches!(mode, ViewMode::ExtraLarge | ViewMode::Large | ViewMode::Medium | ViewMode::Tiles)
+    matches!(mode, ViewMode::ExtraLarge | ViewMode::Large | ViewMode::Medium | ViewMode::Tiles | ViewMode::Content)
 }
 
 pub fn show(
@@ -63,10 +68,13 @@ pub fn show(
     shell_menus: bool,
     in_bin: bool,
 ) {
-    let sp = spec(app.view_mode);
+    let mut sp = spec(app.view_mode);
     let thumbs = uses_thumbs(app.view_mode) && !in_bin;
     let n = app.view.len();
     let avail = ui.available_size();
+    if sp.style == Style::Content {
+        sp.tile.x = (avail.x - 14.0).max(320.0);
+    }
     // Grid shape: `major` lines (rows, or List's columns) of `per_line` items.
     let per_line = if sp.column_major {
         ((avail.y / sp.tile.y).floor() as usize).max(1)
@@ -230,7 +238,7 @@ pub fn show(
                     egui::pos2(rect.center().x, rect.top() + 6.0 + sp.img / 2.0),
                     egui::vec2(sp.img, sp.img),
                 ),
-                Style::Inline | Style::Tile => Rect::from_center_size(
+                Style::Inline | Style::Tile | Style::Content => Rect::from_center_size(
                     egui::pos2(rect.left() + 6.0 + sp.img / 2.0, rect.center().y),
                     egui::vec2(sp.img, sp.img),
                 ),
@@ -330,6 +338,33 @@ pub fn show(
                         let galley = ui.fonts_mut(|f| f.layout_job(job));
                         ui.painter().galley(egui::pos2(x, rect.top() + 6.0 + i as f32 * 15.0), galley, text);
                     }
+                }
+                Style::Content => {
+                    let x = img_rect.right() + 10.0;
+                    let right = rect.left() + rect.width() * 0.58;
+                    let line = |t: String, c, size, at: egui::Pos2, max: f32| {
+                        let mut job = egui::text::LayoutJob::simple_singleline(t, egui::FontId::proportional(size), c);
+                        job.wrap.max_width = max;
+                        job.wrap.max_rows = 1;
+                        job.wrap.break_anywhere = true;
+                        let galley = ui.fonts_mut(|f| f.layout_job(job));
+                        ui.painter().galley(at, galley, text);
+                    };
+                    let (y1, y2) = (rect.top() + 12.0, rect.top() + 32.0);
+                    line(name, name_color, 14.0, egui::pos2(x, y1), right - x - 12.0);
+                    let kind = e.note.clone().unwrap_or_else(|| e.type_name());
+                    line(format!("Type: {kind}"), weak, 12.5, egui::pos2(x, y2), right - x - 12.0);
+                    let width = rect.right() - right - 8.0;
+                    let when = explorer_core::format_time(e.modified, app.utc_offset);
+                    line(format!("Date modified: {when}"), weak, 12.5, egui::pos2(right, y1), width);
+                    if !e.is_dir {
+                        line(format!("Size: {}", format_size_kb(e.size)), weak, 12.5, egui::pos2(right, y2), width);
+                    }
+                    ui.painter().hline(
+                        rect.x_range(),
+                        rect.bottom() - 0.5,
+                        egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+                    );
                 }
             }
 
