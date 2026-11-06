@@ -153,6 +153,18 @@ pub fn toolbar(app: &mut App, ui: &mut Ui) {
                         ui.close();
                     }
                 });
+                if !app.in_virtual_place() {
+                    let cur = app.cur.clone();
+                    let pinned = app.is_pinned(&cur);
+                    if ui.button(if pinned { "Unpin from Quick access" } else { "Pin to Quick access" }).clicked() {
+                        if pinned {
+                            app.unpin(&cur);
+                        } else {
+                            app.pin(cur);
+                        }
+                        ui.close();
+                    }
+                }
                 if ui.button("New window").on_hover_text("Ctrl+N").clicked() {
                     app.new_window();
                     ui.close();
@@ -285,6 +297,10 @@ struct TreeOut {
     /// A drag is in progress: folders under the pointer are drop targets.
     dragging: bool,
     drop: Option<PathBuf>,
+    /// Pinned folders (keys from `settings::folder_key`), and pin/unpin requests.
+    pinned: std::collections::HashSet<String>,
+    pin: Option<(PathBuf, bool)>,
+    new_tab: Option<PathBuf>,
 }
 
 /// Marks `resp` as the drop target when a drag is over it.
@@ -338,6 +354,27 @@ fn tree_node(
         out.go = Some(path.clone());
     }
     drop_hover(&header.inner, out.dragging, path, &mut out.drop);
+    // Drive roots keep their own menu (Disconnect); folders can be pinned.
+    if path.parent().is_some() {
+        let pinned = out.pinned.contains(&crate::settings::folder_key(path));
+        let mut req = None;
+        header.inner.context_menu(|ui| {
+            if ui.button("Open in new tab").clicked() {
+                req = Some(None);
+                ui.close();
+            }
+            let label = if pinned { "Unpin from Quick access" } else { "Pin to Quick access" };
+            if ui.button(label).clicked() {
+                req = Some(Some(!pinned));
+                ui.close();
+            }
+        });
+        match req {
+            Some(Some(pin)) => out.pin = Some((path.clone(), pin)),
+            Some(None) => out.new_tab = Some(path.clone()),
+            None => {}
+        }
+    }
     header.inner
 }
 
@@ -362,7 +399,8 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
             let mut go: Option<PathBuf> = None;
             let mut unmap: Option<char> = None;
             let dragging = app.drag.is_some();
-            let mut tree_out = TreeOut { dragging, ..Default::default() };
+            let pinned = app.persist.settings.pinned.iter().map(|p| crate::settings::folder_key(p)).collect();
+            let mut tree_out = TreeOut { dragging, pinned, ..Default::default() };
             let mut place_drop: Option<PathBuf> = None;
             let mut place = |ui: &mut Ui, icon: &str, name: &str, path: &PathBuf, cur: &PathBuf| {
                 let selected = path == cur;
@@ -393,6 +431,12 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
                     _ => "📁",
                 };
                 tree_node(ui, &app.tree, &app.cur, path, &format!("{icon}  {name}"), &mut tree_out, 0);
+            }
+            // Quick access pins, after the standard folders (which are always there).
+            for path in &app.persist.settings.pinned {
+                let name =
+                    path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+                tree_node(ui, &app.tree, &app.cur, path, &format!("📌  {name}"), &mut tree_out, 0);
             }
             ui.add_space(6.0);
             ui.separator();
@@ -465,6 +509,14 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
             }
             for p in tree_out.load {
                 app.load_tree(p);
+            }
+            match tree_out.pin {
+                Some((p, true)) => app.pin(p),
+                Some((p, false)) => app.unpin(&p),
+                None => {}
+            }
+            if let Some(p) = tree_out.new_tab {
+                app.new_tab(p, false);
             }
             if let Some(p) = go {
                 app.navigate(p);

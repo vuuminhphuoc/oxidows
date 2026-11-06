@@ -43,6 +43,8 @@ pub struct Settings {
     pub theme: Theme,
     /// Lower-cased folder path → (order changed, view).
     pub folders: BTreeMap<String, (u64, FolderView)>,
+    /// Folders pinned to Quick access, in order.
+    pub pinned: Vec<PathBuf>,
 }
 
 impl Default for Settings {
@@ -58,6 +60,7 @@ impl Default for Settings {
             pane: Pane::None,
             theme: Theme::System,
             folders: BTreeMap::new(),
+            pinned: Vec::new(),
         }
     }
 }
@@ -145,6 +148,7 @@ impl Settings {
                         _ => Pane::None,
                     }
                 }
+                "pin" if !v.is_empty() => s.pinned.push(PathBuf::from(v)),
                 "theme" => {
                     s.theme = match v {
                         "light" => Theme::Light,
@@ -182,6 +186,9 @@ impl Settings {
             self.col_created,
             self.col_attrs,
         );
+        for p in &self.pinned {
+            out.push_str(&format!("pin={}\n", p.display()));
+        }
         for (k, (n, v)) in &self.folders {
             out.push_str(&format!("folder:{k}={n},{}\n", v.to_text()));
         }
@@ -241,6 +248,20 @@ impl Persist {
 }
 
 impl App {
+    pub fn is_pinned(&self, p: &std::path::Path) -> bool {
+        self.persist.settings.pinned.iter().any(|q| folder_key(q) == folder_key(p))
+    }
+
+    pub fn pin(&mut self, p: PathBuf) {
+        if !self.is_pinned(&p) {
+            self.persist.settings.pinned.push(p);
+        }
+    }
+
+    pub fn unpin(&mut self, p: &std::path::Path) {
+        self.persist.settings.pinned.retain(|q| folder_key(q) != folder_key(p));
+    }
+
     fn folder_view(&self) -> FolderView {
         FolderView { view: self.view_mode, sort: self.sort, ascending: self.ascending }
     }
@@ -336,11 +357,13 @@ mod tests {
             pane: Pane::Details,
             theme: Theme::Light,
             folders: BTreeMap::new(),
+            pinned: Vec::new(),
         };
         s.remember_folder(
             r"c:\users\a\pictures".into(),
             FolderView { view: ViewMode::Large, sort: SortKey::Modified, ascending: false },
         );
+        s.pinned = vec![PathBuf::from(r"D:\Projects"), PathBuf::from(r"\\nas\share")];
         assert_eq!(Settings::parse(&s.to_text()), s);
         assert_eq!(Settings::parse("garbage\nwidth=abc\nview=nope"), Settings::default());
     }

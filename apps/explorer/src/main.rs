@@ -1193,6 +1193,16 @@ impl App {
                     self.navigate(p.clone());
                 }
             }
+            // The shell's own "Pin to Quick access" pins in Windows Explorer; mirror it here.
+            Ok(explorer_sys::MenuOutcome::Invoked(verb)) if verb == "pintohome" || verb == "unpinfromhome" => {
+                for p in items.iter().filter(|p| p.is_dir()) {
+                    if verb == "pintohome" { self.pin(p.clone()) } else { self.unpin(p) }
+                }
+                if items.is_empty() {
+                    let c = self.cur.clone();
+                    if verb == "pintohome" { self.pin(c) } else { self.unpin(&c) }
+                }
+            }
             Ok(explorer_sys::MenuOutcome::Invoked(verb)) => {
                 // The shell changed something (new file, paste, delete…); the watcher sees most
                 // of it, this catches the rest (e.g. drives, network).
