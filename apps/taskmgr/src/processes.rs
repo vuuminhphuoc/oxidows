@@ -195,6 +195,33 @@ pub fn process_menu(ui: &mut Ui, status: &Status, rows: &[ProcessRow], p: &Proce
         });
         ui.close();
     }
+    if on_details {
+        if ui.button("Analyze wait chain").clicked() {
+            match taskmgr_sys::wait_chain(p.pid) {
+                Ok(chains) => {
+                    let mut names: Vec<(u32, String)> = Vec::new();
+                    for b in chains.iter().flat_map(|c| &c.blocking) {
+                        if !names.iter().any(|(q, _)| q == b) {
+                            let n = rows.iter().find(|r| r.pid == *b).map_or("process".to_string(), |r| r.name.clone());
+                            names.push((*b, n));
+                        }
+                    }
+                    status.open(Dialog::WaitChain { pid: p.pid, name: p.name.clone(), chains, names });
+                }
+                Err(e) => status.set(format!("Could not analyze {}: {e}", p.name)),
+            }
+            ui.close();
+        }
+        if let Some(mut on) = taskmgr_sys::uac_virtualization(p.pid)
+            && ui.checkbox(&mut on, "UAC virtualization").changed()
+        {
+            status.set(match taskmgr_sys::set_uac_virtualization(p.pid, on) {
+                Ok(()) => format!("UAC virtualization {} for {}", if on { "on" } else { "off" }, p.name),
+                Err(e) => format!("Could not change UAC virtualization of {}: {e}", p.name),
+            });
+            ui.close();
+        }
+    }
     ui.separator();
     if !on_details && ui.button("Go to details").clicked() {
         status.goto_details(p.pid);

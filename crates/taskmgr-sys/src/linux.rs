@@ -329,3 +329,13 @@ pub fn disk_info(_number: u32) -> io::Result<taskmgr_core::DiskInfo> {
 pub fn memory_info() -> taskmgr_core::MemoryInfo {
     taskmgr_core::MemoryInfo::default()
 }
+
+pub fn wait_chain(_pid: u32) -> io::Result<Vec<taskmgr_core::WaitChain>> {
+    unsupported()
+}
+pub fn uac_virtualization(_pid: u32) -> Option<bool> {
+    None
+}
+pub fn set_uac_virtualization(_pid: u32, _on: bool) -> io::Result<()> {
+    unsupported()
+}

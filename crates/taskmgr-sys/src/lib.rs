@@ -143,6 +143,20 @@ pub fn memory_info() -> taskmgr_core::MemoryInfo {
     imp::memory_info()
 }
 
+/// Blocked threads of a process and what they wait on ("Analyze wait chain").
+pub fn wait_chain(pid: u32) -> io::Result<Vec<taskmgr_core::WaitChain>> {
+    imp::wait_chain(pid)
+}
+
+/// None when UAC virtualization is not allowed for the process.
+pub fn uac_virtualization(pid: u32) -> Option<bool> {
+    imp::uac_virtualization(pid)
+}
+
+pub fn set_uac_virtualization(pid: u32, on: bool) -> io::Result<()> {
+    imp::set_uac_virtualization(pid, on)
+}
+
 /// Stops background work (the ETW network trace on Windows). Call on exit.
 pub fn shutdown() {
     imp::shutdown();

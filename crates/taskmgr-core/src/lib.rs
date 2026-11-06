@@ -541,6 +541,18 @@ pub struct Session {
     pub state: String,
 }
 
+/// A blocked thread found by "Analyze wait chain".
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WaitChain {
+    pub thread: u32,
+    /// What the thread waits on, in order ("mutex X", "thread 12 of process 34").
+    pub steps: Vec<String>,
+    /// Other processes along the chain; ending one of them releases the thread.
+    pub blocking: Vec<u32>,
+    /// The chain loops back: a deadlock.
+    pub cycle: bool,
+}
+
 /// One entry of the Startup apps tab.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StartupItem {

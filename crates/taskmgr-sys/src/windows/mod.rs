@@ -11,9 +11,11 @@ mod sessions;
 mod srum;
 mod startup;
 pub mod tray;
+mod waitchain;
 
 pub use adapters::adapter_info;
 pub use hw::{cpu_info, disk_info, memory_info};
+pub use waitchain::{set_uac_virtualization, uac_virtualization, wait_chain};
 
 pub fn app_history() -> io::Result<taskmgr_core::AppHistory> {
     srum::app_history(f64::from(hw::base_mhz()) * 1e6)

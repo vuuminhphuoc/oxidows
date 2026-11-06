@@ -80,9 +80,27 @@ impl Tab {
 
 /// A modal-ish window opened from a menu.
 pub enum Dialog {
-    RunTask { command: String, admin: bool },
-    Affinity { pid: u32, name: String, mask: u64, system: u64 },
-    Confirm { text: String, action: ConfirmAction },
+    RunTask {
+        command: String,
+        admin: bool,
+    },
+    Affinity {
+        pid: u32,
+        name: String,
+        mask: u64,
+        system: u64,
+    },
+    Confirm {
+        text: String,
+        action: ConfirmAction,
+    },
+    /// Result of "Analyze wait chain"; `names` labels the blocking processes.
+    WaitChain {
+        pid: u32,
+        name: String,
+        chains: Vec<taskmgr_core::WaitChain>,
+        names: Vec<(u32, String)>,
+    },
 }
 
 /// Actions that lose someone's work, so they ask first.
@@ -417,6 +435,41 @@ impl App {
                             close = true;
                         }
                     });
+                });
+            }
+            Some(Dialog::WaitChain { pid, name, chains, names }) => {
+                egui::Window::new("Analyze wait chain").collapsible(false).resizable(true).show(ctx, |ui| {
+                    if chains.is_empty() {
+                        ui.label(format!(
+                            "{name} ({pid}) is running normally: none of its threads are waiting on another process."
+                        ));
+                    } else {
+                        ui.label(format!("{name} ({pid}) has {} blocked thread(s).", chains.len()));
+                        egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
+                            for c in chains.iter() {
+                                let cycle = if c.cycle { "  (deadlock)" } else { "" };
+                                ui.label(format!("Thread {}: waits on {}{cycle}", c.thread, c.steps.join(" -> ")));
+                            }
+                        });
+                        if !names.is_empty() {
+                            ui.separator();
+                            ui.label("Ending one of these processes may let it continue:");
+                            for (p, n) in names.iter() {
+                                ui.horizontal(|ui| {
+                                    ui.label(format!("{n} ({p})"));
+                                    if ui.button("End process").clicked() {
+                                        self.status.set(match taskmgr_sys::end_process(*p) {
+                                            Ok(()) => format!("Ended {n} ({p})"),
+                                            Err(e) => format!("Could not end {n} ({p}): {e}"),
+                                        });
+                                    }
+                                });
+                            }
+                        }
+                    }
+                    if ui.button("Close").clicked() {
+                        close = true;
+                    }
                 });
             }
         }
