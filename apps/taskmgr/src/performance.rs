@@ -468,6 +468,7 @@ impl State {
                             ("Driver version", &g.driver_version),
                             ("Driver date", &g.driver_date),
                             ("DirectX version", &g.directx),
+                            ("Physical location", &g.location),
                         ] {
                             if !v.is_empty() {
                                 items.push((k, v.clone()));

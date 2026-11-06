@@ -233,8 +233,8 @@ fn spawn_sampler(ctx: egui::Context, tx: Sender<Result<Arc<Snapshot>, String>>) 
                                 .iter()
                                 .map(|g| {
                                     format!(
-                                        "{} {:.0}% driver {} {} dx {}",
-                                        g.name, g.util, g.driver_version, g.driver_date, g.directx
+                                        "{} {:.0}% driver {} {} dx {} at {}",
+                                        g.name, g.util, g.driver_version, g.driver_date, g.directx, g.location
                                     )
                                 })
                                 .collect();

@@ -2,6 +2,7 @@
 //! windows-sys has no DXGI bindings, so the two COM calls go through the vtable by hand.
 
 use std::ffi::c_void;
+use std::mem::size_of;
 use std::ptr::null_mut;
 
 use taskmgr_core::GpuAdapter;
@@ -93,6 +94,53 @@ fn driver_date(vendor: u32, device: u32) -> String {
         .unwrap_or_default()
 }
 
+/// Device Manager's "Location" of the display device with this vendor and device id.
+fn location(vendor: u32, device: u32) -> String {
+    use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
+        DIGCF_PRESENT, GUID_DEVCLASS_DISPLAY, SP_DEVINFO_DATA, SPDRP_HARDWAREID, SPDRP_LOCATION_INFORMATION,
+        SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo, SetupDiGetClassDevsW, SetupDiGetDeviceRegistryPropertyW,
+    };
+    let id = format!("ven_{vendor:04x}&dev_{device:04x}");
+    // SAFETY: device list destroyed below; buffers sized as passed.
+    unsafe {
+        let set = SetupDiGetClassDevsW(&GUID_DEVCLASS_DISPLAY, std::ptr::null(), null_mut(), DIGCF_PRESENT);
+        if set == -1 {
+            return String::new();
+        }
+        let prop = |d: &SP_DEVINFO_DATA, p: u32| {
+            let mut buf = [0u16; 512];
+            let ok = SetupDiGetDeviceRegistryPropertyW(
+                set,
+                d,
+                p,
+                null_mut(),
+                buf.as_mut_ptr().cast(),
+                (buf.len() * 2) as u32,
+                null_mut(),
+            );
+            if ok == 0 {
+                return String::new();
+            }
+            // REG_MULTI_SZ for hardware ids: the first string is enough.
+            let n = buf.iter().position(|c| *c == 0).unwrap_or(buf.len());
+            String::from_utf16_lossy(&buf[..n])
+        };
+        let mut out = String::new();
+        for i in 0.. {
+            let mut d = SP_DEVINFO_DATA { cbSize: size_of::<SP_DEVINFO_DATA>() as u32, ..Default::default() };
+            if SetupDiEnumDeviceInfo(set, i, &mut d) == 0 {
+                break;
+            }
+            if prop(&d, SPDRP_HARDWAREID).to_lowercase().contains(&id) {
+                out = prop(&d, SPDRP_LOCATION_INFORMATION);
+                break;
+            }
+        }
+        SetupDiDestroyDeviceInfoList(set);
+        out
+    }
+}
+
 /// Hardware adapters, in DXGI order (the first is the one Windows calls GPU 0).
 pub fn gpu_adapters() -> Vec<GpuAdapter> {
     let mut out = Vec::new();
@@ -121,6 +169,7 @@ pub fn gpu_adapters() -> Vec<GpuAdapter> {
                     driver_version: driver_version(adapter),
                     directx: directx(adapter),
                     driver_date: driver_date(d.vendor_id, d.device_id),
+                    location: location(d.vendor_id, d.device_id),
                 });
             }
             let release: Release = slot(adapter, 2);

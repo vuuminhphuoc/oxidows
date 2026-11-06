@@ -296,6 +296,8 @@ pub struct GpuAdapter {
     pub directx: String,
     /// As the driver package states it, "9/14/2023".
     pub driver_date: String,
+    /// "PCI bus 0, device 2, function 0"; empty for software adapters.
+    pub location: String,
 }
 
 /// One GPU's figures for a sample.
@@ -312,6 +314,7 @@ pub struct GpuStats {
     pub driver_version: String,
     pub directx: String,
     pub driver_date: String,
+    pub location: String,
 }
 
 fn luid_of(instance: &str) -> Option<&str> {
@@ -359,6 +362,7 @@ pub fn split_gpus(
                 driver_version: a.map(|a| a.driver_version.clone()).unwrap_or_default(),
                 directx: a.map(|a| a.directx.clone()).unwrap_or_default(),
                 driver_date: a.map(|a| a.driver_date.clone()).unwrap_or_default(),
+                location: a.map(|a| a.location.clone()).unwrap_or_default(),
             }
         })
         .collect()
