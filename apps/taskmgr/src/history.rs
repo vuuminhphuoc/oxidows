@@ -27,13 +27,15 @@ enum Sort {
     Network,
     Upload,
     Download,
+    Metered,
 }
 
 #[derive(Default, Clone)]
 struct Baseline {
     /// OLE date the baseline was taken.
     at: f64,
-    apps: HashMap<String, (u64, u64, u64)>,
+    /// cpu cycles, bytes sent, bytes received, metered bytes.
+    apps: HashMap<String, (u64, u64, u64, u64)>,
 }
 
 fn baseline_path() -> Option<PathBuf> {
@@ -51,9 +53,10 @@ impl Baseline {
             let f: Vec<&str> = line.split('\t').collect();
             match f.as_slice() {
                 ["at", d] => b.at = d.parse().unwrap_or(0.0),
-                [name, c, s, r] => {
+                [name, c, s, r, rest @ ..] => {
                     let n = |v: &str| v.parse().unwrap_or(0);
-                    b.apps.insert((*name).to_string(), (n(c), n(s), n(r)));
+                    let m = rest.first().map_or(0, |v| n(v));
+                    b.apps.insert((*name).to_string(), (n(c), n(s), n(r), m));
                 }
                 _ => {}
             }
@@ -63,8 +66,8 @@ impl Baseline {
 
     fn to_text(&self) -> String {
         let mut out = format!("at\t{}\n", self.at);
-        for (name, (c, s, r)) in &self.apps {
-            out.push_str(&format!("{}\t{c}\t{s}\t{r}\n", name.replace(['\t', '\n'], " ")));
+        for (name, (c, s, r, m)) in &self.apps {
+            out.push_str(&format!("{}\t{c}\t{s}\t{r}\t{m}\n", name.replace(['\t', '\n'], " ")));
         }
         out
     }
@@ -208,12 +211,13 @@ impl State {
                     .resizable(true)
                     .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                     .column(Column::remainder().at_least(220.0).clip(true))
-                    .columns(Column::exact(110.0), 4)
+                    .columns(Column::exact(110.0), 5)
                     .header(22.0, |mut hd| {
                         for (k, t) in [
                             (Sort::Name, "Name"),
                             (Sort::Cpu, "CPU time"),
                             (Sort::Network, "Network"),
+                            (Sort::Metered, "Metered network"),
                             (Sort::Upload, "Uploads"),
                             (Sort::Download, "Downloads"),
                         ] {
@@ -238,6 +242,9 @@ impl State {
                                 ui.label(format_bytes((a.bytes_sent + a.bytes_received) as f64));
                             });
                             row.col(|ui| {
+                                ui.label(format_bytes(a.metered_bytes as f64));
+                            });
+                            row.col(|ui| {
                                 ui.label(format_bytes(a.bytes_sent as f64));
                             });
                             row.col(|ui| {
@@ -259,7 +266,10 @@ impl State {
         if let Some(apps) = delete {
             let b = Baseline {
                 at: now_ole(),
-                apps: apps.iter().map(|a| (a.name.clone(), (a.cpu_cycles, a.bytes_sent, a.bytes_received))).collect(),
+                apps: apps
+                    .iter()
+                    .map(|a| (a.name.clone(), (a.cpu_cycles, a.bytes_sent, a.bytes_received, a.metered_bytes)))
+                    .collect(),
             };
             let saved = baseline_path().map(|p| {
                 p.parent().map(std::fs::create_dir_all);
@@ -284,12 +294,13 @@ impl State {
             .iter()
             .map(|a| {
                 let mut a = a.clone();
-                if let Some((c, s, r)) = self.baseline.as_ref().and_then(|b| b.apps.get(&a.name)) {
+                if let Some((c, s, r, m)) = self.baseline.as_ref().and_then(|b| b.apps.get(&a.name)) {
                     let ratio = if a.cpu_cycles == 0 { 0.0 } else { a.cpu_time_100ns as f64 / a.cpu_cycles as f64 };
                     a.cpu_cycles = a.cpu_cycles.saturating_sub(*c);
                     a.cpu_time_100ns = (a.cpu_cycles as f64 * ratio) as u64;
                     a.bytes_sent = a.bytes_sent.saturating_sub(*s);
                     a.bytes_received = a.bytes_received.saturating_sub(*r);
+                    a.metered_bytes = a.metered_bytes.saturating_sub(*m);
                 }
                 a
             })
@@ -303,6 +314,7 @@ impl State {
                 Sort::Network => (a.bytes_sent + a.bytes_received).cmp(&(b.bytes_sent + b.bytes_received)),
                 Sort::Upload => a.bytes_sent.cmp(&b.bytes_sent),
                 Sort::Download => a.bytes_received.cmp(&b.bytes_received),
+                Sort::Metered => a.metered_bytes.cmp(&b.metered_bytes),
             };
             if self.descending { o.reverse() } else { o }
         });
@@ -317,9 +329,10 @@ mod tests {
     #[test]
     fn baseline_round_trip() {
         let mut b = Baseline { at: 46_000.5, ..Default::default() };
-        b.apps.insert("chrome.exe".into(), (10, 20, 30));
+        b.apps.insert("chrome.exe".into(), (10, 20, 30, 5));
         let p = Baseline::parse(&b.to_text());
         assert_eq!(p.at, 46_000.5);
-        assert_eq!(p.apps.get("chrome.exe"), Some(&(10, 20, 30)));
+        assert_eq!(p.apps.get("chrome.exe"), Some(&(10, 20, 30, 5)));
+        assert_eq!(Baseline::parse("x\t1\t2\t3\n").apps.get("x"), Some(&(1, 2, 3, 0)));
     }
 }

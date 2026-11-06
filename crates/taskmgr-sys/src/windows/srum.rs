@@ -141,10 +141,13 @@ impl Jet {
         let t = wide(table);
         let mut tid: JET_TABLEID = 0;
         // SAFETY: open database; table closed below.
-        check(
-            unsafe { JetOpenTableW(self.sesid, self.dbid, t.as_ptr(), null(), 0, JET_bitTableReadOnly, &mut tid) },
-            table,
-        )?;
+        let r = unsafe { JetOpenTableW(self.sesid, self.dbid, t.as_ptr(), null(), 0, JET_bitTableReadOnly, &mut tid) };
+        // JET_errObjectNotFound: Windows has not created this table yet (a machine with no network use
+        // recorded, for one). It just means no rows.
+        if r == -1305 {
+            return Ok(());
+        }
+        check(r, table)?;
         let result = self.scan_rows(tid, cols, &mut row);
         // SAFETY: table opened above.
         unsafe { JetCloseTable(self.sesid, tid) };
@@ -249,6 +252,32 @@ fn app_name(blob: &[u8]) -> String {
 }
 
 /// Reads App history. `cycles_per_sec` turns CPU cycles into time (the processor's base clock).
+/// Which interface types Windows bills as metered by default (`NetworkList\DefaultMediaCost`:
+/// 1 unrestricted, 2 fixed). A network marked metered by hand is not seen here.
+struct MeteredTypes {
+    ethernet: bool,
+    wifi: bool,
+    mobile: bool,
+}
+
+impl MeteredTypes {
+    fn read() -> Self {
+        let key = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\NetworkList\DefaultMediaCost";
+        let cost = |v: &str, default: u32| super::hw::reg_dword(key, v).unwrap_or(default) >= 2;
+        Self { ethernet: cost("Ethernet", 1), wifi: cost("WiFi", 1), mobile: cost("4G", 2) || cost("3G", 2) }
+    }
+
+    /// The interface type is the top 16 bits of a NET_LUID.
+    fn is_metered(&self, luid: u64) -> bool {
+        match luid >> 48 {
+            6 => self.ethernet,
+            71 => self.wifi,
+            243 | 244 => self.mobile,
+            _ => false,
+        }
+    }
+}
+
 pub fn app_history(cycles_per_sec: f64) -> io::Result<AppHistory> {
     let work = std::env::temp_dir().join("oxidows-srum");
     let db = snapshot(&work)?;
@@ -264,8 +293,9 @@ pub fn app_history(cycles_per_sec: f64) -> io::Result<AppHistory> {
         }
     })?;
 
-    // (app id, cpu cycles, bytes sent, bytes received), aggregated below.
-    let mut rows: Vec<(u64, u64, u64, u64)> = Vec::new();
+    // (app id, cpu cycles, bytes sent, bytes received, metered bytes), aggregated below.
+    let mut rows: Vec<(u64, u64, u64, u64, u64)> = Vec::new();
+    let metered = MeteredTypes::read();
     let mut since: Option<f64> = None;
     let mut first = |d: Option<f64>| {
         if let Some(d) = d {
@@ -274,19 +304,22 @@ pub fn app_history(cycles_per_sec: f64) -> io::Result<AppHistory> {
     };
     jet.scan(APP_USAGE, &["TimeStamp", "AppId", "ForegroundCycleTime", "BackgroundCycleTime"], |v| {
         first(ole_date(&v[0]));
-        rows.push((int(&v[1]), int(&v[2]) + int(&v[3]), 0, 0));
+        rows.push((int(&v[1]), int(&v[2]) + int(&v[3]), 0, 0, 0));
     })?;
-    jet.scan(NET_USAGE, &["TimeStamp", "AppId", "BytesSent", "BytesRecvd"], |v| {
+    jet.scan(NET_USAGE, &["TimeStamp", "AppId", "BytesSent", "BytesRecvd", "InterfaceLuid"], |v| {
         first(ole_date(&v[0]));
-        rows.push((int(&v[1]), 0, int(&v[2]), int(&v[3])));
+        let (sent, recv) = (int(&v[2]), int(&v[3]));
+        let m = if metered.is_metered(int(&v[4])) { sent + recv } else { 0 };
+        rows.push((int(&v[1]), 0, sent, recv, m));
     })?;
     let mut apps: HashMap<String, AppUsage> = HashMap::new();
-    for (id, cycles, sent, recv) in rows {
+    for (id, cycles, sent, recv, m) in rows {
         let name = names.get(&(id as u32)).cloned().unwrap_or_else(|| format!("App {id}"));
         let a = apps.entry(name.clone()).or_insert_with(|| AppUsage { name, ..Default::default() });
         a.cpu_cycles += cycles;
         a.bytes_sent += sent;
         a.bytes_received += recv;
+        a.metered_bytes += m;
     }
     drop(jet);
     let _ = std::fs::remove_dir_all(&work);

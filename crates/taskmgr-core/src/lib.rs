@@ -218,6 +218,8 @@ pub struct AppUsage {
     pub cpu_time_100ns: u64,
     pub bytes_sent: u64,
     pub bytes_received: u64,
+    /// Sent and received over connections Windows treats as metered.
+    pub metered_bytes: u64,
 }
 
 /// App history as Windows records it (SRUM), from the oldest record kept.
