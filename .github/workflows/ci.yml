@@ -25,17 +25,17 @@ jobs:
         env:
           OXI_TASKMGR_TIMING: "1"
         run: ./scripts/smoke-all.ps1 -OutDir smoke
-      # Temporary: idle CPU per wgpu backend, to pick the cheapest one on machines without a GPU.
-      - name: Idle CPU per renderer backend
+      # Temporary: idle CPU per present mode, to pick the cheapest one on machines without a GPU.
+      - name: Idle CPU per present mode
         shell: pwsh
         continue-on-error: true
         env:
           OXI_TASKMGR_TIMING: "1"
         run: |
-          foreach ($b in 'dx12', 'vulkan', 'gl') {
-            $env:WGPU_BACKEND = $b
-            try { ./scripts/smoke.ps1 -Exe target/release/oxi-taskmgr.exe -Name "taskmgr-$b" -OutDir smoke-backends }
-            catch { Write-Host "taskmgr-$b failed: $_" }
+          foreach ($m in 'fifo', 'immediate', 'mailbox', 'novsync') {
+            $env:OXI_PRESENT = $m
+            try { ./scripts/smoke.ps1 -Exe target/release/oxi-taskmgr.exe -Name "taskmgr-$m" -OutDir smoke-backends }
+            catch { Write-Host "taskmgr-$m failed: $_" }
           }
       - uses: actions/upload-artifact@v4
         if: always()

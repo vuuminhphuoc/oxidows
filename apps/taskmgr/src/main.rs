@@ -511,7 +511,7 @@ fn renderer() -> eframe::Renderer {
 }
 
 fn main() -> eframe::Result {
-    let options = eframe::NativeOptions {
+    let mut options = eframe::NativeOptions {
         renderer: renderer(),
         viewport: egui::ViewportBuilder::default()
             .with_title("Task Manager (oxidows)")
@@ -519,5 +519,16 @@ fn main() -> eframe::Result {
             .with_min_inner_size([560.0, 360.0]),
         ..Default::default()
     };
+    // OXI_PRESENT=immediate|mailbox|fifo|novsync: tuning knob for software rendering (WARP).
+    let present = match std::env::var("OXI_PRESENT").as_deref() {
+        Ok("immediate") => Some(eframe::wgpu::PresentMode::Immediate),
+        Ok("mailbox") => Some(eframe::wgpu::PresentMode::Mailbox),
+        Ok("fifo") => Some(eframe::wgpu::PresentMode::Fifo),
+        Ok("novsync") => Some(eframe::wgpu::PresentMode::AutoNoVsync),
+        _ => None,
+    };
+    if let Some(mode) = present {
+        options.wgpu_options.surface.present_mode = mode;
+    }
     eframe::run_native("oxi-taskmgr", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
 }
