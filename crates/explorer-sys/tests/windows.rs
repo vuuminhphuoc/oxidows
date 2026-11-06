@@ -9,6 +9,45 @@ use std::time::{Duration, Instant};
 
 use explorer_sys::{Entry, FileOp, file_op_silent, list_dir};
 
+static RUNNING: std::sync::Mutex<Vec<(&'static str, Instant)>> = std::sync::Mutex::new(Vec::new());
+
+/// Every test holds one of these; a single thread kills the binary (naming the stuck tests)
+/// if any runs longer than 120 s, so CI fails with a reason instead of hanging.
+struct Guard(&'static str);
+
+fn guard(name: &'static str) -> Guard {
+    static WATCH: std::sync::Once = std::sync::Once::new();
+    WATCH.call_once(|| {
+        std::thread::spawn(|| {
+            loop {
+                std::thread::sleep(Duration::from_secs(1));
+                let stuck: Vec<String> = RUNNING
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|(_, t)| t.elapsed() > Duration::from_secs(120))
+                    .map(|(n, t)| format!("{n} ({:?})", t.elapsed()))
+                    .collect();
+                if !stuck.is_empty() {
+                    use std::io::Write;
+                    let _ = writeln!(std::io::stderr(), "TIMEOUT: stuck tests: {stuck:?}");
+                    std::process::exit(98);
+                }
+            }
+        });
+    });
+    RUNNING.lock().unwrap().push((name, Instant::now()));
+    Guard(name)
+}
+
+impl Drop for Guard {
+    fn drop(&mut self) {
+        if let Ok(mut r) = RUNNING.lock() {
+            r.retain(|(n, _)| *n != self.0);
+        }
+    }
+}
+
 /// Fails the whole test binary (instead of hanging CI for hours) if `stage` takes too long.
 fn watchdog(stage: &'static str, secs: u64) -> Arc<AtomicBool> {
     let done = Arc::new(AtomicBool::new(false));
@@ -51,6 +90,7 @@ fn names(dir: &Path) -> Vec<String> {
 
 #[test]
 fn lists_names_sizes_dirs_and_unicode() {
+    let _g = guard("lists_names_sizes_dirs_and_unicode");
     let d = scratch("list");
     fs::write(d.join("a.txt"), vec![b'x'; 5000]).unwrap();
     fs::write(d.join("Tiếng Việt ✓.md"), b"hi").unwrap();
@@ -69,6 +109,7 @@ fn lists_names_sizes_dirs_and_unicode() {
 
 #[test]
 fn hidden_attribute_is_read() {
+    let _g = guard("hidden_attribute_is_read");
     let d = scratch("hidden");
     let f = d.join("secret.txt");
     fs::write(&f, b"x").unwrap();
@@ -81,6 +122,7 @@ fn hidden_attribute_is_read() {
 
 #[test]
 fn large_folder_arrives_in_batches() {
+    let _g = guard("large_folder_arrives_in_batches");
     let d = scratch("many");
     let n = explorer_sys::BATCH * 2 + 17;
     for i in 0..n {
@@ -102,11 +144,13 @@ fn large_folder_arrives_in_batches() {
 
 #[test]
 fn missing_folder_is_an_error() {
+    let _g = guard("missing_folder_is_an_error");
     assert!(list_dir(Path::new(r"C:\definitely\not\here"), &AtomicBool::new(false), &mut |_| {}).is_err());
 }
 
 #[test]
 fn drives_and_known_folders() {
+    let _g = guard("drives_and_known_folders");
     let drives = explorer_sys::drives();
     let c = drives.iter().find(|d| d.root == Path::new(r"C:\")).expect("C: drive");
     assert!(c.total > 0 && c.free > 0 && c.free <= c.total, "{c:?}");
@@ -119,6 +163,7 @@ fn drives_and_known_folders() {
 
 #[test]
 fn copy_move_recycle_delete() {
+    let _g = guard("copy_move_recycle_delete");
     let d = scratch("ops");
     let (src, dst) = (d.join("src"), d.join("dst"));
     fs::create_dir_all(src.join("inner")).unwrap();
@@ -150,6 +195,7 @@ fn copy_move_recycle_delete() {
 
 #[test]
 fn watcher_sees_new_file() {
+    let _g = guard("watcher_sees_new_file");
     let d = scratch("watch");
     let cancel = Arc::new(AtomicBool::new(false));
     let hits = Arc::new(AtomicUsize::new(0));
@@ -173,6 +219,7 @@ fn watcher_sees_new_file() {
 
 #[test]
 fn clipboard_round_trip() {
+    let _g = guard("clipboard_round_trip");
     let files = vec![PathBuf::from(r"C:\Windows\notepad.exe"), PathBuf::from(r"C:\Windows\System32")];
     explorer_sys::clipboard_set_files(&files, true).unwrap();
     let (got, cut) = explorer_sys::clipboard_get_files().expect("files on clipboard");
@@ -186,6 +233,7 @@ fn clipboard_round_trip() {
 
 #[test]
 fn shell_icons() {
+    let _g = guard("shell_icons");
     let txt = explorer_sys::shell_icon(Path::new("x.txt"), false, false).expect("txt icon");
     assert!(txt.width >= 16 && txt.height >= 16);
     assert_eq!(txt.rgba.len(), txt.width * txt.height * 4);
@@ -197,6 +245,7 @@ fn shell_icons() {
 /// Real SMB against the runner's own server: share a temp folder, browse, copy, map a drive.
 #[test]
 fn smb_share_on_localhost() {
+    let _g = guard("smb_share_on_localhost");
     let d = scratch("smb");
     fs::write(d.join("hello.txt"), b"over smb").unwrap();
     let share = format!("oxitest{}", std::process::id());
@@ -247,6 +296,7 @@ fn smb_share_on_localhost() {
 
 #[test]
 fn network_enumeration_does_not_hang() {
+    let _g = guard("network_enumeration_does_not_hang");
     // The browse list can be slow without a network; it runs on a worker thread in the app,
     // so here it only must finish within a bound.
     let w = watchdog("network_computers", 120);
@@ -258,6 +308,7 @@ fn network_enumeration_does_not_hang() {
 
 #[test]
 fn shell_context_menu_has_standard_verbs() {
+    let _g = guard("shell_context_menu_has_standard_verbs");
     let d = scratch("menu");
     let f = d.join("doc.txt");
     fs::write(&f, b"x").unwrap();
@@ -276,6 +327,7 @@ fn shell_context_menu_has_standard_verbs() {
 
 #[test]
 fn recycle_bin_list_and_restore() {
+    let _g = guard("recycle_bin_list_and_restore");
     let d = scratch("bin");
     let f = d.join(format!("binned-{}.txt", std::process::id()));
     fs::write(&f, b"come back").unwrap();
@@ -302,6 +354,7 @@ fn recycle_bin_list_and_restore() {
 
 #[test]
 fn thumbnails() {
+    let _g = guard("thumbnails");
     let w = watchdog("thumbnail", 60);
     let t = explorer_sys::thumbnail(Path::new(r"C:\Windows\notepad.exe"), 96).expect("thumbnail");
     w.store(true, Ordering::Relaxed);
