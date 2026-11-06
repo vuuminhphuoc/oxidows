@@ -382,12 +382,16 @@ pub const NETWORK: &str = "::network";
 /// The virtual Recycle Bin location.
 pub const RECYCLE_BIN: &str = "::recycle-bin";
 
+/// The virtual This PC page: known folders and drives. Its items are named by full path.
+pub const THIS_PC: &str = "::this-pc";
+
 /// What kind of location a path is, for the parts that are not plain folders.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Place {
     /// The list of computers.
     Network,
     RecycleBin,
+    ThisPc,
     /// `\\server`: the list of its shares.
     Server(String),
     /// `\\server\share\...`
@@ -407,6 +411,9 @@ pub fn classify(p: &Path) -> Place {
     if s == RECYCLE_BIN {
         return Place::RecycleBin;
     }
+    if s == THIS_PC {
+        return Place::ThisPc;
+    }
     let Some(rest) = s.strip_prefix(r"\\") else { return Place::Local };
     if rest.starts_with(r"?\") || rest.starts_with(r".\") {
         return Place::Local; // \\?\C:\... and device paths
@@ -419,10 +426,16 @@ pub fn classify(p: &Path) -> Place {
     }
 }
 
+/// Whether `p` starts with a drive letter or `\\?\` prefix (Windows paths).
+fn has_drive(p: &Path) -> bool {
+    matches!(p.components().next(), Some(std::path::Component::Prefix(_)))
+}
+
 /// Path of the item `name` inside `cur` (handles the virtual Network and server levels).
 pub fn child_path(cur: &Path, name: &str) -> PathBuf {
     match classify(cur) {
         Place::Network => PathBuf::from(format!(r"\\{name}")),
+        Place::ThisPc => PathBuf::from(name),
         Place::Server(server) => PathBuf::from(format!(r"\\{server}\{name}")),
         _ => cur.join(name),
     }
@@ -431,7 +444,7 @@ pub fn child_path(cur: &Path, name: &str) -> PathBuf {
 /// One level up: share root -> server -> Network; drive root -> none.
 pub fn parent_path(cur: &Path) -> Option<PathBuf> {
     match classify(cur) {
-        Place::Network | Place::RecycleBin => None,
+        Place::Network | Place::RecycleBin | Place::ThisPc => None,
         Place::Server(_) => Some(PathBuf::from(NETWORK)),
         Place::Unc { server, share } => {
             let s = cur.to_string_lossy();
@@ -443,7 +456,8 @@ pub fn parent_path(cur: &Path) -> Option<PathBuf> {
                 trimmed.rfind('\\').map(|i| PathBuf::from(&trimmed[..i]))
             }
         }
-        Place::Local => cur.parent().map(Path::to_path_buf),
+        // A drive root ("C:\\") goes up to This PC, as in Explorer.
+        Place::Local => cur.parent().map(Path::to_path_buf).or_else(|| has_drive(cur).then(|| PathBuf::from(THIS_PC))),
     }
 }
 
@@ -452,6 +466,7 @@ pub fn location_crumbs(cur: &Path) -> Vec<(String, PathBuf)> {
     match classify(cur) {
         Place::Network => vec![("Network".into(), PathBuf::from(NETWORK))],
         Place::RecycleBin => vec![("Recycle Bin".into(), PathBuf::from(RECYCLE_BIN))],
+        Place::ThisPc => vec![("This PC".into(), PathBuf::from(THIS_PC))],
         Place::Server(server) => {
             vec![("Network".into(), PathBuf::from(NETWORK)), (server.clone(), PathBuf::from(format!(r"\\{server}")))]
         }
@@ -473,6 +488,11 @@ pub fn location_crumbs(cur: &Path) -> Vec<(String, PathBuf)> {
                 }
             }
             out
+        }
+        Place::Local if has_drive(cur) => {
+            let mut v = vec![("This PC".into(), PathBuf::from(THIS_PC))];
+            v.extend(breadcrumbs(cur));
+            v
         }
         Place::Local => breadcrumbs(cur),
     }
@@ -619,6 +639,7 @@ pub fn shell_folder_template(name: &str) -> Option<&'static str> {
         "myvideo" | "videos" => "%USERPROFILE%\\Videos",
         "recyclebinfolder" => RECYCLE_BIN,
         "networkplacesfolder" => NETWORK,
+        "mycomputerfolder" | "thispc" => THIS_PC,
         _ => return None,
     })
 }

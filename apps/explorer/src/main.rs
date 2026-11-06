@@ -435,6 +435,34 @@ impl App {
                         let _ = tx.send(Msg::Batch(generation, batch));
                         Ok(())
                     }
+                    // Known folders, then drives with their free space.
+                    Place::ThisPc => {
+                        let folders = explorer_sys::known_folders().into_iter().map(|(name, p)| Entry {
+                            name: p.to_string_lossy().into_owned(),
+                            label: Some(name.to_string()),
+                            note: Some("Folder".into()),
+                            is_dir: true,
+                            ..Default::default()
+                        });
+                        let drives = explorer_sys::drives().into_iter().map(|d| Entry {
+                            name: d.root.to_string_lossy().into_owned(),
+                            label: Some(view::drive_label(&d)),
+                            note: Some(if d.total > 0 {
+                                format!(
+                                    "{} free of {}",
+                                    explorer_core::format_bytes(d.free),
+                                    explorer_core::format_bytes(d.total)
+                                )
+                            } else {
+                                "Drive".into()
+                            }),
+                            is_dir: true,
+                            size: d.total,
+                            ..Default::default()
+                        });
+                        let _ = tx.send(Msg::Batch(generation, folders.chain(drives).collect()));
+                        Ok(())
+                    }
                     Place::Server(server) => explorer_sys::list_shares(&server).map(|shares| {
                         let batch = shares
                             .into_iter()
@@ -458,7 +486,7 @@ impl App {
     fn start_watch(&mut self) {
         self.watch_cancel.store(true, Ordering::Relaxed);
         self.watch_cancel = Arc::new(AtomicBool::new(false));
-        if matches!(classify(&self.cur), Place::Network | Place::Server(_) | Place::RecycleBin) {
+        if matches!(classify(&self.cur), Place::Network | Place::Server(_) | Place::RecycleBin | Place::ThisPc) {
             return;
         }
         let (dir, cancel, tx, ctx) = (self.cur.clone(), self.watch_cancel.clone(), self.tx.clone(), self.ctx.clone());
@@ -874,6 +902,12 @@ impl App {
         }
     }
 
+    /// A page that isn't a real folder (Network, a server's shares, Recycle Bin, This PC):
+    /// nothing can be created, renamed or pasted there.
+    pub fn in_virtual_place(&self) -> bool {
+        matches!(classify(&self.cur), Place::Network | Place::Server(_) | Place::RecycleBin | Place::ThisPc)
+    }
+
     pub fn in_recycle_bin(&self) -> bool {
         classify(&self.cur) == Place::RecycleBin
     }
@@ -980,6 +1014,7 @@ impl App {
         let t = t.as_str();
         let p = PathBuf::from(t);
         let p = if t.eq_ignore_ascii_case("network") { PathBuf::from(explorer_core::NETWORK) } else { p };
+        let p = if t.eq_ignore_ascii_case("this pc") { PathBuf::from(explorer_core::THIS_PC) } else { p };
         let p = if t.eq_ignore_ascii_case("recycle bin") { PathBuf::from(explorer_core::RECYCLE_BIN) } else { p };
         let p = if p.is_relative() && classify(&p) == Place::Local { self.cur.join(p) } else { p };
         if matches!(classify(&p), Place::Network | Place::Server(_)) || p.is_dir() {
@@ -1085,6 +1120,9 @@ impl App {
     }
 
     fn paste_into(&mut self, dest: PathBuf) {
+        if matches!(classify(&dest), Place::Network | Place::Server(_) | Place::RecycleBin | Place::ThisPc) {
+            return;
+        }
         let Some((files, cut)) = explorer_sys::clipboard_get_files() else {
             self.status = Some("Nothing to paste".into());
             return;
@@ -1108,7 +1146,7 @@ impl App {
     }
 
     pub fn begin_rename(&mut self) {
-        if self.in_recycle_bin() {
+        if self.in_virtual_place() {
             return;
         }
         let sel = self.selected_entries();
@@ -1176,6 +1214,9 @@ impl App {
     }
 
     pub fn begin_new_folder(&mut self) {
+        if self.in_virtual_place() {
+            return;
+        }
         self.dialog =
             Some(Dialog::NewFolder { text: unique_name("New folder", &self.entries), error: None, opened: false });
     }

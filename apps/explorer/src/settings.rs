@@ -270,6 +270,10 @@ impl App {
                 // Entered a folder: its own view if it has one.
                 let v = match self.persist.settings.folders.get(&folder_key(&self.cur)) {
                     Some(&(_, v)) => v,
+                    // This PC opens as tiles until the user picks another view there.
+                    None if self.cur.as_os_str() == explorer_core::THIS_PC => {
+                        FolderView { view: ViewMode::Tiles, ..self.persist.settings.folder }
+                    }
                     None => self.persist.settings.folder,
                 };
                 {

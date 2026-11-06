@@ -341,6 +341,20 @@ fn tree_node(
     header.inner
 }
 
+/// "Windows (C:)", "Local Disk (D:)", "USB Drive (E:)", as Explorer names drives.
+pub fn drive_label(d: &explorer_sys::Drive) -> String {
+    let root = d.root.to_string_lossy();
+    let letter = root.trim_end_matches('\\');
+    match (d.label.is_empty(), d.kind) {
+        (false, _) => format!("{} ({letter})", d.label),
+        (true, DriveKind::Fixed) => format!("Local Disk ({letter})"),
+        (true, DriveKind::Removable) => format!("USB Drive ({letter})"),
+        (true, DriveKind::Network) => format!("Network ({letter})"),
+        (true, DriveKind::Optical) => format!("DVD Drive ({letter})"),
+        (true, DriveKind::Other) => letter.to_string(),
+    }
+}
+
 pub fn sidebar(app: &mut App, ui: &mut Ui) {
     egui::Panel::left("sidebar").resizable(true).default_size(190.0).show(ui, |ui| {
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -382,18 +396,14 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
             }
             ui.add_space(6.0);
             ui.separator();
-            ui.label(RichText::new("This PC").weak());
+            let this_pc = PathBuf::from(explorer_core::THIS_PC);
+            if place(ui, "💻", "This PC", &this_pc, &app.cur) {
+                go = Some(this_pc);
+            }
             for d in &app.drives {
                 let root = d.root.to_string_lossy();
                 let letter = root.trim_end_matches('\\');
-                let label = match (d.label.is_empty(), d.kind) {
-                    (false, _) => format!("{} ({letter})", d.label),
-                    (true, DriveKind::Fixed) => format!("Local Disk ({letter})"),
-                    (true, DriveKind::Removable) => format!("USB Drive ({letter})"),
-                    (true, DriveKind::Network) => format!("Network ({letter})"),
-                    (true, DriveKind::Optical) => format!("DVD Drive ({letter})"),
-                    (true, DriveKind::Other) => letter.to_string(),
-                };
+                let label = drive_label(d);
                 let icon = match d.kind {
                     DriveKind::Network => "🖧",
                     DriveKind::Optical => "💿",
@@ -546,7 +556,7 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
     let shell_menus = app.hwnd != 0
         && !matches!(
             explorer_core::classify(&app.cur),
-            explorer_core::Place::Network | explorer_core::Place::RecycleBin
+            explorer_core::Place::Network | explorer_core::Place::RecycleBin | explorer_core::Place::ThisPc
         );
     let in_bin = app.in_recycle_bin();
     if shell_menus && bg.secondary_clicked() {
