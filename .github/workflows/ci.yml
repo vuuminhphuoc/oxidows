@@ -25,10 +25,7 @@ jobs:
         shell: pwsh
         env:
           OXI_TASKMGR_TIMING: "1"
-        run: |
-          $exes = Get-ChildItem target/release -Filter "oxi-*.exe"
-          if (-not $exes) { throw "no oxi-*.exe built" }
-          foreach ($e in $exes) { ./scripts/smoke.ps1 -Exe $e.FullName -Name $e.BaseName.Substring(4) -OutDir smoke }
+        run: ./scripts/smoke-all.ps1 -OutDir smoke
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -2,25 +2,71 @@
 // Release builds on Windows run without a console window.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod details;
 mod graph;
 mod performance;
 mod processes;
+mod services;
+mod startup;
+mod users;
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use taskmgr_core::{Sampler, Snapshot};
+use taskmgr_core::{Extras, Sampler, Snapshot};
 
 /// Shared with the sampler thread. 0 = paused.
 static INTERVAL_MS: AtomicU64 = AtomicU64::new(1000);
+/// The sampler reads services / sessions only while their tab is open.
+static WANT_SERVICES: AtomicBool = AtomicBool::new(false);
+static WANT_SESSIONS: AtomicBool = AtomicBool::new(false);
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Tab {
     Processes,
     Performance,
+    Startup,
+    Users,
+    Details,
+    Services,
+}
+
+impl Tab {
+    const ALL: [Tab; 6] = [Tab::Processes, Tab::Performance, Tab::Startup, Tab::Users, Tab::Details, Tab::Services];
+
+    fn label(self) -> &'static str {
+        match self {
+            Tab::Processes => "Processes",
+            Tab::Performance => "Performance",
+            Tab::Startup => "Startup apps",
+            Tab::Users => "Users",
+            Tab::Details => "Details",
+            Tab::Services => "Services",
+        }
+    }
+
+    fn from_env() -> Tab {
+        let v = std::env::var("OXI_TASKMGR_TAB").unwrap_or_default().to_lowercase();
+        Tab::ALL.into_iter().find(|t| t.label().to_lowercase().starts_with(&v) && !v.is_empty()).unwrap_or(Tab::Processes)
+    }
+}
+
+/// Status line shared by every tab and by background actions (service start/stop).
+#[derive(Clone, Default)]
+pub struct Status(Arc<Mutex<Option<String>>>);
+
+impl Status {
+    pub fn set(&self, msg: impl Into<String>) {
+        if let Ok(mut m) = self.0.lock() {
+            *m = Some(msg.into());
+        }
+    }
+    fn get(&self) -> Option<String> {
+        self.0.lock().ok().and_then(|m| m.clone())
+    }
 }
 
 struct App {
@@ -28,8 +74,13 @@ struct App {
     snapshot: Arc<Snapshot>,
     error: Option<String>,
     tab: Tab,
+    status: Status,
+    elevated: bool,
     processes: processes::State,
     performance: performance::State,
+    details: details::State,
+    services: services::State,
+    startup: startup::State,
     started: Instant,
     first_data_logged: bool,
 }
@@ -55,7 +106,19 @@ fn spawn_sampler(ctx: egui::Context, tx: Sender<Result<Arc<Snapshot>, String>>) 
                     thread::sleep(Duration::from_millis(200));
                     continue;
                 }
-                let msg = collector.collect().map(|raw| Arc::new(sampler.update(raw))).map_err(|e| e.to_string());
+                let extras = Extras {
+                    services: WANT_SERVICES.load(Ordering::Relaxed),
+                    sessions: WANT_SESSIONS.load(Ordering::Relaxed),
+                };
+                let msg = collector
+                    .collect(extras)
+                    .map(|(raw, extra)| {
+                        let mut snap = sampler.update(raw);
+                        snap.services = extra.services.map(Arc::new);
+                        snap.sessions = extra.sessions.map(Arc::new);
+                        Arc::new(snap)
+                    })
+                    .map_err(|e| e.to_string());
                 if tx.send(msg).is_err() {
                     return; // window closed
                 }
@@ -74,20 +137,24 @@ fn spawn_sampler(ctx: egui::Context, tx: Sender<Result<Arc<Snapshot>, String>>) 
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        let tab = Tab::from_env();
+        WANT_SERVICES.store(tab == Tab::Services, Ordering::Relaxed);
+        WANT_SESSIONS.store(tab == Tab::Users, Ordering::Relaxed);
         let (tx, rx) = channel();
         spawn_sampler(cc.egui_ctx.clone(), tx);
+        let status = Status::default();
         Self {
             rx,
             snapshot: Arc::default(),
             error: None,
-            // OXI_TASKMGR_TAB=performance opens on the Performance tab (handy for scripted screenshots).
-            tab: if std::env::var("OXI_TASKMGR_TAB").is_ok_and(|v| v.eq_ignore_ascii_case("performance")) {
-                Tab::Performance
-            } else {
-                Tab::Processes
-            },
-            processes: processes::State::default(),
+            tab,
+            elevated: taskmgr_sys::is_elevated(),
+            processes: processes::State::new(status.clone()),
             performance: performance::State::default(),
+            details: details::State::new(status.clone()),
+            services: services::State::new(status.clone(), cc.egui_ctx.clone()),
+            startup: startup::State::new(status.clone()),
+            status,
             started: Instant::now(),
             first_data_logged: false,
         }
@@ -102,7 +169,7 @@ impl App {
                     if !self.first_data_logged && !self.snapshot.processes.is_empty() {
                         self.first_data_logged = true;
                         if std::env::var_os("OXI_TASKMGR_TIMING").is_some() {
-                            eprintln!("first process list after {:?}", self.started.elapsed());
+                            eprintln!("first process list after {} ms", self.started.elapsed().as_millis());
                         }
                     }
                 }
@@ -120,8 +187,9 @@ impl eframe::App for App {
         egui::Panel::top("tabs").show(ui, |ui| {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.tab, Tab::Processes, "Processes");
-                ui.selectable_value(&mut self.tab, Tab::Performance, "Performance");
+                for t in Tab::ALL {
+                    ui.selectable_value(&mut self.tab, t, t.label());
+                }
                 ui.separator();
                 let mut ms = INTERVAL_MS.load(Ordering::Relaxed);
                 let label = match ms {
@@ -137,9 +205,22 @@ impl eframe::App for App {
                     ui.selectable_value(&mut ms, 0, "Paused");
                 });
                 INTERVAL_MS.store(ms, Ordering::Relaxed);
+                if !self.elevated
+                    && ui
+                        .button("Run as administrator")
+                        .on_hover_text("Needed to end elevated processes, control services and edit machine-wide startup apps")
+                        .clicked()
+                {
+                    match taskmgr_sys::restart_elevated() {
+                        Ok(()) => std::process::exit(0),
+                        Err(e) => self.status.set(e.to_string()),
+                    }
+                }
             });
             ui.add_space(2.0);
         });
+        WANT_SERVICES.store(self.tab == Tab::Services, Ordering::Relaxed);
+        WANT_SESSIONS.store(self.tab == Tab::Users, Ordering::Relaxed);
 
         egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -153,7 +234,7 @@ impl eframe::App for App {
                 if let Some(e) = &self.error {
                     ui.colored_label(ui.visuals().error_fg_color, e);
                 }
-                if let Some(msg) = &self.processes.message {
+                if let Some(msg) = self.status.get() {
                     ui.separator();
                     ui.label(msg);
                 }
@@ -163,15 +244,32 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ui, |ui| match self.tab {
             Tab::Processes => self.processes.show(ui, &snap),
             Tab::Performance => self.performance.show(ui, &snap),
+            Tab::Startup => self.startup.show(ui),
+            Tab::Users => users::show(ui, &snap),
+            Tab::Details => self.details.show(ui, &snap),
+            Tab::Services => self.services.show(ui, &snap),
         });
+    }
+}
+
+/// wgpu by default on Windows: it falls back to DirectX WARP (software) on machines without a usable
+/// GPU driver (VMs, RDP, CI runners), where OpenGL is only the 1.1 GDI stub. `OXI_RENDERER=glow`
+/// opts into OpenGL, which uses less memory where a real driver exists.
+fn renderer() -> eframe::Renderer {
+    match std::env::var("OXI_RENDERER").as_deref() {
+        Ok("glow") => eframe::Renderer::Glow,
+        Ok("wgpu") => eframe::Renderer::Wgpu,
+        _ if cfg!(windows) => eframe::Renderer::Wgpu,
+        _ => eframe::Renderer::Glow,
     }
 }
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
+        renderer: renderer(),
         viewport: egui::ViewportBuilder::default()
             .with_title("Task Manager (oxidows)")
-            .with_inner_size([960.0, 640.0])
+            .with_inner_size([1000.0, 660.0])
             .with_min_inner_size([560.0, 360.0]),
         ..Default::default()
     };

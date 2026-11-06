@@ -1,0 +1,9 @@
+{
+  "views": [
+    { "name": "performance", "env": { "OXI_TASKMGR_TAB": "performance" } },
+    { "name": "startup", "env": { "OXI_TASKMGR_TAB": "startup" } },
+    { "name": "users", "env": { "OXI_TASKMGR_TAB": "users" } },
+    { "name": "details", "env": { "OXI_TASKMGR_TAB": "details" } },
+    { "name": "services", "env": { "OXI_TASKMGR_TAB": "services" } }
+  ]
+}

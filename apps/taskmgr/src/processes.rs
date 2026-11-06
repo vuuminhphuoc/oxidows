@@ -4,15 +4,59 @@
 use egui::{Color32, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 use taskmgr_core::{ProcessRow, SortKey, Snapshot, format_bytes, sorted_view};
+use taskmgr_sys::PriorityClass;
 
-#[derive(Default)]
+use crate::Status;
+
 pub struct State {
     filter: String,
     sort: SortKey,
     ascending: bool,
     /// Selected (pid, name): the name guards against ending a reused PID.
     selected: Option<(u32, String)>,
-    pub message: Option<String>,
+    status: Status,
+}
+
+/// Ends `pid` only if it still belongs to the program the user picked.
+pub fn end_task(status: &Status, rows: &[ProcessRow], pid: u32, name: &str) {
+    if !rows.iter().any(|r| r.pid == pid && r.name == name) {
+        status.set(format!("{name} ({pid}) has already exited"));
+        return;
+    }
+    status.set(match taskmgr_sys::end_process(pid) {
+        Ok(()) => format!("Ended {name} ({pid})"),
+        Err(e) => format!("Could not end {name} ({pid}): {e}"),
+    });
+}
+
+/// The right-click menu shared by Processes and Details.
+pub fn process_menu(ui: &mut Ui, status: &Status, rows: &[ProcessRow], p: &ProcessRow) {
+    ui.label(RichText::new(format!("{} ({})", p.name, p.pid)).weak());
+    if ui.button("End task").clicked() {
+        end_task(status, rows, p.pid, &p.name);
+        ui.close();
+    }
+    ui.menu_button("Set priority", |ui| {
+        for c in PriorityClass::ALL {
+            if ui.button(c.label()).clicked() {
+                status.set(match taskmgr_sys::set_priority(p.pid, c) {
+                    Ok(()) => format!("{} priority set to {}", p.name, c.label()),
+                    Err(e) => format!("Could not change priority of {}: {e}", p.name),
+                });
+                ui.close();
+            }
+        }
+    });
+    if ui.add_enabled(!p.info.path.is_empty(), egui::Button::new("Open file location")).clicked() {
+        if let Err(e) = taskmgr_sys::open_file_location(&p.info.path) {
+            status.set(format!("Could not open Explorer: {e}"));
+        }
+        ui.close();
+    }
+    if ui.add_enabled(!p.info.command_line.is_empty(), egui::Button::new("Copy command line")).clicked() {
+        ui.ctx().copy_text(p.info.command_line.clone());
+        ui.close();
+    }
 }
 
 /// Task Manager style heat: transparent at 0, amber at the top of the scale.
@@ -22,6 +66,10 @@ fn heat(ui: &Ui, fraction: f32) -> Color32 {
 }
 
 impl State {
+    pub fn new(status: Status) -> Self {
+        Self { filter: String::new(), sort: SortKey::default(), ascending: false, selected: None, status }
+    }
+
     pub fn show(&mut self, ui: &mut Ui, snap: &Snapshot) {
         let rows = &snap.processes;
         ui.horizontal(|ui| {
@@ -42,7 +90,6 @@ impl State {
         let row_h = 22.0;
 
         let mut clicked_sort = None;
-        let mut end_now = None;
         TableBuilder::new(ui)
             .striped(true)
             .resizable(true)
@@ -100,13 +147,7 @@ impl State {
                     if resp.clicked() {
                         self.selected = Some((p.pid, p.name.clone()));
                     }
-                    resp.context_menu(|ui| {
-                        ui.label(RichText::new(format!("{} ({})", p.name, p.pid)).weak());
-                        if ui.button("End task").clicked() {
-                            end_now = Some((p.pid, p.name.clone()));
-                            ui.close();
-                        }
-                    });
+                    resp.context_menu(|ui| process_menu(ui, &self.status, rows, p));
                 });
             });
 
@@ -119,22 +160,11 @@ impl State {
                 self.ascending = matches!(key, SortKey::Name | SortKey::Pid);
             }
         }
-        if let Some(target) = end_now {
-            self.selected = Some(target);
-            self.end_selected(rows);
-        }
     }
 
     fn end_selected(&mut self, rows: &[ProcessRow]) {
-        let Some((pid, name)) = self.selected.take() else { return };
-        // Only end it if that PID still belongs to the same program.
-        if !rows.iter().any(|r| r.pid == pid && r.name == name) {
-            self.message = Some(format!("{name} ({pid}) has already exited"));
-            return;
+        if let Some((pid, name)) = self.selected.take() {
+            end_task(&self.status, rows, pid, &name);
         }
-        self.message = Some(match taskmgr_sys::end_process(pid) {
-            Ok(()) => format!("Ended {name} ({pid})"),
-            Err(e) => format!("Could not end {name} ({pid}): {e}"),
-        });
     }
 }
