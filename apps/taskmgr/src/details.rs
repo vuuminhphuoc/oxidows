@@ -22,19 +22,31 @@ pub struct State {
     sort: Sort,
     descending: bool,
     selected: Option<(u32, String)>,
+    scroll_to: Option<u32>,
     status: Status,
 }
 
 impl State {
     pub fn new(status: Status) -> Self {
-        Self { filter: String::new(), sort: Sort::Name, descending: false, selected: None, status }
+        Self { filter: String::new(), sort: Sort::Name, descending: false, selected: None, scroll_to: None, status }
+    }
+
+    /// Selects `pid` and clears the search so the row is visible.
+    pub fn select(&mut self, pid: u32, snap: &Snapshot) {
+        if let Some(p) = snap.processes.iter().find(|p| p.pid == pid) {
+            self.selected = Some((pid, p.name.clone()));
+            self.filter.clear();
+            self.scroll_to = Some(pid);
+        }
     }
 
     pub fn show(&mut self, ui: &mut Ui, snap: &Snapshot) {
         let rows = &snap.processes;
         ui.horizontal(|ui| {
             ui.label("Search:");
-            ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("name, PID, user or path").desired_width(260.0));
+            ui.add(
+                egui::TextEdit::singleline(&mut self.filter).hint_text("name, PID, user or path").desired_width(260.0),
+            );
             if ui.add_enabled(self.selected.is_some(), egui::Button::new("End task")).clicked()
                 && let Some((pid, name)) = self.selected.take()
             {
@@ -69,7 +81,13 @@ impl State {
 
         let row_h = 20.0;
         let mut clicked = None;
-        TableBuilder::new(ui)
+        let mut table = TableBuilder::new(ui);
+        if let Some(pid) = self.scroll_to.take()
+            && let Some(i) = view.iter().position(|p| p.pid == pid)
+        {
+            table = table.scroll_to_row(i, Some(egui::Align::Center));
+        }
+        table
             .striped(true)
             .resizable(true)
             .sense(egui::Sense::click())
@@ -115,7 +133,9 @@ impl State {
                 body.rows(row_h, view.len(), |mut row| {
                     let p = view[row.index()];
                     row.set_selected(self.selected.as_ref().is_some_and(|(pid, _)| *pid == p.pid));
-                    let dash = |s: &str| if s.is_empty() { "-".to_string() } else { s.to_string() };
+                    let dash = |s: &str| {
+                        if s.is_empty() { "-".to_string() } else { s.to_string() }
+                    };
                     row.col(|ui| {
                         ui.label(&p.name);
                     });
@@ -150,7 +170,7 @@ impl State {
                     if resp.clicked() {
                         self.selected = Some((p.pid, p.name.clone()));
                     }
-                    resp.context_menu(|ui| process_menu(ui, &self.status, rows, p));
+                    resp.context_menu(|ui| process_menu(ui, &self.status, rows, p, true));
                 });
             });
         if let Some(k) = clicked {

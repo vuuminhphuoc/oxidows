@@ -65,6 +65,11 @@ impl State {
             {
                 self.run(s.name.clone(), ServiceAction::Restart);
             }
+            if ui.button("Open Services").clicked()
+                && let Err(e) = taskmgr_sys::open_services_console()
+            {
+                self.status.set(format!("Could not open Services: {e}"));
+            }
             ui.label(RichText::new(format!("{} services", services.len())).weak());
         });
         ui.add_space(4.0);
@@ -72,7 +77,9 @@ impl State {
         let f = self.filter.trim().to_lowercase();
         let view: Vec<_> = services
             .iter()
-            .filter(|s| f.is_empty() || s.name.to_lowercase().contains(&f) || s.display_name.to_lowercase().contains(&f))
+            .filter(|s| {
+                f.is_empty() || s.name.to_lowercase().contains(&f) || s.display_name.to_lowercase().contains(&f)
+            })
             .collect();
         let mut action = None;
         TableBuilder::new(ui)
@@ -121,6 +128,15 @@ impl State {
                                 action = Some((s.name.clone(), a));
                                 ui.close();
                             }
+                        }
+                        ui.separator();
+                        if ui.add_enabled(s.pid != 0, egui::Button::new("Go to details")).clicked() {
+                            self.status.goto_details(s.pid);
+                            ui.close();
+                        }
+                        if ui.button("Search online").clicked() {
+                            let _ = taskmgr_sys::search_online(&s.name);
+                            ui.close();
                         }
                     });
                 });

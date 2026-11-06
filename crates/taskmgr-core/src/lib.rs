@@ -51,6 +51,7 @@ pub struct RawProcess {
     pub threads: u32,
     pub handles: u32,
     pub session_id: u32,
+    pub has_window: bool,
     /// Base priority as the kernel reports it (4 idle, 8 normal, 13 high, 24 realtime...).
     pub base_priority: i32,
     /// Path, command line and user: read once per process, shared between samples.
@@ -64,6 +65,10 @@ pub struct StaticInfo {
     pub command_line: String,
     /// `DOMAIN\user` on Windows, the user name or uid on Linux.
     pub user: String,
+    /// Version-resource FileDescription ("Google Chrome"); the name shown for apps.
+    pub description: String,
+    /// Version-resource CompanyName.
+    pub publisher: String,
 }
 
 /// System-wide counters for one sample.
@@ -83,7 +88,107 @@ pub struct RawSystem {
     pub disk_read_bps: Option<f64>,
     pub disk_write_bps: Option<f64>,
     pub gpu_pct: Option<f32>,
+    /// GPU % per process (busiest engine), from the same PDH read.
+    pub gpu_per_pid: Vec<(u32, f32)>,
+    /// Utilization per engine type ("3D", "Copy", "VideoDecode"...), summed over processes.
+    pub gpu_engines: Vec<(String, f32)>,
+    pub gpu_dedicated_used: Option<u64>,
+    pub gpu_shared_used: Option<u64>,
     pub uptime: Duration,
+    /// Current clock in MHz, when the OS reports it.
+    pub cpu_mhz: Option<f32>,
+    pub mem_cached: Option<u64>,
+    pub mem_paged_pool: Option<u64>,
+    pub mem_nonpaged_pool: Option<u64>,
+    /// Installed RAM minus what the OS can use (firmware, integrated GPU).
+    pub mem_hw_reserved: Option<u64>,
+    /// One per physical disk; PDH already gives rates.
+    pub disks: Vec<DiskRates>,
+    /// One per physical network adapter, cumulative bytes.
+    pub adapters: Vec<RawAdapter>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DiskRates {
+    /// e.g. "0 C:".
+    pub name: String,
+    pub active_pct: f32,
+    pub read_bps: f64,
+    pub write_bps: f64,
+    /// Average response time in milliseconds.
+    pub response_ms: f32,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RawAdapter {
+    pub name: String,
+    pub description: String,
+    /// "Ethernet", "Wi-Fi", "Cellular" or "Network".
+    pub kind: String,
+    pub rx_bytes: u64,
+    pub tx_bytes: u64,
+    /// Link speed in bits per second, 0 when unknown.
+    pub link_bps: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AdapterRates {
+    pub name: String,
+    pub description: String,
+    pub kind: String,
+    pub rx_bps: f64,
+    pub tx_bps: f64,
+    pub link_bps: u64,
+}
+
+/// Facts about the processor that do not change while running.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CpuInfo {
+    pub name: String,
+    pub base_mhz: u32,
+    pub sockets: u32,
+    pub cores: u32,
+    pub logical: u32,
+    pub l1_bytes: u64,
+    pub l2_bytes: u64,
+    pub l3_bytes: u64,
+    pub virtualization: Option<bool>,
+}
+
+/// From `GPU Engine(*)` instances like `pid_1234_luid_0x0_0x1_phys_0_eng_0_engtype_3D`:
+/// the system figure is the busiest engine type summed over processes (what Task Manager shows),
+/// and each process gets its own busiest engine type.
+/// Result of [`gpu_from_engines`].
+pub struct GpuUsage {
+    /// Busiest engine type, summed over processes.
+    pub total: f32,
+    pub per_pid: Vec<(u32, f32)>,
+    pub engines: Vec<(String, f32)>,
+}
+
+pub fn gpu_from_engines(items: &[(String, f64)]) -> GpuUsage {
+    let mut by_type: HashMap<&str, f64> = HashMap::new();
+    let mut by_pid_type: HashMap<(u32, &str), f64> = HashMap::new();
+    for (name, v) in items {
+        let pid = name.strip_prefix("pid_").and_then(|r| r.split('_').next()).and_then(|p| p.parse::<u32>().ok());
+        let ty = name.rsplit_once("engtype_").map_or("", |(_, t)| t);
+        *by_type.entry(ty).or_default() += v;
+        if let Some(pid) = pid {
+            *by_pid_type.entry((pid, ty)).or_default() += v;
+        }
+    }
+    let total = by_type.values().copied().fold(0.0, f64::max).min(100.0) as f32;
+    let mut per_pid: HashMap<u32, f64> = HashMap::new();
+    for ((pid, _), v) in by_pid_type {
+        let e = per_pid.entry(pid).or_default();
+        *e = e.max(v);
+    }
+    let mut v: Vec<(u32, f32)> = per_pid.into_iter().map(|(p, g)| (p, g.min(100.0) as f32)).collect();
+    v.sort_by_key(|(p, _)| *p);
+    let mut engines: Vec<(String, f32)> =
+        by_type.into_iter().filter(|(t, _)| !t.is_empty()).map(|(t, u)| (t.to_string(), u.min(100.0) as f32)).collect();
+    engines.sort_by(|a, b| a.0.cmp(&b.0));
+    GpuUsage { total, per_pid: v, engines }
 }
 
 #[derive(Clone, Debug)]
@@ -98,6 +203,7 @@ pub struct RawSample {
 pub struct ProcessRow {
     pub pid: u32,
     pub parent_pid: u32,
+    pub start_time: u64,
     pub name: String,
     pub cpu_pct: f32,
     pub memory: u64,
@@ -108,6 +214,9 @@ pub struct ProcessRow {
     pub session_id: u32,
     pub base_priority: i32,
     pub info: Arc<StaticInfo>,
+    pub gpu_pct: f32,
+    /// Owns a visible top-level window (an "App" in the Processes tab).
+    pub has_window: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -124,7 +233,17 @@ pub struct SystemRates {
     pub disk_read_bps: f64,
     pub disk_write_bps: f64,
     pub gpu_pct: Option<f32>,
+    pub gpu_engines: Vec<(String, f32)>,
+    pub gpu_dedicated_used: Option<u64>,
+    pub gpu_shared_used: Option<u64>,
     pub uptime: Duration,
+    pub cpu_mhz: Option<f32>,
+    pub mem_cached: Option<u64>,
+    pub mem_paged_pool: Option<u64>,
+    pub mem_nonpaged_pool: Option<u64>,
+    pub mem_hw_reserved: Option<u64>,
+    pub disks: Vec<DiskRates>,
+    pub adapters: Vec<AdapterRates>,
     pub process_count: usize,
     pub thread_count: u64,
     pub handle_count: u64,
@@ -202,6 +321,7 @@ pub struct StartupItem {
     pub enabled: bool,
     /// False when changing it needs administrator rights (machine-wide entries).
     pub per_user: bool,
+    pub publisher: String,
 }
 
 /// Users tab row: processes grouped by session.
@@ -334,6 +454,10 @@ pub struct History {
     pub net_rx_bps: Ring,
     pub net_tx_bps: Ring,
     pub gpu_pct: Ring,
+    /// Per physical disk: active time %.
+    pub disks: Vec<Ring>,
+    /// Per adapter: (receive, send) bytes per second.
+    pub adapters: Vec<(Ring, Ring)>,
 }
 
 impl History {
@@ -345,14 +469,26 @@ impl History {
         for (ring, v) in self.cores.iter_mut().zip(&s.cores_pct) {
             ring.push(*v);
         }
-        let mem_pct =
-            if s.mem_total == 0 { 0.0 } else { (s.mem_used as f64 * 100.0 / s.mem_total as f64) as f32 };
+        let mem_pct = if s.mem_total == 0 { 0.0 } else { (s.mem_used as f64 * 100.0 / s.mem_total as f64) as f32 };
         self.mem_pct.push(mem_pct);
         self.disk_active_pct.push(s.disk_active_pct.unwrap_or(0.0));
         self.disk_bps.push((s.disk_read_bps + s.disk_write_bps) as f32);
         self.net_rx_bps.push(s.net_rx_bps as f32);
         self.net_tx_bps.push(s.net_tx_bps as f32);
         self.gpu_pct.push(s.gpu_pct.unwrap_or(0.0));
+        if self.disks.len() != s.disks.len() {
+            self.disks = vec![Ring::default(); s.disks.len()];
+        }
+        for (ring, d) in self.disks.iter_mut().zip(&s.disks) {
+            ring.push(d.active_pct);
+        }
+        if self.adapters.len() != s.adapters.len() {
+            self.adapters = vec![(Ring::default(), Ring::default()); s.adapters.len()];
+        }
+        for ((rx, tx), a) in self.adapters.iter_mut().zip(&s.adapters) {
+            rx.push(a.rx_bps as f32);
+            tx.push(a.tx_bps as f32);
+        }
     }
 }
 
@@ -386,6 +522,8 @@ impl Sampler {
         let secs = elapsed.map(|d| d.as_secs_f64()).filter(|s| *s > 0.0);
         let ncpu = raw.system.cores.len().max(1) as f64;
 
+        let gpu_map: HashMap<u32, f32> = raw.system.gpu_per_pid.iter().copied().collect();
+        let gpu_of = |pid: u32| gpu_map.get(&pid).copied().unwrap_or(0.0);
         let mut procs_now = HashMap::with_capacity(raw.processes.len());
         let mut thread_count = 0u64;
         let mut handle_count = 0u64;
@@ -409,6 +547,7 @@ impl Sampler {
                 ProcessRow {
                     pid: p.pid,
                     parent_pid: p.parent_pid,
+                    start_time: p.start_time,
                     name: p.name,
                     cpu_pct,
                     memory: p.memory,
@@ -418,6 +557,8 @@ impl Sampler {
                     session_id: p.session_id,
                     base_priority: p.base_priority,
                     info: p.info,
+                    gpu_pct: gpu_of(p.pid),
+                    has_window: p.has_window,
                 }
             })
             .collect();
@@ -438,6 +579,28 @@ impl Sampler {
             _ => (0.0, vec![0.0; sys.cores.len()], 0.0, 0.0),
         };
         let disk_from_procs: f64 = processes.iter().map(|p| p.disk_bps).sum();
+        let adapters = sys
+            .adapters
+            .iter()
+            .map(|a| {
+                let prev = self.prev.as_ref().and_then(|(_, p)| p.adapters.iter().find(|x| x.name == a.name));
+                let (rx, tx) = match (prev, secs) {
+                    (Some(p), Some(secs)) => (
+                        a.rx_bytes.saturating_sub(p.rx_bytes) as f64 / secs,
+                        a.tx_bytes.saturating_sub(p.tx_bytes) as f64 / secs,
+                    ),
+                    _ => (0.0, 0.0),
+                };
+                AdapterRates {
+                    name: a.name.clone(),
+                    description: a.description.clone(),
+                    kind: a.kind.clone(),
+                    rx_bps: rx,
+                    tx_bps: tx,
+                    link_bps: a.link_bps,
+                }
+            })
+            .collect();
         let system = SystemRates {
             cpu_pct,
             cores_pct,
@@ -451,7 +614,17 @@ impl Sampler {
             disk_read_bps: sys.disk_read_bps.unwrap_or(disk_from_procs),
             disk_write_bps: sys.disk_write_bps.unwrap_or(0.0),
             gpu_pct: sys.gpu_pct.map(|v| v.clamp(0.0, 100.0)),
+            gpu_engines: sys.gpu_engines.clone(),
+            gpu_dedicated_used: sys.gpu_dedicated_used,
+            gpu_shared_used: sys.gpu_shared_used,
             uptime: sys.uptime,
+            cpu_mhz: sys.cpu_mhz,
+            mem_cached: sys.mem_cached,
+            mem_paged_pool: sys.mem_paged_pool,
+            mem_nonpaged_pool: sys.mem_nonpaged_pool,
+            mem_hw_reserved: sys.mem_hw_reserved,
+            disks: sys.disks.clone(),
+            adapters,
             process_count: processes.len(),
             thread_count,
             handle_count,
@@ -474,7 +647,65 @@ pub enum SortKey {
     Cpu,
     Memory,
     Disk,
+    Gpu,
     Threads,
+}
+
+/// The three sections of the Processes tab.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ProcGroup {
+    Apps,
+    Background,
+    Windows,
+}
+
+impl ProcGroup {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Apps => "Apps",
+            Self::Background => "Background processes",
+            Self::Windows => "Windows processes",
+        }
+    }
+}
+
+/// Kernel and session-0 system processes that have no image path a normal user can read.
+const WINDOWS_NAMES: &[&str] = &[
+    "System",
+    "Registry",
+    "Memory Compression",
+    "Secure System",
+    "smss.exe",
+    "csrss.exe",
+    "wininit.exe",
+    "services.exe",
+    "lsass.exe",
+    "winlogon.exe",
+    "fontdrvhost.exe",
+    "dwm.exe",
+    "svchost.exe",
+    "LsaIso.exe",
+];
+
+/// Apps own a visible window; Windows processes run from the Windows folder (except Explorer,
+/// which Task Manager lists as an app when it has a window); everything else is background.
+pub fn group_of(p: &ProcessRow, windir: &str) -> ProcGroup {
+    if p.has_window {
+        return ProcGroup::Apps;
+    }
+    let path = p.info.path.to_lowercase();
+    let windir = windir.trim_end_matches('\\').to_lowercase();
+    let in_windows = !windir.is_empty() && path.starts_with(&windir) && path[windir.len()..].starts_with('\\');
+    if in_windows || (path.is_empty() && WINDOWS_NAMES.iter().any(|n| n.eq_ignore_ascii_case(&p.name))) {
+        ProcGroup::Windows
+    } else {
+        ProcGroup::Background
+    }
+}
+
+/// Name shown in the Processes tab: the version-resource description when there is one.
+pub fn display_name(p: &ProcessRow) -> &str {
+    if p.info.description.is_empty() { &p.name } else { &p.info.description }
 }
 
 /// Indices of `rows` that match `filter` (case-insensitive name or exact PID), sorted by `key`.
@@ -484,9 +715,7 @@ pub fn sorted_view(rows: &[ProcessRow], filter: &str, key: SortKey, descending: 
     let pid_filter: Option<u32> = filter.parse().ok();
     let mut idx: Vec<usize> = (0..rows.len())
         .filter(|&i| {
-            filter.is_empty()
-                || pid_filter == Some(rows[i].pid)
-                || rows[i].name.to_lowercase().contains(&filter)
+            filter.is_empty() || pid_filter == Some(rows[i].pid) || rows[i].name.to_lowercase().contains(&filter)
         })
         .collect();
     idx.sort_by(|&a, &b| {
@@ -497,6 +726,7 @@ pub fn sorted_view(rows: &[ProcessRow], filter: &str, key: SortKey, descending: 
             SortKey::Cpu => a.cpu_pct.total_cmp(&b.cpu_pct),
             SortKey::Memory => a.memory.cmp(&b.memory),
             SortKey::Disk => a.disk_bps.total_cmp(&b.disk_bps),
+            SortKey::Gpu => a.gpu_pct.total_cmp(&b.gpu_pct),
             SortKey::Threads => a.threads.cmp(&b.threads),
         };
         let ord = if descending { ord.reverse() } else { ord };
@@ -577,11 +807,7 @@ mod tests {
     fn process_cpu_and_disk_rates() {
         let t0 = Instant::now();
         let mut s = Sampler::new();
-        let first = s.update(RawSample {
-            at: t0,
-            processes: vec![proc(4, 0, 0)],
-            system: system(0, 0, 4, 0),
-        });
+        let first = s.update(RawSample { at: t0, processes: vec![proc(4, 0, 0)], system: system(0, 0, 4, 0) });
         assert_eq!(first.processes[0].cpu_pct, 0.0);
 
         // 1 s later, process used 2 s of CPU time (2e7 * 100 ns) on 4 cores = 50 %.
@@ -633,6 +859,7 @@ mod tests {
             .map(|(n, pid, cpu)| ProcessRow {
                 pid,
                 parent_pid: 0,
+                start_time: 0,
                 name: n.into(),
                 cpu_pct: cpu,
                 memory: 0,
@@ -642,6 +869,8 @@ mod tests {
                 session_id: 0,
                 base_priority: 8,
                 info: Arc::default(),
+                gpu_pct: 0.0,
+                has_window: false,
             })
             .collect();
         assert_eq!(sorted_view(&rows, "", SortKey::Cpu, true), vec![1, 0, 2]);
@@ -654,6 +883,7 @@ mod tests {
         let row = |pid, session, cpu, mem| ProcessRow {
             pid,
             parent_pid: 0,
+            start_time: 0,
             name: String::new(),
             cpu_pct: cpu,
             memory: mem,
@@ -663,6 +893,8 @@ mod tests {
             session_id: session,
             base_priority: 8,
             info: Arc::new(StaticInfo { user: "svc".into(), ..Default::default() }),
+            gpu_pct: 0.0,
+            has_window: false,
         };
         let rows = [row(1, 0, 1.0, 10), row(2, 1, 2.0, 20), row(3, 1, 3.0, 30)];
         let sessions = [Session { id: 1, user: "PC\\phuoc".into(), state: "Active".into() }];
@@ -671,6 +903,62 @@ mod tests {
         assert_eq!((v[0].session_id, v[0].processes, v[0].user.as_str()), (0, 1, "svc"));
         assert_eq!((v[1].processes, v[1].memory, v[1].cpu_pct), (2, 50, 5.0));
         assert_eq!(v[1].user, "PC\\phuoc");
+    }
+
+    #[test]
+    fn adapter_rates() {
+        let t0 = Instant::now();
+        let mut s = Sampler::new();
+        let adapter = |rx| RawAdapter { name: "Ethernet".into(), rx_bytes: rx, ..Default::default() };
+        let mut sys = system(0, 0, 1, 0);
+        sys.adapters = vec![adapter(1000)];
+        s.update(RawSample { at: t0, processes: vec![], system: sys.clone() });
+        sys.adapters = vec![adapter(3000)];
+        let snap = s.update(RawSample { at: t0 + Duration::from_secs(2), processes: vec![], system: sys });
+        assert_eq!(snap.system.adapters[0].rx_bps, 1000.0);
+        assert_eq!(snap.history.adapters[0].0.last(), Some(1000.0));
+    }
+
+    #[test]
+    fn groups() {
+        let mk = |name: &str, path: &str, win: bool| ProcessRow {
+            pid: 1,
+            parent_pid: 0,
+            start_time: 0,
+            name: name.into(),
+            cpu_pct: 0.0,
+            memory: 0,
+            disk_bps: 0.0,
+            threads: 0,
+            handles: 0,
+            session_id: 1,
+            base_priority: 8,
+            info: Arc::new(StaticInfo { path: path.into(), ..Default::default() }),
+            gpu_pct: 0.0,
+            has_window: win,
+        };
+        let w = r"C:\Windows";
+        assert_eq!(group_of(&mk("notepad.exe", r"C:\Windows\System32\notepad.exe", true), w), ProcGroup::Apps);
+        assert_eq!(group_of(&mk("svchost.exe", r"C:\WINDOWS\system32\svchost.exe", false), w), ProcGroup::Windows);
+        assert_eq!(group_of(&mk("csrss.exe", "", false), w), ProcGroup::Windows);
+        assert_eq!(group_of(&mk("x.exe", r"C:\WindowsApps\x.exe", false), w), ProcGroup::Background);
+        assert_eq!(group_of(&mk("OneDrive.exe", r"C:\Users\a\OneDrive.exe", false), w), ProcGroup::Background);
+    }
+
+    #[test]
+    fn gpu_engines() {
+        let items: Vec<(String, f64)> = [
+            ("pid_10_luid_0x0_0x1_phys_0_eng_0_engtype_3D", 30.0),
+            ("pid_10_luid_0x0_0x1_phys_0_eng_1_engtype_VideoDecode", 50.0),
+            ("pid_20_luid_0x0_0x1_phys_0_eng_0_engtype_3D", 40.0),
+        ]
+        .into_iter()
+        .map(|(n, v)| (n.to_string(), v))
+        .collect();
+        let GpuUsage { total, per_pid: per, engines } = gpu_from_engines(&items);
+        assert_eq!(total, 70.0); // 3D: 30 + 40
+        assert_eq!(per, vec![(10, 50.0), (20, 40.0)]);
+        assert_eq!(engines, vec![("3D".to_string(), 70.0), ("VideoDecode".to_string(), 50.0)]);
     }
 
     #[test]

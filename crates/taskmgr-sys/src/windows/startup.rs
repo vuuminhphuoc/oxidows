@@ -54,8 +54,7 @@ fn values(key: &Key) -> Vec<(String, String)> {
             break;
         }
         let name = String::from_utf16_lossy(&name[..nlen as usize]);
-        let words: Vec<u16> =
-            data[..dlen as usize].as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
+        let words: Vec<u16> = data[..dlen as usize].as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
         let text = String::from_utf16_lossy(&words).trim_end_matches('\0').to_string();
         out.push((name, text));
     }
@@ -64,7 +63,9 @@ fn values(key: &Key) -> Vec<(String, String)> {
 
 /// Missing value = enabled. First byte even (0x02, 0x06) = enabled, odd (0x03, 0x07) = disabled.
 fn approved(root: HKEY, sub: &str, name: &str) -> bool {
-    let Some(k) = open(root, &format!(r"{APPROVED}\{sub}"), KEY_READ) else { return true };
+    let Some(k) = open(root, &format!(r"{APPROVED}\{sub}"), KEY_READ) else {
+        return true;
+    };
     let n = wide(name);
     let mut data = [0u8; 16];
     let mut len = data.len() as u32;
@@ -90,12 +91,12 @@ fn startup_dirs() -> Vec<(PathBuf, HKEY)> {
 
 pub fn startup_items() -> Vec<StartupItem> {
     let mut out = Vec::new();
-    for (root, path, sub) in [
-        (HKEY_CURRENT_USER, RUN, "Run"),
-        (HKEY_LOCAL_MACHINE, RUN, "Run"),
-        (HKEY_LOCAL_MACHINE, RUN32, "Run32"),
-    ] {
-        let Some(k) = open(root, path, KEY_READ) else { continue };
+    for (root, path, sub) in
+        [(HKEY_CURRENT_USER, RUN, "Run"), (HKEY_LOCAL_MACHINE, RUN, "Run"), (HKEY_LOCAL_MACHINE, RUN32, "Run32")]
+    {
+        let Some(k) = open(root, path, KEY_READ) else {
+            continue;
+        };
         for (name, command) in values(&k) {
             if name.is_empty() {
                 continue;
@@ -106,11 +107,14 @@ pub fn startup_items() -> Vec<StartupItem> {
                 command,
                 location: format!(r"{}\{path}", root_name(root)),
                 per_user: root == HKEY_CURRENT_USER,
+                publisher: String::new(),
             });
         }
     }
     for (dir, root) in startup_dirs() {
-        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for e in rd.flatten() {
             let file = e.file_name().to_string_lossy().into_owned();
             if file.eq_ignore_ascii_case("desktop.ini") {
@@ -122,10 +126,37 @@ pub fn startup_items() -> Vec<StartupItem> {
                 command: e.path().display().to_string(),
                 location: dir.display().to_string(),
                 per_user: root == HKEY_CURRENT_USER,
+                publisher: String::new(),
             });
         }
     }
+    for it in &mut out {
+        it.publisher = super::exe_publisher(&exe_of(&it.command));
+    }
     out.sort_by_cached_key(|s| s.name.to_lowercase());
+    out
+}
+
+/// The program a Run command starts, with environment variables expanded (`%ProgramFiles%\x.exe /y`).
+pub fn exe_of(command: &str) -> String {
+    let (file, _) = crate::split_command(command);
+    let mut out = String::new();
+    let mut rest = file.as_str();
+    while let Some(i) = rest.find('%') {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 1..];
+        match after.find('%') {
+            Some(j) => {
+                out.push_str(&std::env::var(&after[..j]).unwrap_or_default());
+                rest = &after[j + 1..];
+            }
+            None => {
+                out.push_str(&rest[i..]);
+                rest = "";
+            }
+        }
+    }
+    out.push_str(rest);
     out
 }
 
@@ -174,6 +205,56 @@ pub fn set_startup_enabled(item: &StartupItem, enabled: bool) -> io::Result<()> 
     // SAFETY: 12-byte REG_BINARY value.
     let r = unsafe {
         RegSetValueExW(k.0, n.as_ptr(), 0, REG_BINARY, data.as_ptr().cast::<c_void>().cast(), data.len() as u32)
+    };
+    if r != ERROR_SUCCESS { Err(io::Error::from_raw_os_error(r as i32)) } else { Ok(()) }
+}
+
+// ---- Replace the built-in Task Manager (Ctrl+Shift+Esc) ----
+
+use windows_sys::Win32::System::Registry::{REG_SZ, RegDeleteValueW};
+
+const IFEO: &str = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\taskmgr.exe";
+
+/// The `Debugger` value Windows runs instead of taskmgr.exe, if any.
+pub fn taskmgr_replacement() -> Option<String> {
+    let k = open(HKEY_LOCAL_MACHINE, IFEO, KEY_READ)?;
+    values(&k).into_iter().find(|(n, _)| n.eq_ignore_ascii_case("Debugger")).map(|(_, v)| v)
+}
+
+/// Points taskmgr.exe (and so Ctrl+Shift+Esc) at `exe`, or restores the original. Needs admin.
+pub fn set_taskmgr_replacement(exe: Option<&str>) -> io::Result<()> {
+    let path = wide(IFEO);
+    let mut k = null_mut();
+    // SAFETY: NUL-terminated path, out-pointer to a local.
+    let r = unsafe {
+        RegCreateKeyExW(
+            HKEY_LOCAL_MACHINE,
+            path.as_ptr(),
+            0,
+            null(),
+            REG_OPTION_NON_VOLATILE,
+            KEY_SET_VALUE | KEY_WOW64_64KEY,
+            null(),
+            &mut k,
+            null_mut(),
+        )
+    };
+    if r != ERROR_SUCCESS {
+        return Err(io::Error::from_raw_os_error(r as i32));
+    }
+    let k = Key(k);
+    let name = wide("Debugger");
+    let r = match exe {
+        Some(exe) => {
+            let data = wide(&format!("\"{exe}\""));
+            // SAFETY: REG_SZ data including its NUL, length in bytes.
+            unsafe { RegSetValueExW(k.0, name.as_ptr(), 0, REG_SZ, data.as_ptr().cast(), (data.len() * 2) as u32) }
+        }
+        // SAFETY: valid key and name.
+        None => match unsafe { RegDeleteValueW(k.0, name.as_ptr()) } {
+            2 => ERROR_SUCCESS, // ERROR_FILE_NOT_FOUND: already restored
+            r => r,
+        },
     };
     if r != ERROR_SUCCESS { Err(io::Error::from_raw_os_error(r as i32)) } else { Ok(()) }
 }

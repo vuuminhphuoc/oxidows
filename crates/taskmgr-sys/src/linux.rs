@@ -64,6 +64,7 @@ impl Collector {
             threads: num(17) as u32,
             handles,
             session_id: num(3) as u32,
+            has_window: false,
             // Map nice (-20..19) onto the Windows scale around Normal = 8.
             base_priority: 8 - (f.get(16).and_then(|v| v.parse::<i32>().ok()).unwrap_or(0) / 3),
             info: Default::default(),
@@ -89,7 +90,9 @@ impl Collector {
         }
         for line in fs::read_to_string("/proc/meminfo")?.lines() {
             let mut it = line.split_whitespace();
-            let (Some(k), Some(v)) = (it.next(), it.next()) else { continue };
+            let (Some(k), Some(v)) = (it.next(), it.next()) else {
+                continue;
+            };
             let bytes = v.parse::<u64>().unwrap_or(0) * 1024;
             match k {
                 "MemTotal:" => sys.mem_total = bytes,
@@ -101,13 +104,22 @@ impl Collector {
         }
         if let Ok(dev) = fs::read_to_string("/proc/net/dev") {
             for line in dev.lines().skip(2) {
-                let Some((iface, rest)) = line.split_once(':') else { continue };
+                let Some((iface, rest)) = line.split_once(':') else {
+                    continue;
+                };
                 if iface.trim() == "lo" {
                     continue;
                 }
                 let v: Vec<u64> = rest.split_whitespace().map(|x| x.parse().unwrap_or(0)).collect();
                 sys.net_rx_bytes += v.first().copied().unwrap_or(0);
                 sys.net_tx_bytes += v.get(8).copied().unwrap_or(0);
+                sys.adapters.push(taskmgr_core::RawAdapter {
+                    name: iface.trim().to_string(),
+                    kind: if iface.trim().starts_with('w') { "Wi-Fi" } else { "Ethernet" }.into(),
+                    rx_bytes: v.first().copied().unwrap_or(0),
+                    tx_bytes: v.get(8).copied().unwrap_or(0),
+                    ..Default::default()
+                });
             }
         }
         if let Ok(up) = fs::read_to_string("/proc/uptime") {
@@ -136,16 +148,21 @@ pub fn static_info(pid: u32) -> StaticInfo {
         .unwrap_or_default();
     let uid = fs::read_to_string(format!("/proc/{pid}/status"))
         .ok()
-        .and_then(|s| s.lines().find_map(|l| l.strip_prefix("Uid:").map(|v| v.split_whitespace().next().unwrap_or("").to_string())))
+        .and_then(|s| {
+            s.lines()
+                .find_map(|l| l.strip_prefix("Uid:").map(|v| v.split_whitespace().next().unwrap_or("").to_string()))
+        })
         .unwrap_or_default();
     let user = fs::read_to_string("/etc/passwd")
         .ok()
-        .and_then(|p| p.lines().find_map(|l| {
-            let f: Vec<&str> = l.split(':').collect();
-            (f.get(2) == Some(&uid.as_str())).then(|| f[0].to_string())
-        }))
+        .and_then(|p| {
+            p.lines().find_map(|l| {
+                let f: Vec<&str> = l.split(':').collect();
+                (f.get(2) == Some(&uid.as_str())).then(|| f[0].to_string())
+            })
+        })
         .unwrap_or(uid);
-    StaticInfo { path, command_line, user }
+    StaticInfo { path, command_line, user, ..Default::default() }
 }
 
 pub fn set_priority(pid: u32, class: PriorityClass) -> io::Result<()> {
@@ -174,9 +191,13 @@ pub fn list_sessions() -> io::Result<Vec<Session>> {
 }
 
 pub fn startup_items() -> Vec<StartupItem> {
-    let Some(home) = std::env::var_os("HOME") else { return Vec::new() };
+    let Some(home) = std::env::var_os("HOME") else {
+        return Vec::new();
+    };
     let dir = std::path::Path::new(&home).join(".config/autostart");
-    let Ok(rd) = fs::read_dir(&dir) else { return Vec::new() };
+    let Ok(rd) = fs::read_dir(&dir) else {
+        return Vec::new();
+    };
     rd.flatten()
         .filter_map(|e| {
             let text = fs::read_to_string(e.path()).ok()?;
@@ -187,6 +208,7 @@ pub fn startup_items() -> Vec<StartupItem> {
                 location: dir.display().to_string(),
                 enabled: get("Hidden=") != "true",
                 per_user: true,
+                publisher: String::new(),
             })
         })
         .collect()
@@ -233,4 +255,38 @@ pub fn run_new_task(command: &str, _admin: bool) -> io::Result<()> {
 }
 pub fn open_url(url: &str) -> io::Result<()> {
     std::process::Command::new("xdg-open").arg(url).spawn().map(|_| ())
+}
+
+pub fn cpu_info() -> taskmgr_core::CpuInfo {
+    let text = fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
+    let field = |k: &str| {
+        text.lines().find_map(|l| l.split_once(':').filter(|(a, _)| a.trim() == k).map(|(_, v)| v.trim().to_string()))
+    };
+    let logical = text.lines().filter(|l| l.starts_with("processor")).count() as u32;
+    taskmgr_core::CpuInfo {
+        name: field("model name").unwrap_or_default(),
+        base_mhz: field("cpu MHz").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0) as u32,
+        sockets: 1,
+        cores: field("cpu cores").and_then(|v| v.parse().ok()).unwrap_or(logical),
+        logical,
+        virtualization: Some(text.contains(" vmx") || text.contains(" svm")),
+        ..Default::default()
+    }
+}
+
+pub fn disconnect_session(_id: u32) -> io::Result<()> {
+    unsupported()
+}
+pub fn logoff_session(_id: u32) -> io::Result<()> {
+    unsupported()
+}
+pub fn last_bios_ms() -> Option<u32> {
+    None
+}
+
+pub fn taskmgr_replacement() -> Option<String> {
+    None
+}
+pub fn set_taskmgr_replacement(_exe: Option<&str>) -> io::Result<()> {
+    unsupported()
 }

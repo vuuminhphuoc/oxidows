@@ -13,7 +13,7 @@ use std::io;
 use std::sync::Arc;
 
 pub use taskmgr_core::RawSample;
-use taskmgr_core::{Extras, Service, Session, StartupItem, StaticInfo};
+use taskmgr_core::{CpuInfo, Extras, Service, Session, StartupItem, StaticInfo};
 
 #[cfg(windows)]
 mod windows;
@@ -116,6 +116,57 @@ pub fn startup_items() -> Vec<StartupItem> {
 
 pub fn set_startup_enabled(item: &StartupItem, enabled: bool) -> io::Result<()> {
     imp::set_startup_enabled(item, enabled)
+}
+
+/// Processor name, clocks, topology and caches; read once.
+pub fn cpu_info() -> CpuInfo {
+    imp::cpu_info()
+}
+
+pub fn disconnect_session(id: u32) -> io::Result<()> {
+    imp::disconnect_session(id)
+}
+
+/// Signs the session's user out; their unsaved work is lost.
+pub fn logoff_session(id: u32) -> io::Result<()> {
+    imp::logoff_session(id)
+}
+
+pub fn last_bios_ms() -> Option<u32> {
+    imp::last_bios_ms()
+}
+
+/// Opens the classic Services console.
+pub fn open_services_console() -> io::Result<()> {
+    imp::run_new_task("services.msc", false)
+}
+
+/// Program path of a startup command (quotes stripped, `%VARS%` expanded).
+pub fn startup_exe(command: &str) -> String {
+    #[cfg(windows)]
+    {
+        windows::startup_exe(command)
+    }
+    #[cfg(not(windows))]
+    {
+        split_command(command).0
+    }
+}
+
+/// True when Ctrl+Shift+Esc / taskmgr.exe currently opens this exe.
+pub fn replaces_taskmgr() -> bool {
+    let me = std::env::current_exe().map(|p| p.display().to_string().to_lowercase()).unwrap_or_default();
+    imp::taskmgr_replacement().is_some_and(|v| !me.is_empty() && v.to_lowercase().contains(&me))
+}
+
+/// Makes Ctrl+Shift+Esc open this exe (`true`) or the built-in Task Manager (`false`). Needs admin.
+pub fn set_replaces_taskmgr(on: bool) -> io::Result<()> {
+    if on {
+        let me = std::env::current_exe()?;
+        imp::set_taskmgr_replacement(Some(&me.display().to_string()))
+    } else {
+        imp::set_taskmgr_replacement(None)
+    }
 }
 
 pub fn is_elevated() -> bool {

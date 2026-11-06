@@ -9,12 +9,13 @@ use crate::Status;
 pub struct State {
     items: Option<Vec<StartupItem>>,
     selected: Option<usize>,
+    bios_ms: Option<u32>,
     status: Status,
 }
 
 impl State {
     pub fn new(status: Status) -> Self {
-        Self { items: None, selected: None, status }
+        Self { items: None, selected: None, bios_ms: taskmgr_sys::last_bios_ms(), status }
     }
 
     pub fn show(&mut self, ui: &mut Ui) {
@@ -34,6 +35,11 @@ impl State {
                 reload = true;
             }
             ui.label(RichText::new(format!("{} startup apps", items.len())).weak());
+            if let Some(ms) = self.bios_ms {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(format!("Last BIOS time: {:.1} seconds", ms as f32 / 1000.0));
+                });
+            }
         });
         ui.add_space(4.0);
         if items.is_empty() {
@@ -45,11 +51,12 @@ impl State {
             .sense(egui::Sense::click())
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
             .column(Column::initial(200.0).clip(true))
+            .column(Column::initial(160.0).clip(true))
             .column(Column::exact(80.0))
-            .column(Column::initial(330.0).clip(true))
+            .column(Column::initial(300.0).clip(true))
             .column(Column::remainder().clip(true))
             .header(20.0, |mut h| {
-                for t in ["Name", "Status", "Command", "Registered in"] {
+                for t in ["Name", "Publisher", "Status", "Command", "Registered in"] {
                     h.col(|ui| {
                         ui.label(RichText::new(t).strong());
                     });
@@ -62,6 +69,9 @@ impl State {
                     row.set_selected(self.selected == Some(i));
                     row.col(|ui| {
                         ui.label(&it.name);
+                    });
+                    row.col(|ui| {
+                        ui.label(&it.publisher);
                     });
                     row.col(|ui| {
                         ui.label(if it.enabled { "Enabled" } else { "Disabled" });
@@ -80,6 +90,15 @@ impl State {
                         let label = if it.enabled { "Disable" } else { "Enable" };
                         if ui.button(label).clicked() {
                             toggle = Some((i, !it.enabled));
+                            ui.close();
+                        }
+                        ui.separator();
+                        if ui.button("Open file location").clicked() {
+                            let _ = taskmgr_sys::open_file_location(&taskmgr_sys::startup_exe(&it.command));
+                            ui.close();
+                        }
+                        if ui.button("Search online").clicked() {
+                            let _ = taskmgr_sys::search_online(&it.name);
                             ui.close();
                         }
                     });

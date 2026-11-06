@@ -4,6 +4,7 @@
     { "name": "startup", "env": { "OXI_TASKMGR_TAB": "startup" } },
     { "name": "users", "env": { "OXI_TASKMGR_TAB": "users" } },
     { "name": "details", "env": { "OXI_TASKMGR_TAB": "details" } },
-    { "name": "services", "env": { "OXI_TASKMGR_TAB": "services" } }
+    { "name": "services", "env": { "OXI_TASKMGR_TAB": "services" } },
+    { "name": "settings", "env": { "OXI_TASKMGR_TAB": "settings" } }
   ]
 }
