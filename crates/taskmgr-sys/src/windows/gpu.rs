@@ -82,6 +82,17 @@ unsafe fn directx(adapter: *mut c_void) -> String {
     String::new()
 }
 
+/// Driver date of the display device with this PCI vendor and device id, from its driver key.
+fn driver_date(vendor: u32, device: u32) -> String {
+    const CLASS: &str = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}";
+    let id = format!("ven_{vendor:04x}&dev_{device:04x}");
+    (0..32)
+        .map(|i| format!(r"{CLASS}\{i:04}"))
+        .find(|k| super::hw::reg_string(k, "MatchingDeviceId").is_some_and(|m| m.to_lowercase().contains(&id)))
+        .and_then(|k| super::hw::reg_string(&k, "DriverDate"))
+        .unwrap_or_default()
+}
+
 /// Hardware adapters, in DXGI order (the first is the one Windows calls GPU 0).
 pub fn gpu_adapters() -> Vec<GpuAdapter> {
     let mut out = Vec::new();
@@ -109,6 +120,7 @@ pub fn gpu_adapters() -> Vec<GpuAdapter> {
                     shared_total: d.shared_system_memory as u64,
                     driver_version: driver_version(adapter),
                     directx: directx(adapter),
+                    driver_date: driver_date(d.vendor_id, d.device_id),
                 });
             }
             let release: Release = slot(adapter, 2);

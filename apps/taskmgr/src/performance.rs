@@ -464,7 +464,11 @@ impl State {
                     let mut items =
                         vec![("Utilization", util), ("Dedicated GPU memory", ded), ("Shared GPU memory", shared)];
                     if let Some(g) = one {
-                        for (k, v) in [("Driver version", &g.driver_version), ("DirectX version", &g.directx)] {
+                        for (k, v) in [
+                            ("Driver version", &g.driver_version),
+                            ("Driver date", &g.driver_date),
+                            ("DirectX version", &g.directx),
+                        ] {
                             if !v.is_empty() {
                                 items.push((k, v.clone()));
                             }

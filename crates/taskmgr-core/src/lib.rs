@@ -294,6 +294,8 @@ pub struct GpuAdapter {
     pub driver_version: String,
     /// "12 (FL 12.1)"; empty when the adapter has no Direct3D 12 support.
     pub directx: String,
+    /// As the driver package states it, "9/14/2023".
+    pub driver_date: String,
 }
 
 /// One GPU's figures for a sample.
@@ -309,6 +311,7 @@ pub struct GpuStats {
     pub shared_total: u64,
     pub driver_version: String,
     pub directx: String,
+    pub driver_date: String,
 }
 
 fn luid_of(instance: &str) -> Option<&str> {
@@ -355,6 +358,7 @@ pub fn split_gpus(
                 shared_total: a.map_or(0, |a| a.shared_total),
                 driver_version: a.map(|a| a.driver_version.clone()).unwrap_or_default(),
                 directx: a.map(|a| a.directx.clone()).unwrap_or_default(),
+                driver_date: a.map(|a| a.driver_date.clone()).unwrap_or_default(),
             }
         })
         .collect()

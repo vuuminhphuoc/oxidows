@@ -232,7 +232,10 @@ fn spawn_sampler(ctx: egui::Context, tx: Sender<Result<Arc<Snapshot>, String>>) 
                                 .gpus
                                 .iter()
                                 .map(|g| {
-                                    format!("{} {:.0}% driver {} dx {}", g.name, g.util, g.driver_version, g.directx)
+                                    format!(
+                                        "{} {:.0}% driver {} {} dx {}",
+                                        g.name, g.util, g.driver_version, g.driver_date, g.directx
+                                    )
                                 })
                                 .collect();
                             eprintln!("gpus: [{}]", gpus.join(", "));
