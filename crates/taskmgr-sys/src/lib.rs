@@ -101,6 +101,22 @@ pub fn adapter_info(name: &str) -> taskmgr_core::AdapterInfo {
     imp::adapter_info(name)
 }
 
+/// Notification-area icon showing CPU usage (Windows only; no-ops elsewhere).
+pub mod tray {
+    /// Adds the icon for the window with this raw handle (HWND).
+    pub fn install(hwnd: isize) -> bool {
+        super::imp::tray::install(hwnd)
+    }
+    /// Redraws the icon for this CPU percentage, with a tooltip. Callable from any thread.
+    pub fn update(cpu_pct: f32, tip: &str) {
+        super::imp::tray::update(cpu_pct, tip);
+    }
+    /// Hides the main window; the icon brings it back.
+    pub fn hide_window() {
+        super::imp::tray::hide_window();
+    }
+}
+
 /// Stops background work (the ETW network trace on Windows). Call on exit.
 pub fn shutdown() {
     imp::shutdown();

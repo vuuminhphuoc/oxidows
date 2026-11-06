@@ -9,6 +9,7 @@ mod procinfo;
 mod services;
 mod sessions;
 mod startup;
+pub mod tray;
 
 pub use adapters::adapter_info;
 pub use hw::cpu_info;
@@ -322,6 +323,7 @@ fn all_threads_suspended(bytes: &[u8], offset: usize, p: &SystemProcessInformati
 /// Stops background tracing started by the collector.
 pub fn shutdown() {
     net::stop();
+    tray::remove();
 }
 
 impl Collector {

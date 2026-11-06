@@ -132,6 +132,7 @@ struct App {
     settings: settings::Settings,
     /// Whether Ctrl+Shift+Esc opens this exe; None where that cannot be changed.
     replaces_taskmgr: Option<bool>,
+    tray: bool,
     started: Instant,
     first_data_logged: bool,
     /// OXI_TASKMGR_TIMING: frames drawn since `frames_since`.
@@ -206,6 +207,14 @@ fn spawn_sampler(ctx: egui::Context, tx: Sender<Result<Arc<Snapshot>, String>>) 
                         (n, spent, since) = (0, Duration::ZERO, Instant::now());
                     }
                 }
+                if let Ok(s) = &msg {
+                    let sys = &s.system;
+                    let mem = if sys.mem_total == 0 { 0.0 } else { sys.mem_used as f64 * 100.0 / sys.mem_total as f64 };
+                    taskmgr_sys::tray::update(
+                        sys.cpu_pct,
+                        &format!("Task Manager (oxidows)\nCPU: {:.0}%  Memory: {mem:.0}%", sys.cpu_pct),
+                    );
+                }
                 if tx.send(msg).is_err() {
                     return; // window closed
                 }
@@ -266,6 +275,7 @@ impl App {
             users: users::State::new(status.clone()),
             settings,
             replaces_taskmgr: cfg!(windows).then(taskmgr_sys::replaces_taskmgr),
+            tray: false,
             status,
             started: Instant::now(),
             first_data_logged: false,
@@ -405,6 +415,17 @@ impl eframe::App for App {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.drain();
+        if !self.tray
+            && let Ok(h) = raw_window_handle::HasWindowHandle::window_handle(frame)
+        {
+            self.tray = true; // one attempt
+            if let raw_window_handle::RawWindowHandle::Win32(w) = h.as_raw() {
+                taskmgr_sys::tray::install(w.hwnd.get());
+            }
+        }
+        if self.settings.hide_when_minimized && ui.ctx().input(|i| i.viewport().minimized == Some(true)) {
+            taskmgr_sys::tray::hide_window();
+        }
         if self.first_data_logged && std::env::var_os("OXI_TASKMGR_TIMING").is_some() {
             self.frames += 1;
             self.frame_cpu += frame.info().cpu_usage.unwrap_or(0.0);

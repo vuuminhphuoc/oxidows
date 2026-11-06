@@ -303,3 +303,10 @@ pub fn shutdown() {}
 pub fn adapter_info(_name: &str) -> taskmgr_core::AdapterInfo {
     taskmgr_core::AdapterInfo::default()
 }
+pub mod tray {
+    pub fn install(_hwnd: isize) -> bool {
+        false
+    }
+    pub fn update(_cpu_pct: f32, _tip: &str) {}
+    pub fn hide_window() {}
+}

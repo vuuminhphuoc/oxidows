@@ -1703,6 +1703,7 @@ dependencies = [
  "eframe",
  "egui",
  "egui_extras",
+ "raw-window-handle",
  "taskmgr-core",
  "taskmgr-sys",
 ]

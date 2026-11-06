@@ -21,6 +21,8 @@ pub struct Settings {
     pub default_tab: String,
     pub interval_ms: u64,
     pub always_on_top: bool,
+    /// Hide the window when minimized; the notification-area icon brings it back.
+    pub hide_when_minimized: bool,
     pub theme: Theme,
     pub group_by_type: bool,
     /// Visible Details columns, as keys (see `details::Col::key`).
@@ -33,6 +35,7 @@ impl Default for Settings {
             default_tab: "Processes".into(),
             interval_ms: 1000,
             always_on_top: false,
+            hide_when_minimized: false,
             theme: Theme::System,
             group_by_type: true,
             details_columns: crate::details::columns_text(&crate::details::Col::DEFAULT),
@@ -58,6 +61,7 @@ impl Settings {
                 "default_tab" => s.default_tab = v.to_string(),
                 "interval_ms" => s.interval_ms = v.parse().unwrap_or(s.interval_ms),
                 "always_on_top" => s.always_on_top = v == "true",
+                "hide_when_minimized" => s.hide_when_minimized = v == "true",
                 "group_by_type" => s.group_by_type = v != "false",
                 "details_columns" => s.details_columns = v.to_string(),
                 "theme" => {
@@ -80,8 +84,13 @@ impl Settings {
             Theme::Dark => "dark",
         };
         format!(
-            "default_tab={}\ninterval_ms={}\nalways_on_top={}\ntheme={theme}\ngroup_by_type={}\ndetails_columns={}\n",
-            self.default_tab, self.interval_ms, self.always_on_top, self.group_by_type, self.details_columns
+            "default_tab={}\ninterval_ms={}\nalways_on_top={}\nhide_when_minimized={}\ntheme={theme}\ngroup_by_type={}\ndetails_columns={}\n",
+            self.default_tab,
+            self.interval_ms,
+            self.always_on_top,
+            self.hide_when_minimized,
+            self.group_by_type,
+            self.details_columns
         )
     }
 
@@ -150,7 +159,11 @@ pub fn show(ui: &mut Ui, s: &mut Settings, tabs: &[&str], status: &Status, repla
         ui.end_row();
 
         ui.label("Window management");
-        ui.checkbox(&mut s.always_on_top, "Always on top");
+        ui.vertical(|ui| {
+            ui.checkbox(&mut s.always_on_top, "Always on top");
+            ui.add_enabled(cfg!(windows), egui::Checkbox::new(&mut s.hide_when_minimized, "Hide when minimized"))
+                .on_hover_text("The CPU icon in the notification area brings the window back");
+        });
         ui.end_row();
 
         ui.label("Processes page");
@@ -199,6 +212,7 @@ mod tests {
             default_tab: "Performance".into(),
             interval_ms: 500,
             always_on_top: true,
+            hide_when_minimized: true,
             theme: Theme::Dark,
             group_by_type: false,
             details_columns: "name,pid,cmdline".into(),
