@@ -12,7 +12,14 @@ unsafe extern "system" {
     fn CreateDXGIFactory1(riid: *const GUID, factory: *mut *mut c_void) -> i32;
 }
 
+#[link(name = "d3d12", kind = "raw-dylib")]
+unsafe extern "system" {
+    fn D3D12CreateDevice(adapter: *mut c_void, min_level: i32, riid: *const GUID, device: *mut *mut c_void) -> i32;
+}
+
 const IID_IDXGI_FACTORY1: GUID = GUID::from_u128(0x770aae78_f26f_4dba_a829_253c83d1b387);
+const IID_IDXGI_DEVICE: GUID = GUID::from_u128(0x54ec77fa_1377_44e6_8c32_88fd5f44c84c);
+const IID_ID3D12_DEVICE: GUID = GUID::from_u128(0x189819f1_1db6_4b57_be54_1821339b85f7);
 
 #[repr(C)]
 struct AdapterDesc1 {
@@ -44,6 +51,36 @@ unsafe fn slot<F: Copy>(obj: *mut c_void, slot: usize) -> F {
 type Release = unsafe extern "system" fn(*mut c_void) -> u32;
 type EnumAdapters1 = unsafe extern "system" fn(*mut c_void, u32, *mut *mut c_void) -> i32;
 type GetDesc1 = unsafe extern "system" fn(*mut c_void, *mut AdapterDesc1) -> i32;
+type CheckInterfaceSupport = unsafe extern "system" fn(*mut c_void, *const GUID, *mut i64) -> i32;
+
+/// The user-mode driver version DXGI reports, as Device Manager shows it.
+///
+/// # Safety
+/// `adapter` is a live IDXGIAdapter.
+unsafe fn driver_version(adapter: *mut c_void) -> String {
+    let mut v = 0i64;
+    // SAFETY: slot 9 of IDXGIAdapter is CheckInterfaceSupport.
+    let check: CheckInterfaceSupport = unsafe { slot(adapter, 9) };
+    if unsafe { check(adapter, &IID_IDXGI_DEVICE, &mut v) } < 0 {
+        return String::new();
+    }
+    let v = v as u64;
+    format!("{}.{}.{}.{}", v >> 48, (v >> 32) & 0xffff, (v >> 16) & 0xffff, v & 0xffff)
+}
+
+/// Highest Direct3D 12 feature level, asked without creating a device (a null out pointer).
+///
+/// # Safety
+/// `adapter` is a live IDXGIAdapter.
+unsafe fn directx(adapter: *mut c_void) -> String {
+    for (level, name) in [(0xc200, "12.2"), (0xc100, "12.1"), (0xc000, "12.0"), (0xb100, "11.1"), (0xb000, "11.0")] {
+        // SAFETY: documented probe form: S_FALSE (1) means the level is supported.
+        if unsafe { D3D12CreateDevice(adapter, level, &IID_ID3D12_DEVICE, null_mut()) } >= 0 {
+            return format!("12 (FL {name})");
+        }
+    }
+    String::new()
+}
 
 /// Hardware adapters, in DXGI order (the first is the one Windows calls GPU 0).
 pub fn gpu_adapters() -> Vec<GpuAdapter> {
@@ -70,6 +107,8 @@ pub fn gpu_adapters() -> Vec<GpuAdapter> {
                     name: String::from_utf16_lossy(&d.description[..n]),
                     dedicated_total: d.dedicated_video_memory as u64,
                     shared_total: d.shared_system_memory as u64,
+                    driver_version: driver_version(adapter),
+                    directx: directx(adapter),
                 });
             }
             let release: Release = slot(adapter, 2);

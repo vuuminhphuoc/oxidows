@@ -422,6 +422,13 @@ impl State {
                     };
                     let mut items =
                         vec![("Utilization", util), ("Dedicated GPU memory", ded), ("Shared GPU memory", shared)];
+                    if let Some(g) = one {
+                        for (k, v) in [("Driver version", &g.driver_version), ("DirectX version", &g.directx)] {
+                            if !v.is_empty() {
+                                items.push((k, v.clone()));
+                            }
+                        }
+                    }
                     let engines: Vec<(String, String)> =
                         engines.iter().map(|(n, v)| (n.clone(), format!("{v:.0}%"))).collect();
                     items.extend(engines.iter().map(|(n, v)| (n.as_str(), v.clone())));

@@ -288,6 +288,10 @@ pub struct GpuAdapter {
     pub name: String,
     pub dedicated_total: u64,
     pub shared_total: u64,
+    /// "31.0.101.4502"; empty when unknown.
+    pub driver_version: String,
+    /// "12 (FL 12.1)"; empty when the adapter has no Direct3D 12 support.
+    pub directx: String,
 }
 
 /// One GPU's figures for a sample.
@@ -301,6 +305,8 @@ pub struct GpuStats {
     pub shared_used: Option<u64>,
     pub dedicated_total: u64,
     pub shared_total: u64,
+    pub driver_version: String,
+    pub directx: String,
 }
 
 fn luid_of(instance: &str) -> Option<&str> {
@@ -345,6 +351,8 @@ pub fn split_gpus(
                 shared_used: sum(shared, l),
                 dedicated_total: a.map_or(0, |a| a.dedicated_total),
                 shared_total: a.map_or(0, |a| a.shared_total),
+                driver_version: a.map(|a| a.driver_version.clone()).unwrap_or_default(),
+                directx: a.map(|a| a.directx.clone()).unwrap_or_default(),
             }
         })
         .collect()
@@ -510,6 +518,19 @@ pub struct Service {
     pub state: ServiceState,
     /// 0 when not running.
     pub pid: u32,
+    /// The svchost group (`-k` argument of the image path), empty for services with their own exe.
+    pub group: String,
+}
+
+/// The svchost group in a service image path: `svchost.exe -k LocalServiceNetworkRestricted -p` → the name.
+pub fn service_group(image_path: &str) -> String {
+    let mut it = image_path.split_whitespace();
+    while let Some(t) = it.next() {
+        if t.eq_ignore_ascii_case("-k") {
+            return it.next().unwrap_or_default().trim_matches('"').to_string();
+        }
+    }
+    String::new()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1027,6 +1048,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn service_groups() {
+        assert_eq!(
+            service_group(r"C:\Windows\system32\svchost.exe -k LocalServiceNetworkRestricted -p"),
+            "LocalServiceNetworkRestricted"
+        );
+        assert_eq!(service_group(r"C:\Windows\System32\spoolsv.exe"), "");
+    }
+
+    #[test]
     fn ole_dates() {
         assert_eq!(format_ole_date(25569.0), "1970-01-01");
         assert_eq!(format_ole_date(46_000.75), "2025-12-09");
@@ -1047,6 +1077,7 @@ mod tests {
             name: "Intel".into(),
             dedicated_total: 128,
             shared_total: 0,
+            ..Default::default()
         }];
         let dedicated = vec![(l1.to_string(), 1000.0)];
         let g = split_gpus(&adapters, &engines, &dedicated, &[]);

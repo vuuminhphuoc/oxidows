@@ -3,7 +3,9 @@
 use std::ptr::null_mut;
 
 use taskmgr_core::CpuInfo;
-use windows_sys::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegGetValueW};
+use windows_sys::Win32::System::Registry::{
+    HKEY_LOCAL_MACHINE, RRF_NOEXPAND, RRF_RT_REG_DWORD, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ, RegGetValueW,
+};
 use windows_sys::Win32::System::SystemInformation::{GetLogicalProcessorInformationEx, RelationAll};
 use windows_sys::Win32::System::Threading::{GetActiveProcessorCount, IsProcessorFeaturePresent};
 
@@ -25,7 +27,7 @@ pub fn reg_string(key: &str, value: &str) -> Option<String> {
             HKEY_LOCAL_MACHINE,
             k.as_ptr(),
             v.as_ptr(),
-            RRF_RT_REG_SZ,
+            RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_NOEXPAND,
             null_mut(),
             buf.as_mut_ptr().cast(),
             &mut len,
