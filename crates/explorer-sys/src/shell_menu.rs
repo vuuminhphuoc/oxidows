@@ -9,10 +9,10 @@ use std::path::{Path, PathBuf};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
-    CMF_CANRENAME, CMF_EXPLORE, CMF_EXTENDEDVERBS, CMF_NORMAL, CMIC_MASK_PTINVOKE,
-    CMIC_MASK_SHIFT_DOWN, CMINVOKECOMMANDINFO, CMINVOKECOMMANDINFOEX, DefSubclassProc, GCS_VERBW, IContextMenu,
-    IContextMenu2, IContextMenu3, IShellFolder, ILFree, RemoveWindowSubclass, SHBindToParent, SHGetDesktopFolder,
-    SHParseDisplayName, SetWindowSubclass,
+    CMF_CANRENAME, CMF_EXPLORE, CMF_EXTENDEDVERBS, CMF_NORMAL, CMIC_MASK_PTINVOKE, CMIC_MASK_SHIFT_DOWN,
+    CMINVOKECOMMANDINFO, CMINVOKECOMMANDINFOEX, DefSubclassProc, GCS_VERBW, IContextMenu, IContextMenu2, IContextMenu3,
+    ILFree, IShellFolder, RemoveWindowSubclass, SHBindToParent, SHGetDesktopFolder, SHParseDisplayName,
+    SetWindowSubclass,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreatePopupMenu, DestroyMenu, GetCursorPos, SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenuEx,
@@ -128,12 +128,14 @@ fn context_menu(hwnd: HWND, dir: &Path, items: &[PathBuf]) -> io::Result<IContex
 
 fn verb_of(cm: &IContextMenu, offset: usize) -> String {
     let mut verb = [0u16; 128];
-    unsafe { cm.GetCommandString(offset, GCS_VERBW, None, windows::core::PSTR(verb.as_mut_ptr().cast()), verb.len() as u32) }
-        .map(|()| {
-            let n = verb.iter().position(|&c| c == 0).unwrap_or(0);
-            String::from_utf16_lossy(&verb[..n]).to_ascii_lowercase()
-        })
-        .unwrap_or_default()
+    unsafe {
+        cm.GetCommandString(offset, GCS_VERBW, None, windows::core::PSTR(verb.as_mut_ptr().cast()), verb.len() as u32)
+    }
+    .map(|()| {
+        let n = verb.iter().position(|&c| c == 0).unwrap_or(0);
+        String::from_utf16_lossy(&verb[..n]).to_ascii_lowercase()
+    })
+    .unwrap_or_default()
 }
 
 /// Canonical verbs the menu would offer (for tests and diagnostics; nothing is shown).
@@ -183,7 +185,8 @@ pub fn show(hwnd: isize, dir: &Path, items: &[PathBuf], extended: bool) -> io::R
         let offset = (cmd - FIRST_ID) as usize;
         let verb = verb_of(&cm, offset);
         // Rename needs an in-place editor; opening a folder should stay in this window.
-        let host = verb == "rename" || ((verb == "open" || verb == "explore") && items.iter().all(|p| p.is_dir()) && !items.is_empty());
+        let host = verb == "rename"
+            || ((verb == "open" || verb == "explore") && items.iter().all(|p| p.is_dir()) && !items.is_empty());
         if host {
             MenuOutcome::Host(verb)
         } else {
@@ -200,7 +203,8 @@ pub fn show(hwnd: isize, dir: &Path, items: &[PathBuf], extended: bool) -> io::R
                 ptInvoke: pt,
                 ..Default::default()
             };
-            unsafe { cm.InvokeCommand(&ex as *const CMINVOKECOMMANDINFOEX as *const CMINVOKECOMMANDINFO) }.map_err(to_io)?;
+            unsafe { cm.InvokeCommand(&ex as *const CMINVOKECOMMANDINFOEX as *const CMINVOKECOMMANDINFO) }
+                .map_err(to_io)?;
             MenuOutcome::Invoked(verb)
         }
     } else {

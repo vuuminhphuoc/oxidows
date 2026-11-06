@@ -332,7 +332,6 @@ pub fn breadcrumbs(path: &Path) -> Vec<(String, PathBuf)> {
     out
 }
 
-
 /// The virtual "Network" location (computers on the LAN). Not a real path.
 pub const NETWORK: &str = "::network";
 
@@ -348,7 +347,10 @@ pub enum Place {
     /// `\\server`: the list of its shares.
     Server(String),
     /// `\\server\share\...`
-    Unc { server: String, share: String },
+    Unc {
+        server: String,
+        share: String,
+    },
     /// Anything else: a drive path.
     Local,
 }
@@ -406,10 +408,9 @@ pub fn location_crumbs(cur: &Path) -> Vec<(String, PathBuf)> {
     match classify(cur) {
         Place::Network => vec![("Network".into(), PathBuf::from(NETWORK))],
         Place::RecycleBin => vec![("Recycle Bin".into(), PathBuf::from(RECYCLE_BIN))],
-        Place::Server(server) => vec![
-            ("Network".into(), PathBuf::from(NETWORK)),
-            (server.clone(), PathBuf::from(format!(r"\\{server}"))),
-        ],
+        Place::Server(server) => {
+            vec![("Network".into(), PathBuf::from(NETWORK)), (server.clone(), PathBuf::from(format!(r"\\{server}")))]
+        }
         Place::Unc { server, .. } => {
             let mut out = vec![
                 ("Network".into(), PathBuf::from(NETWORK)),

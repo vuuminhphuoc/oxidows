@@ -31,7 +31,17 @@ pub fn list_dir(dir: &Path, cancel: &AtomicBool, sink: &mut dyn FnMut(Vec<Entry>
             ),
             Err(_) => (false, 0, 0),
         };
-        batch.push(Entry { hidden: name.starts_with('.'), name, is_dir, size, modified, system: false, link, label: None, note: None });
+        batch.push(Entry {
+            hidden: name.starts_with('.'),
+            name,
+            is_dir,
+            size,
+            modified,
+            system: false,
+            link,
+            label: None,
+            note: None,
+        });
         if batch.len() >= BATCH {
             sink(std::mem::replace(&mut batch, Vec::with_capacity(BATCH)));
         }

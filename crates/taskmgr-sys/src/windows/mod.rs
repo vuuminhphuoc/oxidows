@@ -1,15 +1,31 @@
 //! Windows reader: NT native API for processes and per-core CPU, Win32 for memory and network,
 //! PDH for disk and GPU rates.
 
+mod hw;
 mod procinfo;
 mod services;
 mod sessions;
 mod startup;
 
-pub use procinfo::{is_elevated, restart_elevated, set_priority, static_info};
+pub use hw::cpu_info;
+pub use procinfo::{
+    affinity, create_dump, efficiency_mode, is_elevated, open_url, restart_elevated, run_new_task, set_affinity,
+    set_efficiency_mode, set_priority, static_info,
+};
 pub use services::{list_services, service_control};
-pub use sessions::list_sessions;
-pub use startup::{set_startup_enabled, startup_items};
+pub use sessions::{disconnect_session, list_sessions, logoff_session};
+
+/// Firmware ("BIOS") time of the last boot in milliseconds, as Startup apps shows it.
+pub fn last_bios_ms() -> Option<u32> {
+    hw::reg_dword(r"SYSTEM\CurrentControlSet\Control\Session Manager\Power", "FwPOSTTime").filter(|v| *v > 0)
+}
+
+pub fn exe_publisher(path: &str) -> String {
+    procinfo::version_strings(path).1
+}
+pub use startup::{
+    exe_of as startup_exe, set_startup_enabled, set_taskmgr_replacement, startup_items, taskmgr_replacement,
+};
 
 use std::ffi::c_void;
 use std::io;
@@ -21,11 +37,13 @@ use taskmgr_core::{CpuTimes, RawProcess, RawSample, RawSystem};
 use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
 use windows_sys::Win32::NetworkManagement::IpHelper::{FreeMibTable, GetIfTable2, MIB_IF_TABLE2};
 use windows_sys::Win32::System::Performance::{
-    PDH_FMT_COUNTERVALUE, PDH_FMT_COUNTERVALUE_ITEM_W, PDH_FMT_DOUBLE, PDH_MORE_DATA,
-    PdhAddEnglishCounterW, PdhCloseQuery, PdhCollectQueryData, PdhGetFormattedCounterArrayW,
-    PdhGetFormattedCounterValue, PdhOpenQueryW,
+    PDH_FMT_COUNTERVALUE, PDH_FMT_COUNTERVALUE_ITEM_W, PDH_FMT_DOUBLE, PDH_MORE_DATA, PdhAddEnglishCounterW,
+    PdhCloseQuery, PdhCollectQueryData, PdhGetFormattedCounterArrayW, PdhGetFormattedCounterValue, PdhOpenQueryW,
 };
-use windows_sys::Win32::System::SystemInformation::{GetTickCount64, GlobalMemoryStatusEx, MEMORYSTATUSEX};
+use windows_sys::Win32::System::ProcessStatus::{GetPerformanceInfo, PERFORMANCE_INFORMATION};
+use windows_sys::Win32::System::SystemInformation::{
+    GetPhysicallyInstalledSystemMemory, GetTickCount64, GlobalMemoryStatusEx, MEMORYSTATUSEX,
+};
 use windows_sys::Win32::System::Threading::{GetSystemTimes, OpenProcess, PROCESS_TERMINATE, TerminateProcess};
 
 const SYSTEM_PROCESS_INFORMATION_CLASS: u32 = 5;
@@ -120,8 +138,7 @@ impl NtBuffer {
             let len = (self.buf.len() * 8) as u32;
             let mut needed = 0u32;
             // SAFETY: the buffer is valid for `len` bytes and 8-byte aligned.
-            let status =
-                unsafe { NtQuerySystemInformation(class, self.buf.as_mut_ptr().cast(), len, &mut needed) };
+            let status = unsafe { NtQuerySystemInformation(class, self.buf.as_mut_ptr().cast(), len, &mut needed) };
             if status == STATUS_INFO_LENGTH_MISMATCH {
                 // Processes appear between calls: leave headroom.
                 let want = (needed as usize).max(len as usize * 2) + 64 * 1024;
@@ -145,7 +162,14 @@ struct Pdh {
     disk_read: *mut c_void,
     disk_write: *mut c_void,
     gpu: *mut c_void,
-    item_buf: Vec<u8>,
+    gpu_dedicated: *mut c_void,
+    gpu_shared: *mut c_void,
+    cpu_perf: *mut c_void,
+    disks_time: *mut c_void,
+    disks_read: *mut c_void,
+    disks_write: *mut c_void,
+    disks_resp: *mut c_void,
+    item_buf: Vec<u64>,
 }
 
 fn wide(s: &str) -> Vec<u16> {
@@ -171,7 +195,14 @@ impl Pdh {
             disk_time: add(r"\PhysicalDisk(_Total)\% Disk Time"),
             disk_read: add(r"\PhysicalDisk(_Total)\Disk Read Bytes/sec"),
             disk_write: add(r"\PhysicalDisk(_Total)\Disk Write Bytes/sec"),
-            gpu: add(r"\GPU Engine(*engtype_3D)\Utilization Percentage"),
+            gpu: add(r"\GPU Engine(*)\Utilization Percentage"),
+            gpu_dedicated: add(r"\GPU Adapter Memory(*)\Dedicated Usage"),
+            gpu_shared: add(r"\GPU Adapter Memory(*)\Shared Usage"),
+            cpu_perf: add(r"\Processor Information(_Total)\% Processor Performance"),
+            disks_time: add(r"\PhysicalDisk(*)\% Disk Time"),
+            disks_read: add(r"\PhysicalDisk(*)\Disk Read Bytes/sec"),
+            disks_write: add(r"\PhysicalDisk(*)\Disk Write Bytes/sec"),
+            disks_resp: add(r"\PhysicalDisk(*)\Avg. Disk sec/Transfer"),
             item_buf: Vec::new(),
         };
         // Rate counters need a first sample to diff against.
@@ -192,16 +223,15 @@ impl Pdh {
         }
     }
 
-    /// Sum over every instance of a wildcard counter (all processes' 3D engine usage).
-    fn sum(&mut self, counter: *mut c_void) -> Option<f64> {
+    /// Every instance of a wildcard counter as (instance name, value).
+    fn items(&mut self, counter: *mut c_void) -> Option<Vec<(String, f64)>> {
         if counter.is_null() {
             return None;
         }
-        let mut size = self.item_buf.len() as u32;
+        let mut size = (self.item_buf.len() * 8) as u32;
         let mut count = 0u32;
         loop {
-            // SAFETY: buffer valid for `size` bytes (or null when 0) and aligned for the item type
-            // because Vec<u8> from the global allocator is at least 8-byte aligned for these sizes.
+            // SAFETY: u64 buffer (8-byte aligned, as the item struct needs) valid for `size` bytes.
             let st = unsafe {
                 PdhGetFormattedCounterArrayW(
                     counter,
@@ -212,8 +242,8 @@ impl Pdh {
                 )
             };
             if st == PDH_MORE_DATA {
-                self.item_buf.resize(size as usize + 1024, 0);
-                size = self.item_buf.len() as u32;
+                self.item_buf.resize((size as usize).div_ceil(8) + 128, 0);
+                size = (self.item_buf.len() * 8) as u32;
                 continue;
             }
             if st != 0 {
@@ -222,16 +252,23 @@ impl Pdh {
             break;
         }
         let items = self.item_buf.as_ptr().cast::<PDH_FMT_COUNTERVALUE_ITEM_W>();
-        let mut total = 0.0;
+        let mut out = Vec::with_capacity(count as usize);
         for i in 0..count as usize {
-            // SAFETY: PDH wrote `count` items at the start of the buffer.
-            let item = unsafe { &*items.add(i) };
-            if item.FmtValue.CStatus == 0 {
-                // SAFETY: requested PDH_FMT_DOUBLE.
-                total += unsafe { item.FmtValue.Anonymous.doubleValue };
+            // SAFETY: PDH wrote `count` items at the start of the buffer; names point inside it.
+            unsafe {
+                let item = &*items.add(i);
+                if item.FmtValue.CStatus != 0 || item.szName.is_null() {
+                    continue;
+                }
+                let mut n = 0;
+                while *item.szName.add(n) != 0 {
+                    n += 1;
+                }
+                let name = String::from_utf16_lossy(std::slice::from_raw_parts(item.szName, n));
+                out.push((name, item.FmtValue.Anonymous.doubleValue));
             }
         }
-        Some(total)
+        Some(out)
     }
 }
 
@@ -246,6 +283,7 @@ pub struct Collector {
     procs: NtBuffer,
     cores: NtBuffer,
     pdh: Option<Pdh>,
+    base_mhz: u32,
 }
 
 // The PDH handles are only ever used from the thread that owns the collector.
@@ -257,12 +295,21 @@ fn filetime(ft: FILETIME) -> u64 {
 
 impl Collector {
     pub fn new() -> io::Result<Self> {
-        Ok(Self { procs: NtBuffer::new(512 * 1024), cores: NtBuffer::new(4096), pdh: Pdh::open() })
+        Ok(Self {
+            procs: NtBuffer::new(512 * 1024),
+            cores: NtBuffer::new(4096),
+            pdh: Pdh::open(),
+            base_mhz: hw::base_mhz(),
+        })
     }
 
     pub fn collect(&mut self) -> io::Result<RawSample> {
         let at = Instant::now();
-        let processes = self.read_processes()?;
+        let mut processes = self.read_processes()?;
+        let windows = procinfo::window_pids();
+        for p in &mut processes {
+            p.has_window = windows.contains(&p.pid);
+        }
         let system = self.read_system()?;
         Ok(RawSample { at, processes, system })
     }
@@ -300,6 +347,7 @@ impl Collector {
                     threads: p.number_of_threads,
                     handles: p.handle_count,
                     session_id: p.session_id,
+                    has_window: false,
                     base_priority: p.base_priority,
                     info: Default::default(),
                 });
@@ -341,6 +389,19 @@ impl Collector {
                 sys.commit_used = m.ullTotalPageFile.saturating_sub(m.ullAvailPageFile);
             }
             sys.uptime = Duration::from_millis(GetTickCount64());
+
+            let mut pi: PERFORMANCE_INFORMATION = zeroed();
+            pi.cb = size_of::<PERFORMANCE_INFORMATION>() as u32;
+            if GetPerformanceInfo(&mut pi, pi.cb) != 0 {
+                let page = pi.PageSize as u64;
+                sys.mem_cached = Some(pi.SystemCache as u64 * page);
+                sys.mem_paged_pool = Some(pi.KernelPaged as u64 * page);
+                sys.mem_nonpaged_pool = Some(pi.KernelNonpaged as u64 * page);
+            }
+            let mut installed_kb = 0u64;
+            if GetPhysicallyInstalledSystemMemory(&mut installed_kb) != 0 {
+                sys.mem_hw_reserved = Some((installed_kb * 1024).saturating_sub(sys.mem_total));
+            }
         }
 
         // SAFETY: GetIfTable2 allocates the table; we free it with FreeMibTable.
@@ -353,6 +414,24 @@ impl Collector {
                     if hardware && r.Type != IF_TYPE_SOFTWARE_LOOPBACK && r.OperStatus == IF_OPER_STATUS_UP {
                         sys.net_rx_bytes += r.InOctets;
                         sys.net_tx_bytes += r.OutOctets;
+                        let text = |w: &[u16]| {
+                            let n = w.iter().position(|c| *c == 0).unwrap_or(w.len());
+                            String::from_utf16_lossy(&w[..n])
+                        };
+                        sys.adapters.push(taskmgr_core::RawAdapter {
+                            name: text(&r.Alias),
+                            description: text(&r.Description),
+                            kind: match r.Type {
+                                6 => "Ethernet",
+                                71 => "Wi-Fi",
+                                243 | 244 => "Cellular",
+                                _ => "Network",
+                            }
+                            .into(),
+                            rx_bytes: r.InOctets,
+                            tx_bytes: r.OutOctets,
+                            link_bps: r.ReceiveLinkSpeed.max(r.TransmitLinkSpeed),
+                        });
                     }
                 }
                 FreeMibTable(table.cast());
@@ -366,7 +445,39 @@ impl Collector {
                 sys.disk_read_bps = Pdh::value(pdh.disk_read);
                 sys.disk_write_bps = Pdh::value(pdh.disk_write);
                 let gpu = pdh.gpu;
-                sys.gpu_pct = pdh.sum(gpu).map(|v| v as f32);
+                if let Some(engines) = pdh.items(gpu) {
+                    let taskmgr_core::GpuUsage { total, per_pid, engines: by_engine } =
+                        taskmgr_core::gpu_from_engines(&engines);
+                    sys.gpu_pct = Some(total);
+                    sys.gpu_per_pid = per_pid;
+                    sys.gpu_engines = by_engine;
+                }
+                let (ded, shared) = (pdh.gpu_dedicated, pdh.gpu_shared);
+                sys.gpu_dedicated_used = pdh.items(ded).map(|v| v.iter().map(|(_, b)| *b as u64).sum());
+                sys.gpu_shared_used = pdh.items(shared).map(|v| v.iter().map(|(_, b)| *b as u64).sum());
+                if self.base_mhz > 0 {
+                    sys.cpu_mhz = Pdh::value(pdh.cpu_perf).map(|p| (p * f64::from(self.base_mhz) / 100.0) as f32);
+                }
+                let (t, r, w, resp) = (pdh.disks_time, pdh.disks_read, pdh.disks_write, pdh.disks_resp);
+                if let Some(times) = pdh.items(t) {
+                    let reads = pdh.items(r).unwrap_or_default();
+                    let writes = pdh.items(w).unwrap_or_default();
+                    let resps = pdh.items(resp).unwrap_or_default();
+                    let find = |v: &[(String, f64)], n: &str| v.iter().find(|(k, _)| k == n).map_or(0.0, |(_, x)| *x);
+                    let mut disks: Vec<taskmgr_core::DiskRates> = times
+                        .iter()
+                        .filter(|(n, _)| n != "_Total")
+                        .map(|(n, pct)| taskmgr_core::DiskRates {
+                            name: n.clone(),
+                            active_pct: pct.clamp(0.0, 100.0) as f32,
+                            read_bps: find(&reads, n),
+                            write_bps: find(&writes, n),
+                            response_ms: (find(&resps, n) * 1000.0) as f32,
+                        })
+                        .collect();
+                    disks.sort_by(|a, b| a.name.cmp(&b.name));
+                    sys.disks = disks;
+                }
             }
         }
         Ok(sys)

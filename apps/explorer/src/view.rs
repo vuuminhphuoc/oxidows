@@ -17,15 +17,25 @@ pub fn tab_bar(app: &mut App, ui: &mut Ui) {
             for i in 0..app.tabs.len() {
                 let title = app.tab_title(i);
                 let active = i == app.active_tab;
-                let short: String = if title.chars().count() > 24 { title.chars().take(22).chain(Some('…')).collect() } else { title.clone() };
-                let r = ui.add(egui::Button::selectable(active, short).min_size(egui::vec2(90.0, 22.0))).on_hover_text(&title);
+                let short: String = if title.chars().count() > 24 {
+                    title.chars().take(22).chain(Some('…')).collect()
+                } else {
+                    title.clone()
+                };
+                let r = ui
+                    .add(egui::Button::selectable(active, short).min_size(egui::vec2(90.0, 22.0)))
+                    .on_hover_text(&title);
                 if r.clicked() {
                     switch = Some(i);
                 }
                 if r.middle_clicked() {
                     close = Some(i);
                 }
-                if ui.add(egui::Button::new(RichText::new("×").weak()).frame(false)).on_hover_text("Close tab (Ctrl+W)").clicked() {
+                if ui
+                    .add(egui::Button::new(RichText::new("×").weak()).frame(false))
+                    .on_hover_text("Close tab (Ctrl+W)")
+                    .clicked()
+                {
                     close = Some(i);
                 }
                 ui.add_space(4.0);
@@ -48,7 +58,8 @@ pub fn toolbar(app: &mut App, ui: &mut Ui) {
     egui::Panel::top("toolbar").show(ui, |ui| {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            if ui.add_enabled(app.history.can_back(), egui::Button::new("⬅")).on_hover_text("Back (Alt+Left)").clicked() {
+            if ui.add_enabled(app.history.can_back(), egui::Button::new("⬅")).on_hover_text("Back (Alt+Left)").clicked()
+            {
                 app.back();
             }
             if ui
@@ -58,7 +69,11 @@ pub fn toolbar(app: &mut App, ui: &mut Ui) {
             {
                 app.forward();
             }
-            if ui.add_enabled(parent_path(&app.cur).is_some(), egui::Button::new("⬆")).on_hover_text("Up (Alt+Up)").clicked() {
+            if ui
+                .add_enabled(parent_path(&app.cur).is_some(), egui::Button::new("⬆"))
+                .on_hover_text("Up (Alt+Up)")
+                .clicked()
+            {
                 app.up();
             }
             if ui.button("⟳").on_hover_text("Refresh (F5)").clicked() {
@@ -125,7 +140,9 @@ pub fn toolbar(app: &mut App, ui: &mut Ui) {
             // Search box on the right, address bar takes the rest.
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let search = ui.add(
-                    egui::TextEdit::singleline(&mut app.filter).hint_text("🔍 Search (Enter: subfolders)").desired_width(200.0),
+                    egui::TextEdit::singleline(&mut app.filter)
+                        .hint_text("🔍 Search (Enter: subfolders)")
+                        .desired_width(200.0),
                 );
                 if std::mem::take(&mut app.focus_search) {
                     search.request_focus();
@@ -135,7 +152,8 @@ pub fn toolbar(app: &mut App, ui: &mut Ui) {
                     search.surrender_focus();
                 }
                 // Enter searches subfolders too; clearing the box goes back to the folder.
-                if search.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !app.filter.trim().is_empty() {
+                if search.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !app.filter.trim().is_empty()
+                {
                     app.start_deep_search(app.filter.trim().to_string());
                 }
                 if app.deep_search.is_some() && app.filter.trim().is_empty() {
@@ -170,27 +188,26 @@ fn address_bar(app: &mut App, ui: &mut Ui) {
         .stroke(ui.visuals().widgets.inactive.bg_stroke)
         .corner_radius(3.0)
         .inner_margin(egui::Margin::symmetric(4, 1));
-    let resp = frame
-        .show(ui, |ui| {
-            ui.set_width(width - 16.0);
-            ui.spacing_mut().item_spacing.x = 0.0;
-            let crumbs = location_crumbs(&app.cur);
-            // Long paths: show the last segments that fit, like Explorer.
-            let skip = crumbs.len().saturating_sub(((width / 90.0) as usize).max(2));
-            let mut go = None;
-            if skip > 0 {
-                ui.label(" … ");
+    let resp = frame.show(ui, |ui| {
+        ui.set_width(width - 16.0);
+        ui.spacing_mut().item_spacing.x = 0.0;
+        let crumbs = location_crumbs(&app.cur);
+        // Long paths: show the last segments that fit, like Explorer.
+        let skip = crumbs.len().saturating_sub(((width / 90.0) as usize).max(2));
+        let mut go = None;
+        if skip > 0 {
+            ui.label(" … ");
+        }
+        for (i, (label, path)) in crumbs.iter().enumerate().skip(skip) {
+            if i > skip {
+                ui.label(RichText::new(" › ").weak());
             }
-            for (i, (label, path)) in crumbs.iter().enumerate().skip(skip) {
-                if i > skip {
-                    ui.label(RichText::new(" › ").weak());
-                }
-                if ui.add(egui::Button::new(label).frame(false)).clicked() {
-                    go = Some(path.clone());
-                }
+            if ui.add(egui::Button::new(label).frame(false)).clicked() {
+                go = Some(path.clone());
             }
-            go
-        });
+        }
+        go
+    });
     if let Some(p) = resp.inner {
         app.navigate(p);
     } else if resp.response.interact(Sense::click()).clicked() {
@@ -259,8 +276,10 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
             let place = |ui: &mut Ui, icon: &str, name: &str, path: &PathBuf, cur: &PathBuf| {
                 let selected = path == cur;
                 ui.with_layout(Layout::top_down_justified(Align::LEFT), |ui| {
-                    ui.add(egui::Button::selectable(selected, format!("{icon}  {name}")).min_size(egui::vec2(0.0, 22.0)))
-                        .clicked()
+                    ui.add(
+                        egui::Button::selectable(selected, format!("{icon}  {name}")).min_size(egui::vec2(0.0, 22.0)),
+                    )
+                    .clicked()
                 })
                 .inner
             };
@@ -317,7 +336,11 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
                             egui::ProgressBar::new(used)
                                 .desired_width(ui.available_width() - 4.0)
                                 .desired_height(5.0)
-                                .fill(if used > 0.9 { egui::Color32::from_rgb(218, 38, 38) } else { ui.visuals().selection.bg_fill }),
+                                .fill(if used > 0.9 {
+                                    egui::Color32::from_rgb(218, 38, 38)
+                                } else {
+                                    ui.visuals().selection.bg_fill
+                                }),
                         );
                     });
                     ui.horizontal(|ui| {
@@ -436,7 +459,10 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
     // On Windows the shell's own menus are used (all installed handlers); egui menus are the
     // fallback for the virtual Network page and for non-Windows builds.
     let shell_menus = app.hwnd != 0
-        && !matches!(explorer_core::classify(&app.cur), explorer_core::Place::Network | explorer_core::Place::RecycleBin);
+        && !matches!(
+            explorer_core::classify(&app.cur),
+            explorer_core::Place::Network | explorer_core::Place::RecycleBin
+        );
     let in_bin = app.in_recycle_bin();
     if shell_menus && bg.secondary_clicked() {
         action = Some(Action::ShellMenu(None));
@@ -513,151 +539,168 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
     if app.view_mode == ViewMode::Icons {
         icon_grid(app, ui, &mut action, &mut wanted_icons, shell_menus, in_bin);
     } else {
-    let mut table = TableBuilder::new(ui)
-        .striped(true)
-        .resizable(true)
-        .sense(Sense::click())
-        .cell_layout(Layout::left_to_right(Align::Center))
-        .column(Column::remainder().at_least(200.0).clip(true))
-        .column(Column::initial(135.0).at_least(80.0).clip(true))
-        .column(Column::initial(160.0).at_least(60.0).clip(true))
-        .column(Column::initial(95.0).at_least(60.0));
-    if let Some(pos) = app.scroll_to.take().filter(|&p| p < n) {
-        table = table.scroll_to_row(pos, None);
-    }
-    table
-        .header(row_h, |mut h| {
-            header(&mut h, SortKey::Name, "Name", app, &mut sort_click);
-            let bin = app.in_recycle_bin();
-            header(&mut h, SortKey::Modified, if bin { "Date deleted" } else { "Date modified" }, app, &mut sort_click);
-            header(&mut h, SortKey::Type, if bin { "Original location" } else { "Type" }, app, &mut sort_click);
-            header(&mut h, SortKey::Size, "Size", app, &mut sort_click);
-        })
-        .body(|body| {
-            body.rows(row_h, n, |mut row| {
-                let pos = row.index();
-                let e = &app.entries[app.view[pos]];
-                row.set_selected(app.selected.contains(&e.name));
-                let dim = e.hidden || e.system;
-                let shown = if app.show_extensions || e.is_dir {
-                    e.display()
-                } else {
-                    let d = e.display();
-                    d.rfind('.').filter(|&i| i > 0).map_or(d, |i| &d[..i])
-                };
-                let name_text = if dim { RichText::new(shown).color(weak) } else { RichText::new(shown) };
-                row.col(|ui| {
-                    let key = IconKey::for_entry(e, &app.cur);
-                    match app.icons.get(&key) {
-                        Some(IconState::Ready(tex)) => {
-                            ui.add(egui::Image::new((tex.id(), egui::vec2(16.0, 16.0))));
-                        }
-                        state => {
-                            if state.is_none() {
-                                wanted_icons.push(key);
-                            }
-                            let icon = RichText::new(icon_for(e));
-                            ui.label(if e.is_dir { icon.color(egui::Color32::from_rgb(230, 180, 60)) } else { icon });
-                        }
-                    }
-                    ui.add_space(4.0);
-                    ui.add(egui::Label::new(name_text).selectable(false).truncate());
-                    if e.link {
-                        ui.label(RichText::new(" ⤴").weak());
-                    }
-                });
-                row.col(|ui| {
-                    ui.add(egui::Label::new(RichText::new(format_time(e.modified, app.utc_offset)).color(weak)).selectable(false));
-                });
-                row.col(|ui| {
-                    let third = match &e.note {
-                        Some(n) => n.clone(),
-                        None => e.type_name(),
+        let mut table = TableBuilder::new(ui)
+            .striped(true)
+            .resizable(true)
+            .sense(Sense::click())
+            .cell_layout(Layout::left_to_right(Align::Center))
+            .column(Column::remainder().at_least(200.0).clip(true))
+            .column(Column::initial(135.0).at_least(80.0).clip(true))
+            .column(Column::initial(160.0).at_least(60.0).clip(true))
+            .column(Column::initial(95.0).at_least(60.0));
+        if let Some(pos) = app.scroll_to.take().filter(|&p| p < n) {
+            table = table.scroll_to_row(pos, None);
+        }
+        table
+            .header(row_h, |mut h| {
+                header(&mut h, SortKey::Name, "Name", app, &mut sort_click);
+                let bin = app.in_recycle_bin();
+                header(
+                    &mut h,
+                    SortKey::Modified,
+                    if bin { "Date deleted" } else { "Date modified" },
+                    app,
+                    &mut sort_click,
+                );
+                header(&mut h, SortKey::Type, if bin { "Original location" } else { "Type" }, app, &mut sort_click);
+                header(&mut h, SortKey::Size, "Size", app, &mut sort_click);
+            })
+            .body(|body| {
+                body.rows(row_h, n, |mut row| {
+                    let pos = row.index();
+                    let e = &app.entries[app.view[pos]];
+                    row.set_selected(app.selected.contains(&e.name));
+                    let dim = e.hidden || e.system;
+                    let shown = if app.show_extensions || e.is_dir {
+                        e.display()
+                    } else {
+                        let d = e.display();
+                        d.rfind('.').filter(|&i| i > 0).map_or(d, |i| &d[..i])
                     };
-                    ui.add(egui::Label::new(RichText::new(third).color(weak)).selectable(false));
-                });
-                row.col(|ui| {
-                    if !e.is_dir {
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.add(egui::Label::new(RichText::new(format_size_kb(e.size)).color(weak)).selectable(false));
-                        });
+                    let name_text = if dim { RichText::new(shown).color(weak) } else { RichText::new(shown) };
+                    row.col(|ui| {
+                        let key = IconKey::for_entry(e, &app.cur);
+                        match app.icons.get(&key) {
+                            Some(IconState::Ready(tex)) => {
+                                ui.add(egui::Image::new((tex.id(), egui::vec2(16.0, 16.0))));
+                            }
+                            state => {
+                                if state.is_none() {
+                                    wanted_icons.push(key);
+                                }
+                                let icon = RichText::new(icon_for(e));
+                                ui.label(if e.is_dir {
+                                    icon.color(egui::Color32::from_rgb(230, 180, 60))
+                                } else {
+                                    icon
+                                });
+                            }
+                        }
+                        ui.add_space(4.0);
+                        ui.add(egui::Label::new(name_text).selectable(false).truncate());
+                        if e.link {
+                            ui.label(RichText::new(" ⤴").weak());
+                        }
+                    });
+                    row.col(|ui| {
+                        ui.add(
+                            egui::Label::new(RichText::new(format_time(e.modified, app.utc_offset)).color(weak))
+                                .selectable(false),
+                        );
+                    });
+                    row.col(|ui| {
+                        let third = match &e.note {
+                            Some(n) => n.clone(),
+                            None => e.type_name(),
+                        };
+                        ui.add(egui::Label::new(RichText::new(third).color(weak)).selectable(false));
+                    });
+                    row.col(|ui| {
+                        if !e.is_dir {
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                ui.add(
+                                    egui::Label::new(RichText::new(format_size_kb(e.size)).color(weak))
+                                        .selectable(false),
+                                );
+                            });
+                        }
+                    });
+                    let resp = row.response();
+                    if resp.middle_clicked() && e.is_dir {
+                        action = Some(Action::OpenInNewTab(pos));
+                    } else if resp.double_clicked() {
+                        action = Some(Action::Open(pos));
+                    } else if resp.clicked() {
+                        action = Some(Action::Click(pos, resp.ctx.input(|i| i.modifiers)));
+                    } else if resp.secondary_clicked() {
+                        action =
+                            Some(if shell_menus { Action::ShellMenu(Some(pos)) } else { Action::ContextSelect(pos) });
                     }
-                });
-                let resp = row.response();
-                if resp.middle_clicked() && e.is_dir {
-                    action = Some(Action::OpenInNewTab(pos));
-                } else if resp.double_clicked() {
-                    action = Some(Action::Open(pos));
-                } else if resp.clicked() {
-                    action = Some(Action::Click(pos, resp.ctx.input(|i| i.modifiers)));
-                } else if resp.secondary_clicked() {
-                    action = Some(if shell_menus { Action::ShellMenu(Some(pos)) } else { Action::ContextSelect(pos) });
-                }
-                let target = app.child(&e.name);
-                let is_dir = e.is_dir;
-                if shell_menus {
-                    return;
-                }
-                if in_bin {
+                    let target = app.child(&e.name);
+                    let is_dir = e.is_dir;
+                    if shell_menus {
+                        return;
+                    }
+                    if in_bin {
+                        resp.context_menu(|ui| {
+                            if ui.button(RichText::new("Restore").strong()).clicked() {
+                                action = Some(Action::Restore);
+                                ui.close();
+                            }
+                            if ui.button("Delete permanently    Del").clicked() {
+                                action = Some(Action::Delete(true));
+                                ui.close();
+                            }
+                        });
+                        return;
+                    }
                     resp.context_menu(|ui| {
-                        if ui.button(RichText::new("Restore").strong()).clicked() {
-                            action = Some(Action::Restore);
+                        if ui.button(RichText::new("Open").strong()).clicked() {
+                            action = Some(Action::Open(pos));
                             ui.close();
                         }
-                        if ui.button("Delete permanently    Del").clicked() {
+                        if is_dir && ui.button("Open in new tab").clicked() {
+                            action = Some(Action::OpenInNewTab(pos));
+                            ui.close();
+                        }
+                        ui.separator();
+                        if ui.button("Cut    Ctrl+X").clicked() {
+                            action = Some(Action::Copy(true));
+                            ui.close();
+                        }
+                        if ui.button("Copy    Ctrl+C").clicked() {
+                            action = Some(Action::Copy(false));
+                            ui.close();
+                        }
+                        if is_dir && ui.button("Paste into folder").clicked() {
+                            action = Some(Action::Paste(target.clone()));
+                            ui.close();
+                        }
+                        if ui.button("Copy as path").clicked() {
+                            action = Some(Action::CopyPath);
+                            ui.close();
+                        }
+                        ui.separator();
+                        if ui.button("Rename    F2").clicked() {
+                            action = Some(Action::Rename);
+                            ui.close();
+                        }
+                        if ui.button("Delete    Del").clicked() {
+                            action = Some(Action::Delete(false));
+                            ui.close();
+                        }
+                        if ui.button("Delete permanently    Shift+Del").clicked() {
                             action = Some(Action::Delete(true));
                             ui.close();
                         }
+                        ui.separator();
+                        if ui.button("Properties    Alt+Enter").clicked() {
+                            action = Some(Action::Properties(target.clone()));
+                            ui.close();
+                        }
                     });
-                    return;
-                }
-                resp.context_menu(|ui| {
-                    if ui.button(RichText::new("Open").strong()).clicked() {
-                        action = Some(Action::Open(pos));
-                        ui.close();
-                    }
-                    if is_dir && ui.button("Open in new tab").clicked() {
-                        action = Some(Action::OpenInNewTab(pos));
-                        ui.close();
-                    }
-                    ui.separator();
-                    if ui.button("Cut    Ctrl+X").clicked() {
-                        action = Some(Action::Copy(true));
-                        ui.close();
-                    }
-                    if ui.button("Copy    Ctrl+C").clicked() {
-                        action = Some(Action::Copy(false));
-                        ui.close();
-                    }
-                    if is_dir && ui.button("Paste into folder").clicked() {
-                        action = Some(Action::Paste(target.clone()));
-                        ui.close();
-                    }
-                    if ui.button("Copy as path").clicked() {
-                        action = Some(Action::CopyPath);
-                        ui.close();
-                    }
-                    ui.separator();
-                    if ui.button("Rename    F2").clicked() {
-                        action = Some(Action::Rename);
-                        ui.close();
-                    }
-                    if ui.button("Delete    Del").clicked() {
-                        action = Some(Action::Delete(false));
-                        ui.close();
-                    }
-                    if ui.button("Delete permanently    Shift+Del").clicked() {
-                        action = Some(Action::Delete(true));
-                        ui.close();
-                    }
-                    ui.separator();
-                    if ui.button("Properties    Alt+Enter").clicked() {
-                        action = Some(Action::Properties(target.clone()));
-                        ui.close();
-                    }
                 });
             });
-        });
     }
 
     app.request_icons(wanted_icons);
@@ -699,12 +742,8 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
         Some(Action::Copy(cut)) => app.copy_selection(cut),
         Some(Action::Paste(dest)) => app.paste_into(dest),
         Some(Action::CopyPath) => {
-            let text = app
-                .selected_paths()
-                .iter()
-                .map(|p| format!("\"{}\"", p.display()))
-                .collect::<Vec<_>>()
-                .join("\r\n");
+            let text =
+                app.selected_paths().iter().map(|p| format!("\"{}\"", p.display())).collect::<Vec<_>>().join("\r\n");
             ui.ctx().copy_text(text);
         }
         Some(Action::Rename) => app.begin_rename(),
@@ -910,7 +949,12 @@ fn icon_grid(
                             let s = tex.size_vec2();
                             let k = (img / s.x.max(s.y)).min(1.0);
                             let r = egui::Rect::from_center_size(img_rect.center(), s * k);
-                            ui.painter().image(tex.id(), r, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+                            ui.painter().image(
+                                tex.id(),
+                                r,
+                                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                egui::Color32::WHITE,
+                            );
                         }
                         other => {
                             if other.is_none() && !e.is_dir && !in_bin {
@@ -920,14 +964,29 @@ fn icon_grid(
                             match app.icons.get(&key) {
                                 Some(IconState::Ready(tex)) => {
                                     let r = egui::Rect::from_center_size(img_rect.center(), egui::vec2(48.0, 48.0));
-                                    ui.painter().image(tex.id(), r, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+                                    ui.painter().image(
+                                        tex.id(),
+                                        r,
+                                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                        egui::Color32::WHITE,
+                                    );
                                 }
                                 state => {
                                     if state.is_none() {
                                         wanted_icons.push(key);
                                     }
-                                    let color = if e.is_dir { egui::Color32::from_rgb(230, 180, 60) } else { ui.visuals().text_color() };
-                                    ui.painter().text(img_rect.center(), egui::Align2::CENTER_CENTER, icon_for(e), egui::FontId::proportional(44.0), color);
+                                    let color = if e.is_dir {
+                                        egui::Color32::from_rgb(230, 180, 60)
+                                    } else {
+                                        ui.visuals().text_color()
+                                    };
+                                    ui.painter().text(
+                                        img_rect.center(),
+                                        egui::Align2::CENTER_CENTER,
+                                        icon_for(e),
+                                        egui::FontId::proportional(44.0),
+                                        color,
+                                    );
                                 }
                             }
                         }
@@ -951,7 +1010,8 @@ fn icon_grid(
                     } else if resp.clicked() {
                         *action = Some(Action::Click(pos, resp.ctx.input(|i| i.modifiers)));
                     } else if resp.secondary_clicked() {
-                        *action = Some(if shell_menus { Action::ShellMenu(Some(pos)) } else { Action::ContextSelect(pos) });
+                        *action =
+                            Some(if shell_menus { Action::ShellMenu(Some(pos)) } else { Action::ContextSelect(pos) });
                     }
                 }
             });

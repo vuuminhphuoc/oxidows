@@ -57,3 +57,15 @@ pub fn list_sessions() -> io::Result<Vec<Session>> {
         Ok(out)
     }
 }
+
+use windows_sys::Win32::System::RemoteDesktop::{WTSDisconnectSession, WTSLogoffSession};
+
+pub fn disconnect_session(id: u32) -> io::Result<()> {
+    // SAFETY: current server; asynchronous request.
+    if unsafe { WTSDisconnectSession(null_mut(), id, 0) } == 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
+}
+
+pub fn logoff_session(id: u32) -> io::Result<()> {
+    // SAFETY: current server; asynchronous request.
+    if unsafe { WTSLogoffSession(null_mut(), id, 0) } == 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
+}

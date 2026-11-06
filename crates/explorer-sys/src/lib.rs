@@ -273,7 +273,10 @@ pub fn recycle_bin_items() -> Vec<BinItem> {
 /// Puts an item back where it was deleted from (fails if something is there now).
 pub fn restore(item: &BinItem) -> io::Result<()> {
     if item.original.exists() {
-        return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("{} already exists", item.original.display())));
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("{} already exists", item.original.display()),
+        ));
     }
     if let Some(parent) = item.original.parent() {
         std::fs::create_dir_all(parent)?;
@@ -285,7 +288,11 @@ pub fn restore(item: &BinItem) -> io::Result<()> {
 
 /// Deletes an item from the bin for good.
 pub fn purge(item: &BinItem) -> io::Result<()> {
-    if item.is_dir { std::fs::remove_dir_all(&item.data)? } else { std::fs::remove_file(&item.data)? }
+    if item.is_dir {
+        std::fs::remove_dir_all(&item.data)?
+    } else {
+        std::fs::remove_file(&item.data)?
+    }
     let _ = std::fs::remove_file(&item.info);
     Ok(())
 }
@@ -310,7 +317,8 @@ pub fn parse_bin_info(bytes: &[u8]) -> Option<(u64, i64, PathBuf)> {
         }
         _ => return None,
     };
-    let units: Vec<u16> = wide.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).take_while(|&c| c != 0).collect();
+    let units: Vec<u16> =
+        wide.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).take_while(|&c| c != 0).collect();
     Some((size, deleted, PathBuf::from(String::from_utf16_lossy(&units))))
 }
 

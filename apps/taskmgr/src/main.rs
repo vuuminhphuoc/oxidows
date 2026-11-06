@@ -7,6 +7,7 @@ mod graph;
 mod performance;
 mod processes;
 mod services;
+mod settings;
 mod startup;
 mod users;
 
@@ -32,10 +33,12 @@ enum Tab {
     Users,
     Details,
     Services,
+    Settings,
 }
 
 impl Tab {
-    const ALL: [Tab; 6] = [Tab::Processes, Tab::Performance, Tab::Startup, Tab::Users, Tab::Details, Tab::Services];
+    const ALL: [Tab; 7] =
+        [Tab::Processes, Tab::Performance, Tab::Startup, Tab::Users, Tab::Details, Tab::Services, Tab::Settings];
 
     fn label(self) -> &'static str {
         match self {
@@ -45,27 +48,65 @@ impl Tab {
             Tab::Users => "Users",
             Tab::Details => "Details",
             Tab::Services => "Services",
+            Tab::Settings => "Settings",
         }
     }
 
-    fn from_env() -> Tab {
-        let v = std::env::var("OXI_TASKMGR_TAB").unwrap_or_default().to_lowercase();
-        Tab::ALL.into_iter().find(|t| t.label().to_lowercase().starts_with(&v) && !v.is_empty()).unwrap_or(Tab::Processes)
+    fn find(v: &str) -> Option<Tab> {
+        let v = v.to_lowercase();
+        Tab::ALL.into_iter().find(|t| !v.is_empty() && t.label().to_lowercase().starts_with(&v))
+    }
+
+    /// `OXI_TASKMGR_TAB` wins over the saved default start page.
+    fn initial(default_tab: &str) -> Tab {
+        std::env::var("OXI_TASKMGR_TAB")
+            .ok()
+            .and_then(|v| Tab::find(&v))
+            .or_else(|| Tab::find(default_tab))
+            .unwrap_or(Tab::Processes)
     }
 }
 
-/// Status line shared by every tab and by background actions (service start/stop).
+/// A modal-ish window opened from a menu.
+pub enum Dialog {
+    RunTask { command: String, admin: bool },
+    Affinity { pid: u32, name: String, mask: u64, system: u64 },
+    Confirm { text: String, action: ConfirmAction },
+}
+
+/// Actions that lose someone's work, so they ask first.
+pub enum ConfirmAction {
+    SignOff { session: u32, user: String },
+    Disconnect { session: u32, user: String },
+}
+
+/// Shared by every tab and by background actions: the status line, an open dialog, and a
+/// request to jump to a process on the Details tab.
 #[derive(Clone, Default)]
-pub struct Status(Arc<Mutex<Option<String>>>);
+pub struct Status {
+    msg: Arc<Mutex<Option<String>>>,
+    dialog: Arc<Mutex<Option<Dialog>>>,
+    goto_details: Arc<Mutex<Option<u32>>>,
+}
 
 impl Status {
     pub fn set(&self, msg: impl Into<String>) {
-        if let Ok(mut m) = self.0.lock() {
+        if let Ok(mut m) = self.msg.lock() {
             *m = Some(msg.into());
         }
     }
     fn get(&self) -> Option<String> {
-        self.0.lock().ok().and_then(|m| m.clone())
+        self.msg.lock().ok().and_then(|m| m.clone())
+    }
+    pub fn open(&self, d: Dialog) {
+        if let Ok(mut m) = self.dialog.lock() {
+            *m = Some(d);
+        }
+    }
+    pub fn goto_details(&self, pid: u32) {
+        if let Ok(mut m) = self.goto_details.lock() {
+            *m = Some(pid);
+        }
     }
 }
 
@@ -81,8 +122,15 @@ struct App {
     details: details::State,
     services: services::State,
     startup: startup::State,
+    users: users::State,
+    settings: settings::Settings,
+    /// Whether Ctrl+Shift+Esc opens this exe; None where that cannot be changed.
+    replaces_taskmgr: Option<bool>,
     started: Instant,
     first_data_logged: bool,
+    /// OXI_TASKMGR_TIMING: frames drawn since `frames_since`.
+    frames: u32,
+    frames_since: Instant,
 }
 
 /// Collects on its own thread so a slow OS call never blocks a frame. The UI only repaints when
@@ -100,6 +148,8 @@ fn spawn_sampler(ctx: egui::Context, tx: Sender<Result<Arc<Snapshot>, String>>) 
             };
             let mut sampler = Sampler::new();
             let mut first = true;
+            let timing = std::env::var_os("OXI_TASKMGR_TIMING").is_some();
+            let (mut n, mut spent, mut since) = (0u32, Duration::ZERO, Instant::now());
             loop {
                 let ms = INTERVAL_MS.load(Ordering::Relaxed);
                 if ms == 0 && !first {
@@ -110,6 +160,7 @@ fn spawn_sampler(ctx: egui::Context, tx: Sender<Result<Arc<Snapshot>, String>>) 
                     services: WANT_SERVICES.load(Ordering::Relaxed),
                     sessions: WANT_SESSIONS.load(Ordering::Relaxed),
                 };
+                let t0 = Instant::now();
                 let msg = collector
                     .collect(extras)
                     .map(|(raw, extra)| {
@@ -119,6 +170,14 @@ fn spawn_sampler(ctx: egui::Context, tx: Sender<Result<Arc<Snapshot>, String>>) 
                         Arc::new(snap)
                     })
                     .map_err(|e| e.to_string());
+                if timing {
+                    n += 1;
+                    spent += t0.elapsed();
+                    if since.elapsed() >= Duration::from_secs(5) {
+                        eprintln!("sampler: {n} samples, {:.1} ms each", spent.as_secs_f64() * 1000.0 / f64::from(n));
+                        (n, spent, since) = (0, Duration::ZERO, Instant::now());
+                    }
+                }
                 if tx.send(msg).is_err() {
                     return; // window closed
                 }
@@ -137,7 +196,13 @@ fn spawn_sampler(ctx: egui::Context, tx: Sender<Result<Arc<Snapshot>, String>>) 
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let tab = Tab::from_env();
+        let settings = settings::Settings::load();
+        settings.apply_theme(&cc.egui_ctx);
+        if settings.always_on_top {
+            settings.apply_on_top(&cc.egui_ctx);
+        }
+        INTERVAL_MS.store(settings.interval_ms, Ordering::Relaxed);
+        let tab = Tab::initial(&settings.default_tab);
         WANT_SERVICES.store(tab == Tab::Services, Ordering::Relaxed);
         WANT_SESSIONS.store(tab == Tab::Users, Ordering::Relaxed);
         let (tx, rx) = channel();
@@ -149,14 +214,25 @@ impl App {
             error: None,
             tab,
             elevated: taskmgr_sys::is_elevated(),
-            processes: processes::State::new(status.clone()),
+            processes: processes::State::new(status.clone(), settings.group_by_type),
             performance: performance::State::default(),
             details: details::State::new(status.clone()),
             services: services::State::new(status.clone(), cc.egui_ctx.clone()),
             startup: startup::State::new(status.clone()),
+            users: users::State::new(status.clone()),
+            settings,
+            replaces_taskmgr: cfg!(windows).then(taskmgr_sys::replaces_taskmgr),
             status,
             started: Instant::now(),
             first_data_logged: false,
+            frames: 0,
+            frames_since: Instant::now(),
+        }
+    }
+
+    fn save_settings(&self) {
+        if let Err(e) = self.settings.save() {
+            self.status.set(format!("Could not save settings: {e}"));
         }
     }
 
@@ -179,10 +255,127 @@ impl App {
     }
 }
 
+impl App {
+    fn dialogs(&mut self, ctx: &egui::Context) {
+        let Ok(mut slot) = self.status.dialog.lock() else {
+            return;
+        };
+        let mut close = false;
+        match slot.as_mut() {
+            None => {}
+            Some(Dialog::RunTask { command, admin }) => {
+                egui::Window::new("Create new task").collapsible(false).resizable(false).show(ctx, |ui| {
+                    ui.label("Type the name of a program, folder, document or Internet resource.");
+                    let r = ui.add(egui::TextEdit::singleline(command).desired_width(360.0).hint_text("e.g. notepad"));
+                    r.request_focus();
+                    ui.checkbox(admin, "Create this task with administrative privileges");
+                    ui.horizontal(|ui| {
+                        let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        if (ui.button("OK").clicked() || enter) && !command.trim().is_empty() {
+                            match taskmgr_sys::run_new_task(command, *admin) {
+                                Ok(()) => self.status.set(format!("Started {command}")),
+                                Err(e) => self.status.set(format!("Could not start {command}: {e}")),
+                            }
+                            close = true;
+                        }
+                        if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                            close = true;
+                        }
+                    });
+                });
+            }
+            Some(Dialog::Affinity { pid, name, mask, system }) => {
+                egui::Window::new("Processor affinity").collapsible(false).resizable(false).show(ctx, |ui| {
+                    ui.label(format!("Which processors are allowed to run {name} ({pid})?"));
+                    let cpus: Vec<u32> = (0..64).filter(|i| *system & (1u64 << i) != 0).collect();
+                    let mut all = *mask & *system == *system;
+                    if ui.checkbox(&mut all, "<All Processors>").changed() {
+                        *mask = if all { *system } else { 0 };
+                    }
+                    egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                        egui::Grid::new("cpus").show(ui, |ui| {
+                            for (n, i) in cpus.iter().enumerate() {
+                                let mut on = *mask & (1u64 << i) != 0;
+                                if ui.checkbox(&mut on, format!("CPU {i}")).changed() {
+                                    *mask ^= 1u64 << i;
+                                }
+                                if n % 4 == 3 {
+                                    ui.end_row();
+                                }
+                            }
+                        });
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.add_enabled(*mask != 0, egui::Button::new("OK")).clicked() {
+                            match taskmgr_sys::set_affinity(*pid, *mask) {
+                                Ok(()) => self.status.set(format!("Affinity of {name} set")),
+                                Err(e) => self.status.set(format!("Could not set affinity of {name}: {e}")),
+                            }
+                            close = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            }
+            Some(Dialog::Confirm { text, action }) => {
+                egui::Window::new("Task Manager").collapsible(false).resizable(false).show(ctx, |ui| {
+                    ui.label(text.as_str());
+                    ui.horizontal(|ui| {
+                        if ui.button("Yes").clicked() {
+                            let msg = match action {
+                                ConfirmAction::SignOff { session, user } => match taskmgr_sys::logoff_session(*session)
+                                {
+                                    Ok(()) => format!("Signing out {user}"),
+                                    Err(e) => format!("Could not sign out {user}: {e}"),
+                                },
+                                ConfirmAction::Disconnect { session, user } => {
+                                    match taskmgr_sys::disconnect_session(*session) {
+                                        Ok(()) => format!("Disconnected {user}"),
+                                        Err(e) => format!("Could not disconnect {user}: {e}"),
+                                    }
+                                }
+                            };
+                            self.status.set(msg);
+                            close = true;
+                        }
+                        if ui.button("No").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            }
+        }
+        if close {
+            *slot = None;
+        }
+    }
+}
+
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.drain();
+        if self.first_data_logged && std::env::var_os("OXI_TASKMGR_TIMING").is_some() {
+            self.frames += 1;
+            if self.frames_since.elapsed() >= Duration::from_secs(5) {
+                eprintln!("ui: {} frames in {:.1} s", self.frames, self.frames_since.elapsed().as_secs_f64());
+                (self.frames, self.frames_since) = (0, Instant::now());
+            }
+        }
         let snap = self.snapshot.clone();
+        // Ctrl+Tab / Ctrl+Shift+Tab move between pages, as in Task Manager.
+        let (next, prev) = ui.input_mut(|i| {
+            (
+                i.consume_key(egui::Modifiers::CTRL, egui::Key::Tab),
+                i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Tab),
+            )
+        });
+        if next || prev {
+            let n = Tab::ALL.len();
+            let i = Tab::ALL.iter().position(|t| *t == self.tab).unwrap_or(0);
+            self.tab = Tab::ALL[if next { (i + 1) % n } else { (i + n - 1) % n }];
+        }
 
         egui::Panel::top("tabs").show(ui, |ui| {
             ui.add_space(4.0);
@@ -191,6 +384,9 @@ impl eframe::App for App {
                     ui.selectable_value(&mut self.tab, t, t.label());
                 }
                 ui.separator();
+                if ui.button("Run new task").clicked() {
+                    self.status.open(Dialog::RunTask { command: String::new(), admin: false });
+                }
                 let mut ms = INTERVAL_MS.load(Ordering::Relaxed);
                 let label = match ms {
                     0 => "Paused",
@@ -204,11 +400,17 @@ impl eframe::App for App {
                     ui.selectable_value(&mut ms, 2000, "2 s");
                     ui.selectable_value(&mut ms, 0, "Paused");
                 });
-                INTERVAL_MS.store(ms, Ordering::Relaxed);
+                if ms != INTERVAL_MS.load(Ordering::Relaxed) {
+                    INTERVAL_MS.store(ms, Ordering::Relaxed);
+                    self.settings.interval_ms = ms;
+                    self.save_settings();
+                }
                 if !self.elevated
                     && ui
                         .button("Run as administrator")
-                        .on_hover_text("Needed to end elevated processes, control services and edit machine-wide startup apps")
+                        .on_hover_text(
+                            "Needed to end elevated processes, control services and edit machine-wide startup apps",
+                        )
                         .clicked()
                 {
                     match taskmgr_sys::restart_elevated() {
@@ -219,6 +421,11 @@ impl eframe::App for App {
             });
             ui.add_space(2.0);
         });
+        if let Some(pid) = self.status.goto_details.lock().ok().and_then(|mut g| g.take()) {
+            self.tab = Tab::Details;
+            self.details.select(pid, &snap);
+        }
+        self.dialogs(ui.ctx());
         WANT_SERVICES.store(self.tab == Tab::Services, Ordering::Relaxed);
         WANT_SESSIONS.store(self.tab == Tab::Users, Ordering::Relaxed);
 
@@ -245,9 +452,25 @@ impl eframe::App for App {
             Tab::Processes => self.processes.show(ui, &snap),
             Tab::Performance => self.performance.show(ui, &snap),
             Tab::Startup => self.startup.show(ui),
-            Tab::Users => users::show(ui, &snap),
+            Tab::Users => self.users.show(ui, &snap),
             Tab::Details => self.details.show(ui, &snap),
             Tab::Services => self.services.show(ui, &snap),
+            Tab::Settings => {
+                let tabs: Vec<&str> = Tab::ALL.iter().filter(|t| **t != Tab::Settings).map(|t| t.label()).collect();
+                let before = self.settings.clone();
+                if settings::show(ui, &mut self.settings, &tabs, &self.status, &mut self.replaces_taskmgr) {
+                    let s = &self.settings;
+                    if s.theme != before.theme {
+                        s.apply_theme(ui.ctx());
+                    }
+                    if s.always_on_top != before.always_on_top {
+                        s.apply_on_top(ui.ctx());
+                    }
+                    INTERVAL_MS.store(s.interval_ms, Ordering::Relaxed);
+                    self.processes.set_group(s.group_by_type);
+                    self.save_settings();
+                }
+            }
         });
     }
 }

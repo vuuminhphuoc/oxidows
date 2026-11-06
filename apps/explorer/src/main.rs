@@ -293,7 +293,9 @@ impl App {
                             }
                         }
                     });
-                    if !found.is_empty() && (found.len() >= explorer_sys::BATCH || last_send.elapsed().as_millis() > 100) {
+                    if !found.is_empty()
+                        && (found.len() >= explorer_sys::BATCH || last_send.elapsed().as_millis() > 100)
+                    {
                         let _ = tx.send(Msg::Batch(generation, std::mem::take(&mut found)));
                         ctx.request_repaint();
                         last_send = Instant::now();
@@ -338,7 +340,11 @@ impl App {
                         let names = explorer_sys::network_computers();
                         let batch = names
                             .into_iter()
-                            .map(|n| Entry { name: n.trim_start_matches('\\').to_string(), is_dir: true, ..Default::default() })
+                            .map(|n| Entry {
+                                name: n.trim_start_matches('\\').to_string(),
+                                is_dir: true,
+                                ..Default::default()
+                            })
                             .collect();
                         let _ = tx.send(Msg::Batch(generation, batch));
                         Ok(())
@@ -361,7 +367,10 @@ impl App {
                         Ok(())
                     }
                     Place::Server(server) => explorer_sys::list_shares(&server).map(|shares| {
-                        let batch = shares.into_iter().map(|s| Entry { name: s.name, is_dir: true, ..Default::default() }).collect();
+                        let batch = shares
+                            .into_iter()
+                            .map(|s| Entry { name: s.name, is_dir: true, ..Default::default() })
+                            .collect();
                         let _ = tx.send(Msg::Batch(generation, batch));
                     }),
                     _ => explorer_sys::list_dir(&dir, &cancel, &mut |batch| {
@@ -646,7 +655,14 @@ impl App {
         self.tabs[self.active_tab] = snap;
         let target = std::mem::replace(
             &mut self.tabs[i],
-            TabSnap { cur: PathBuf::new(), history: History::default(), selected: HashSet::new(), filter: String::new(), sort: SortKey::Name, ascending: true },
+            TabSnap {
+                cur: PathBuf::new(),
+                history: History::default(),
+                selected: HashSet::new(),
+                filter: String::new(),
+                sort: SortKey::Name,
+                ascending: true,
+            },
         );
         self.active_tab = i;
         self.load_tab(target);
@@ -655,7 +671,14 @@ impl App {
 
     /// Opens `path` in a new tab after the current one; `focus` switches to it.
     pub fn new_tab(&mut self, path: PathBuf, focus: bool) {
-        let t = TabSnap { cur: path, history: History::default(), selected: HashSet::new(), filter: String::new(), sort: self.sort, ascending: self.ascending };
+        let t = TabSnap {
+            cur: path,
+            history: History::default(),
+            selected: HashSet::new(),
+            filter: String::new(),
+            sort: self.sort,
+            ascending: self.ascending,
+        };
         let at = self.active_tab + 1;
         self.tabs.insert(at, t);
         if focus {
@@ -886,9 +909,8 @@ impl App {
             self.scroll_to = Some(pos);
         }
         // Keep the cursor on the same item after a re-sort or refresh.
-        self.cursor = self.cursor.and_then(|_| {
-            self.view.iter().position(|&i| self.selected.contains(&self.entries[i].name))
-        });
+        self.cursor =
+            self.cursor.and_then(|_| self.view.iter().position(|&i| self.selected.contains(&self.entries[i].name)));
     }
 
     fn entry_at(&self, pos: usize) -> Option<&Entry> {
@@ -985,7 +1007,8 @@ impl App {
         let sel = self.selected_entries();
         if let [e] = sel.as_slice() {
             // In search results `name` is a relative path; only its last part is edited.
-            let leaf = Path::new(&e.name).file_name().map_or_else(|| e.name.clone(), |n| n.to_string_lossy().into_owned());
+            let leaf =
+                Path::new(&e.name).file_name().map_or_else(|| e.name.clone(), |n| n.to_string_lossy().into_owned());
             self.dialog = Some(Dialog::Rename { original: e.name.clone(), text: leaf, error: None, opened: false });
         }
     }
@@ -1252,7 +1275,11 @@ impl App {
             }
         });
         if let Some((pos, extend)) = moved {
-            if extend { self.select_range(pos) } else { self.select_only(pos) }
+            if extend {
+                self.select_range(pos)
+            } else {
+                self.select_only(pos)
+            }
             self.scroll_to = Some(pos);
         }
         for ev in events {
@@ -1341,7 +1368,9 @@ impl eframe::App for App {
 
         // Files dropped on the window from another program: move within a drive, copy across
         // drives, as Explorer does.
-        let dropped: Vec<PathBuf> = ui.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
+        let dropped: Vec<PathBuf> = ui.input(|i| {
+            i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect()
+        });
         if !dropped.is_empty() {
             let root = |p: &Path| p.components().next().map(|c| c.as_os_str().to_ascii_lowercase());
             let same_drive = dropped.iter().all(|p| root(p) == root(&self.cur));
@@ -1388,11 +1417,8 @@ fn renderer() -> eframe::Renderer {
 }
 
 fn main() -> eframe::Result {
-    let start = std::env::args_os()
-        .nth(1)
-        .map(PathBuf::from)
-        .filter(|p| p.is_dir())
-        .unwrap_or_else(explorer_sys::home_dir);
+    let start =
+        std::env::args_os().nth(1).map(PathBuf::from).filter(|p| p.is_dir()).unwrap_or_else(explorer_sys::home_dir);
     let options = eframe::NativeOptions {
         renderer: renderer(),
         viewport: egui::ViewportBuilder::default()

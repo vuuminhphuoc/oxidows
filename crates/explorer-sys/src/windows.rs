@@ -11,6 +11,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use explorer_core::Entry;
 use windows_sys::Win32::Foundation::{FILETIME, GetLastError, GlobalFree, HWND, INVALID_HANDLE_VALUE, POINT};
+use windows_sys::Win32::Graphics::Gdi::{
+    BI_RGB, BITMAP, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, DeleteObject, GetDC, GetDIBits, GetObjectW, HBITMAP,
+    HDC, ReleaseDC,
+};
 use windows_sys::Win32::NetworkManagement::NetManagement::{MAX_PREFERRED_LENGTH, NetApiBufferFree};
 use windows_sys::Win32::NetworkManagement::WNet::{
     CONNECT_INTERACTIVE, CONNECT_PROMPT, CONNECT_UPDATE_PROFILE, NETRESOURCEW, RESOURCE_GLOBALNET, RESOURCETYPE_DISK,
@@ -18,13 +22,15 @@ use windows_sys::Win32::NetworkManagement::WNet::{
     WNetOpenEnumW,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    NetShareEnum, SHARE_INFO_1, STYPE_SPECIAL,
     FILE_NOTIFY_CHANGE_ATTRIBUTES, FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME,
     FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SIZE, FIND_FIRST_EX_LARGE_FETCH, FindClose,
-    FindCloseChangeNotification, FindFirstChangeNotificationW, FindNextChangeNotification, FindExInfoBasic, FindExSearchNameMatch, FindFirstFileExW, FindNextFileW,
-    GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW, WIN32_FIND_DATAW,
+    FindCloseChangeNotification, FindExInfoBasic, FindExSearchNameMatch, FindFirstChangeNotificationW,
+    FindFirstFileExW, FindNextChangeNotification, FindNextFileW, GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives,
+    GetVolumeInformationW, NetShareEnum, SHARE_INFO_1, STYPE_SPECIAL, WIN32_FIND_DATAW,
 };
-use windows_sys::Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoTaskMemFree};
+use windows_sys::Win32::System::Com::{
+    COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoTaskMemFree,
+};
 use windows_sys::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
 };
@@ -32,18 +38,14 @@ use windows_sys::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock,
 use windows_sys::Win32::System::Ole::CF_HDROP;
 use windows_sys::Win32::System::Threading::WaitForSingleObject;
 use windows_sys::Win32::System::Time::{GetTimeZoneInformation, TIME_ZONE_INFORMATION};
-use windows_sys::Win32::UI::Shell::{
-    DragQueryFileW, FO_COPY, FO_DELETE, FO_MOVE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOCONFIRMMKDIR, FOF_NOERRORUI, FOF_RENAMEONCOLLISION, FOF_SILENT,
-    FOF_WANTNUKEWARNING, FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Music,
-    FOLDERID_Pictures, FOLDERID_Profile, FOLDERID_Videos, SEE_MASK_INVOKEIDLIST, SHELLEXECUTEINFOW, SHFILEINFOW, SHGFI_ICON, SHGFI_SMALLICON, SHGFI_USEFILEATTRIBUTES,
-    SHGetFileInfoW,
-    SHEmptyRecycleBinW, SHERB_NOCONFIRMATION, SHFILEOPSTRUCTW, SHFileOperationW, SHGetKnownFolderPath, ShellExecuteExW, ShellExecuteW,
-};
-use windows_sys::Win32::Graphics::Gdi::{
-    BI_RGB, BITMAP, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, DeleteObject, GetDC, GetDIBits, GetObjectW, HBITMAP,
-    HDC, ReleaseDC,
-};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL};
+use windows_sys::Win32::UI::Shell::{
+    DragQueryFileW, FO_COPY, FO_DELETE, FO_MOVE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOCONFIRMMKDIR, FOF_NOERRORUI,
+    FOF_RENAMEONCOLLISION, FOF_SILENT, FOF_WANTNUKEWARNING, FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads,
+    FOLDERID_Music, FOLDERID_Pictures, FOLDERID_Profile, FOLDERID_Videos, SEE_MASK_INVOKEIDLIST, SHELLEXECUTEINFOW,
+    SHERB_NOCONFIRMATION, SHEmptyRecycleBinW, SHFILEINFOW, SHFILEOPSTRUCTW, SHFileOperationW, SHGFI_ICON,
+    SHGFI_SMALLICON, SHGFI_USEFILEATTRIBUTES, SHGetFileInfoW, SHGetKnownFolderPath, ShellExecuteExW, ShellExecuteW,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyIcon, GetIconInfo, HWND_MESSAGE, ICONINFO, SW_SHOWNORMAL,
 };
@@ -284,7 +286,8 @@ pub fn open_terminal(dir: &Path) -> io::Result<()> {
     // Windows Terminal ignores the working directory argument; it wants -d. Quote, and keep a
     // trailing backslash from escaping the closing quote ("C:\" -> "C:\\").
     let quoted = if d.ends_with('\\') { format!("-d \"{d}\\\"") } else { format!("-d \"{d}\"") };
-    shell_execute("open", "wt.exe", Some(&quoted), Some(dir)).or_else(|_| shell_execute("open", "cmd.exe", None, Some(dir)))
+    shell_execute("open", "wt.exe", Some(&quoted), Some(dir))
+        .or_else(|_| shell_execute("open", "cmd.exe", None, Some(dir)))
 }
 
 /// A list of paths as the shell wants it: each NUL-terminated, plus a final NUL.
@@ -559,7 +562,9 @@ pub fn list_shares(server: &str) -> io::Result<Vec<Share>> {
     let mut resume = 0u32;
     loop {
         let (mut buf, mut read, mut total) = (null_mut::<u8>(), 0u32, 0u32);
-        let r = unsafe { NetShareEnum(name.as_ptr(), 1, &mut buf, MAX_PREFERRED_LENGTH, &mut read, &mut total, &mut resume) };
+        let r = unsafe {
+            NetShareEnum(name.as_ptr(), 1, &mut buf, MAX_PREFERRED_LENGTH, &mut read, &mut total, &mut resume)
+        };
         if r != NERR_SUCCESS && r != ERROR_MORE_DATA {
             return Err(io::Error::from_raw_os_error(r as i32));
         }
@@ -684,7 +689,9 @@ pub fn recycle_bin_items() -> Vec<BinItem> {
                 let Some(id) = name.strip_prefix("$I") else { continue };
                 let data = user.path().join(format!("$R{id}"));
                 let Ok(md) = std::fs::symlink_metadata(&data) else { continue };
-                let Some((size, deleted, original)) = std::fs::read(f.path()).ok().and_then(|b| crate::parse_bin_info(&b)) else {
+                let Some((size, deleted, original)) =
+                    std::fs::read(f.path()).ok().and_then(|b| crate::parse_bin_info(&b))
+                else {
                     continue;
                 };
                 out.push(BinItem { original, deleted, size, is_dir: md.is_dir(), data, info: f.path() });

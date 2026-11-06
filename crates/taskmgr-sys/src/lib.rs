@@ -13,7 +13,7 @@ use std::io;
 use std::sync::Arc;
 
 pub use taskmgr_core::RawSample;
-use taskmgr_core::{Extras, Service, Session, StartupItem, StaticInfo};
+use taskmgr_core::{CpuInfo, Extras, Service, Session, StartupItem, StaticInfo};
 
 #[cfg(windows)]
 mod windows;
@@ -118,6 +118,57 @@ pub fn set_startup_enabled(item: &StartupItem, enabled: bool) -> io::Result<()> 
     imp::set_startup_enabled(item, enabled)
 }
 
+/// Processor name, clocks, topology and caches; read once.
+pub fn cpu_info() -> CpuInfo {
+    imp::cpu_info()
+}
+
+pub fn disconnect_session(id: u32) -> io::Result<()> {
+    imp::disconnect_session(id)
+}
+
+/// Signs the session's user out; their unsaved work is lost.
+pub fn logoff_session(id: u32) -> io::Result<()> {
+    imp::logoff_session(id)
+}
+
+pub fn last_bios_ms() -> Option<u32> {
+    imp::last_bios_ms()
+}
+
+/// Opens the classic Services console.
+pub fn open_services_console() -> io::Result<()> {
+    imp::run_new_task("services.msc", false)
+}
+
+/// Program path of a startup command (quotes stripped, `%VARS%` expanded).
+pub fn startup_exe(command: &str) -> String {
+    #[cfg(windows)]
+    {
+        windows::startup_exe(command)
+    }
+    #[cfg(not(windows))]
+    {
+        split_command(command).0
+    }
+}
+
+/// True when Ctrl+Shift+Esc / taskmgr.exe currently opens this exe.
+pub fn replaces_taskmgr() -> bool {
+    let me = std::env::current_exe().map(|p| p.display().to_string().to_lowercase()).unwrap_or_default();
+    imp::taskmgr_replacement().is_some_and(|v| !me.is_empty() && v.to_lowercase().contains(&me))
+}
+
+/// Makes Ctrl+Shift+Esc open this exe (`true`) or the built-in Task Manager (`false`). Needs admin.
+pub fn set_replaces_taskmgr(on: bool) -> io::Result<()> {
+    if on {
+        let me = std::env::current_exe()?;
+        imp::set_taskmgr_replacement(Some(&me.display().to_string()))
+    } else {
+        imp::set_taskmgr_replacement(None)
+    }
+}
+
 pub fn is_elevated() -> bool {
     imp::is_elevated()
 }
@@ -125,6 +176,58 @@ pub fn is_elevated() -> bool {
 /// Relaunches the app through the administrator prompt; the caller should exit on `Ok`.
 pub fn restart_elevated() -> io::Result<()> {
     imp::restart_elevated()
+}
+
+pub fn affinity(pid: u32) -> io::Result<(u64, u64)> {
+    imp::affinity(pid)
+}
+
+pub fn set_affinity(pid: u32, mask: u64) -> io::Result<()> {
+    imp::set_affinity(pid, mask)
+}
+
+pub fn efficiency_mode(pid: u32) -> io::Result<bool> {
+    imp::efficiency_mode(pid)
+}
+
+pub fn set_efficiency_mode(pid: u32, on: bool) -> io::Result<()> {
+    imp::set_efficiency_mode(pid, on)
+}
+
+/// Writes a full memory dump; slow for large processes, so call it off the UI thread.
+pub fn create_dump(pid: u32, path: &std::path::Path) -> io::Result<()> {
+    imp::create_dump(pid, path)
+}
+
+/// "Run new task": a program, document, folder or URL, optionally through the UAC prompt.
+pub fn run_new_task(command: &str, admin: bool) -> io::Result<()> {
+    imp::run_new_task(command.trim(), admin)
+}
+
+pub fn search_online(term: &str) -> io::Result<()> {
+    let q: String = term
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            b' ' => "+".to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect();
+    imp::open_url(&format!("https://www.bing.com/search?q={q}"))
+}
+
+/// `"C:\Program Files\x.exe" -a b` -> (`C:\Program Files\x.exe`, `-a b`).
+pub(crate) fn split_command(cmd: &str) -> (String, String) {
+    let cmd = cmd.trim();
+    if let Some(rest) = cmd.strip_prefix('"')
+        && let Some(end) = rest.find('"')
+    {
+        return (rest[..end].to_string(), rest[end + 1..].trim().to_string());
+    }
+    match cmd.split_once(' ') {
+        Some((f, p)) => (f.to_string(), p.trim().to_string()),
+        None => (cmd.to_string(), String::new()),
+    }
 }
 
 /// Opens Explorer with the file selected.
@@ -137,5 +240,20 @@ pub fn open_file_location(path: &str) -> io::Result<()> {
     {
         let dir = std::path::Path::new(path).parent().map(|p| p.display().to_string()).unwrap_or_default();
         std::process::Command::new("xdg-open").arg(dir).spawn().map(|_| ())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_command;
+
+    #[test]
+    fn splits_commands() {
+        assert_eq!(split_command("notepad"), ("notepad".into(), String::new()));
+        assert_eq!(split_command("cmd /k echo hi"), ("cmd".into(), "/k echo hi".into()));
+        assert_eq!(
+            split_command(r#""C:\Program Files\a b.exe" --x"#),
+            (r"C:\Program Files\a b.exe".into(), "--x".into())
+        );
     }
 }
