@@ -31,6 +31,8 @@ enum Res {
 
 pub struct State {
     selected: Res,
+    /// Only the resource list, without tabs or details (double-click to leave).
+    pub summary: bool,
     per_core: bool,
     /// Draw kernel-mode time over the CPU graphs.
     kernel: bool,
@@ -56,6 +58,7 @@ impl Default for State {
             _ => Res::Cpu,
         };
         Self {
+            summary: std::env::var_os("OXI_TASKMGR_SUMMARY").is_some(),
             selected,
             per_core: false,
             kernel: false,
@@ -89,6 +92,44 @@ struct Entry<'a> {
 }
 
 impl State {
+    /// The resource entries with sparklines; in summary view they stretch to the window width.
+    fn list(&mut self, ui: &mut Ui, entries: &[Entry]) {
+        let spark =
+            if self.summary { Vec2::new((ui.available_width() * 0.45).max(70.0), 44.0) } else { Vec2::new(70.0, 44.0) };
+        for e in entries {
+            let sel = self.selected == e.res;
+            let frame = egui::Frame::new().inner_margin(6).fill(if sel && !self.summary {
+                ui.visuals().selection.bg_fill.gamma_multiply(0.35)
+            } else {
+                Color32::TRANSPARENT
+            });
+            let r = frame
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        graph::area(ui, spark, e.ring, e.max, e.color, false);
+                        ui.vertical(|ui| {
+                            ui.label(RichText::new(&e.title).strong());
+                            ui.label(RichText::new(&e.value).small());
+                        });
+                    });
+                })
+                .response
+                .interact(egui::Sense::click());
+            if r.clicked() {
+                self.selected = e.res;
+            }
+            if r.double_clicked() {
+                self.selected = e.res;
+                self.summary = !self.summary;
+            }
+            r.context_menu(|ui| {
+                if ui.checkbox(&mut self.summary, "Summary view").clicked() {
+                    ui.close();
+                }
+            });
+        }
+    }
+
     pub fn show(&mut self, ui: &mut Ui, snap: &Snapshot) {
         let s = &snap.system;
         let h = &snap.history;
@@ -196,32 +237,14 @@ impl State {
             self.selected = Res::Cpu;
         }
 
-        egui::Panel::left("perf-list").exact_size(250.0).resizable(false).show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for e in &entries {
-                    let sel = self.selected == e.res;
-                    let frame = egui::Frame::new().inner_margin(6).fill(if sel {
-                        ui.visuals().selection.bg_fill.gamma_multiply(0.35)
-                    } else {
-                        Color32::TRANSPARENT
-                    });
-                    let r = frame
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                graph::area(ui, Vec2::new(70.0, 44.0), e.ring, e.max, e.color, false);
-                                ui.vertical(|ui| {
-                                    ui.label(RichText::new(&e.title).strong());
-                                    ui.label(RichText::new(&e.value).small());
-                                });
-                            });
-                        })
-                        .response
-                        .interact(egui::Sense::click());
-                    if r.clicked() {
-                        self.selected = e.res;
-                    }
-                }
+        if self.summary {
+            egui::CentralPanel::default().show(ui, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| self.list(ui, &entries));
             });
+            return;
+        }
+        egui::Panel::left("perf-list").exact_size(250.0).resizable(false).show(ui, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| self.list(ui, &entries));
         });
 
         egui::CentralPanel::default().show(ui, |ui| {
@@ -439,6 +462,13 @@ impl State {
             ui.horizontal(|ui| {
                 if ui.button("Copy").on_hover_text("Copy these figures as text").clicked() {
                     ui.ctx().copy_text(summary);
+                }
+                if ui
+                    .button("Summary view")
+                    .on_hover_text("Show only the graphs; double-click one to come back")
+                    .clicked()
+                {
+                    self.summary = true;
                 }
                 if ui.button("Open Resource Monitor").clicked() {
                     let _ = taskmgr_sys::run_new_task("resmon", false);

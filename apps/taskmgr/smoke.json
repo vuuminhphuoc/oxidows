@@ -35,6 +35,13 @@
       }
     },
     {
+      "name": "performance-summary",
+      "env": {
+        "OXI_TASKMGR_TAB": "performance",
+        "OXI_TASKMGR_SUMMARY": "1"
+      }
+    },
+    {
       "name": "app-history",
       "env": {
         "OXI_TASKMGR_TAB": "app"

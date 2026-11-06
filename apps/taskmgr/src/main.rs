@@ -474,50 +474,54 @@ impl eframe::App for App {
             self.tab = Tab::ALL[if next { (i + 1) % n } else { (i + n - 1) % n }];
         }
 
-        egui::Panel::top("tabs").show(ui, |ui| {
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                for t in Tab::ALL {
-                    ui.selectable_value(&mut self.tab, t, t.label());
-                }
-                ui.separator();
-                if ui.button("Run new task").clicked() {
-                    self.status.open(Dialog::RunTask { command: String::new(), admin: false });
-                }
-                let mut ms = INTERVAL_MS.load(Ordering::Relaxed);
-                let label = match ms {
-                    0 => "Paused",
-                    500 => "Update: 0.5 s",
-                    1000 => "Update: 1 s",
-                    _ => "Update: 2 s",
-                };
-                egui::ComboBox::from_id_salt("interval").selected_text(label).show_ui(ui, |ui| {
-                    ui.selectable_value(&mut ms, 500, "0.5 s");
-                    ui.selectable_value(&mut ms, 1000, "1 s");
-                    ui.selectable_value(&mut ms, 2000, "2 s");
-                    ui.selectable_value(&mut ms, 0, "Paused");
-                });
-                if ms != INTERVAL_MS.load(Ordering::Relaxed) {
-                    INTERVAL_MS.store(ms, Ordering::Relaxed);
-                    self.settings.interval_ms = ms;
-                    self.save_settings();
-                }
-                if !self.elevated
-                    && ui
-                        .button("Run as administrator")
-                        .on_hover_text(
-                            "Needed to end elevated processes, control services and edit machine-wide startup apps",
-                        )
-                        .clicked()
-                {
-                    match taskmgr_sys::restart_elevated() {
-                        Ok(()) => std::process::exit(0),
-                        Err(e) => self.status.set(e.to_string()),
+        // Summary view: the Performance list alone, as in Task Manager.
+        let summary = self.tab == Tab::Performance && self.performance.summary;
+        if !summary {
+            egui::Panel::top("tabs").show(ui, |ui| {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    for t in Tab::ALL {
+                        ui.selectable_value(&mut self.tab, t, t.label());
                     }
-                }
+                    ui.separator();
+                    if ui.button("Run new task").clicked() {
+                        self.status.open(Dialog::RunTask { command: String::new(), admin: false });
+                    }
+                    let mut ms = INTERVAL_MS.load(Ordering::Relaxed);
+                    let label = match ms {
+                        0 => "Paused",
+                        500 => "Update: 0.5 s",
+                        1000 => "Update: 1 s",
+                        _ => "Update: 2 s",
+                    };
+                    egui::ComboBox::from_id_salt("interval").selected_text(label).show_ui(ui, |ui| {
+                        ui.selectable_value(&mut ms, 500, "0.5 s");
+                        ui.selectable_value(&mut ms, 1000, "1 s");
+                        ui.selectable_value(&mut ms, 2000, "2 s");
+                        ui.selectable_value(&mut ms, 0, "Paused");
+                    });
+                    if ms != INTERVAL_MS.load(Ordering::Relaxed) {
+                        INTERVAL_MS.store(ms, Ordering::Relaxed);
+                        self.settings.interval_ms = ms;
+                        self.save_settings();
+                    }
+                    if !self.elevated
+                        && ui
+                            .button("Run as administrator")
+                            .on_hover_text(
+                                "Needed to end elevated processes, control services and edit machine-wide startup apps",
+                            )
+                            .clicked()
+                    {
+                        match taskmgr_sys::restart_elevated() {
+                            Ok(()) => std::process::exit(0),
+                            Err(e) => self.status.set(e.to_string()),
+                        }
+                    }
+                });
+                ui.add_space(2.0);
             });
-            ui.add_space(2.0);
-        });
+        }
         if let Some(pid) = self.status.goto_details.lock().ok().and_then(|mut g| g.take()) {
             self.tab = Tab::Details;
             self.details.select(pid, &snap);
@@ -530,24 +534,26 @@ impl eframe::App for App {
         WANT_SERVICES.store(self.tab == Tab::Services, Ordering::Relaxed);
         WANT_SESSIONS.store(self.tab == Tab::Users, Ordering::Relaxed);
 
-        egui::Panel::bottom("status").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let s = &snap.system;
-                ui.label(format!(
-                    "Processes: {}   CPU: {:.0}%   Memory: {:.0}%",
-                    s.process_count,
-                    s.cpu_pct,
-                    if s.mem_total == 0 { 0.0 } else { s.mem_used as f64 * 100.0 / s.mem_total as f64 }
-                ));
-                if let Some(e) = &self.error {
-                    ui.colored_label(ui.visuals().error_fg_color, e);
-                }
-                if let Some(msg) = self.status.get() {
-                    ui.separator();
-                    ui.label(msg);
-                }
+        if !summary {
+            egui::Panel::bottom("status").show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let s = &snap.system;
+                    ui.label(format!(
+                        "Processes: {}   CPU: {:.0}%   Memory: {:.0}%",
+                        s.process_count,
+                        s.cpu_pct,
+                        if s.mem_total == 0 { 0.0 } else { s.mem_used as f64 * 100.0 / s.mem_total as f64 }
+                    ));
+                    if let Some(e) = &self.error {
+                        ui.colored_label(ui.visuals().error_fg_color, e);
+                    }
+                    if let Some(msg) = self.status.get() {
+                        ui.separator();
+                        ui.label(msg);
+                    }
+                });
             });
-        });
+        }
 
         egui::CentralPanel::default().show(ui, |ui| match self.tab {
             Tab::Processes => self.processes.show(ui, &snap),
