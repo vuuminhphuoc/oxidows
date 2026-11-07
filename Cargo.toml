@@ -19,6 +19,7 @@ eframe = { version = "0.36", default-features = false }
 egui = "0.36"
 egui_extras = { version = "0.36", default-features = false }
 windows-sys = "0.61"
+winresource = { version = "0.1", default-features = false }
 
 [workspace.lints.clippy]
 dbg_macro = "warn"

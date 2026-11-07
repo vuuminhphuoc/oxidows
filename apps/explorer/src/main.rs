@@ -273,8 +273,7 @@ struct App {
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, start: PathBuf, settings: settings::Settings) -> Self {
-        ui_common::install_fonts(&cc.egui_ctx);
-        settings.apply_theme(&cc.egui_ctx);
+        ui_common::setup(&cc.egui_ctx, settings.theme);
         let (tx, rx) = channel();
         let mut app = Self {
             ctx: cc.egui_ctx.clone(),
@@ -1829,7 +1828,7 @@ impl eframe::App for App {
             None => self.cur.to_string_lossy().into_owned(),
         };
         if title != self.title {
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Title(format!("{title} - Explorer (Rust)")));
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Title(format!("{title} - File Explorer (oxidows)")));
             self.title = title;
         }
 
@@ -1841,7 +1840,8 @@ impl eframe::App for App {
         view::status_bar(self, ui);
         view::sidebar(self, ui);
         pane::show(self, ui);
-        egui::CentralPanel::default().show(ui, |ui| view::file_list(self, ui));
+        let content = ui_common::content_frame(ui.style());
+        egui::CentralPanel::default().frame(content).show(ui, |ui| view::file_list(self, ui));
         view::dialog(self, ui);
         self.finish_drag(&ctx);
     }
@@ -2036,7 +2036,10 @@ fn run(renderer: ui_common::Renderer) -> eframe::Result {
             ui_common::Renderer::Wgpu => eframe::Renderer::Wgpu,
         },
         viewport: egui::ViewportBuilder::default()
-            .with_title("Explorer (Rust)")
+            .with_title("File Explorer (oxidows)")
+            .with_icon(Arc::new(
+                eframe::icon_data::from_png_bytes(ui_common::app_icon::EXPLORER_PNG).expect("embedded icon is a PNG"),
+            ))
             .with_inner_size(settings.size)
             .with_maximized(settings.maximized)
             .with_min_inner_size([520.0, 320.0]),
