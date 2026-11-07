@@ -39,13 +39,14 @@ pub fn search_url(root: &Path, query: &str) -> String {
 pub fn shell_search(root: &Path, query: &str, cancel: &AtomicBool, found: &mut dyn FnMut(PathBuf)) -> io::Result<()> {
     crate::windows::com_init();
     let url: Vec<u16> = search_url(root, query).encode_utf16().chain(Some(0)).collect();
-    let to_io = |e: windows::core::Error| io::Error::other(e.message());
-    let folder: IShellItem = unsafe { SHCreateItemFromParsingName(PCWSTR(url.as_ptr()), None) }.map_err(to_io)?;
-    let items: IEnumShellItems = unsafe { folder.BindToHandler(None, &BHID_EnumItems) }.map_err(to_io)?;
+    let err = |step: &'static str| move |e: windows::core::Error| io::Error::other(format!("{step}: {}", e.message()));
+    let folder: IShellItem =
+        unsafe { SHCreateItemFromParsingName(PCWSTR(url.as_ptr()), None) }.map_err(err("search folder"))?;
+    let items: IEnumShellItems = unsafe { folder.BindToHandler(None, &BHID_EnumItems) }.map_err(err("enumerate"))?;
     let mut buf: [Option<IShellItem>; 32] = Default::default();
     while !cancel.load(Ordering::Relaxed) {
         let mut n = 0u32;
-        unsafe { items.Next(&mut buf, Some(&mut n)) }.map_err(to_io)?;
+        unsafe { items.Next(&mut buf, Some(&mut n)) }.map_err(err("results"))?;
         if n == 0 {
             break;
         }

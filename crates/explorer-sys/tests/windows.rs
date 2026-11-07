@@ -458,6 +458,15 @@ fn shell_search_finds_by_name_and_stat_reads_entries() {
     let r = explorer_sys::shell_search(&d, "needle-oxi", &AtomicBool::new(false), &mut |p| found.push(p));
     w.store(true, Ordering::Relaxed);
     println!("shell search: {r:?} {found:?}");
+    // Without the Windows Search service (not installed on Windows Server by default) the
+    // shell can't run the query and the app walks the folders itself instead.
+    let service = std::process::Command::new("sc").args(["query", "WSearch"]).output().unwrap();
+    let service = String::from_utf8_lossy(&service.stdout).into_owned();
+    println!("WSearch: {service}");
+    if r.is_err() && !service.contains("RUNNING") {
+        fs::remove_dir_all(&d).unwrap();
+        return;
+    }
     r.expect("shell search");
     let same = |a: &Path, b: &Path| fs::canonicalize(a).ok() == fs::canonicalize(b).ok();
     assert!(found.iter().any(|p| same(p, &d.join("sub").join("needle-oxi.txt"))), "{found:?}");
