@@ -59,8 +59,8 @@ as the feature.
 | Memory graph, in use, available, committed | done | |
 | Memory cached, paged / non-paged pool, composition bar, hardware reserved | done | `GetPerformanceInfo` |
 | Memory speed, slots, form factor | done | SMBIOS type 17 |
-| One entry per physical disk: active time, response time, read / write speed | done | PDH `PhysicalDisk(*)` |
-| Disk model, capacity, type (SSD / HDD), bus, system disk, page file | done | `IOCTL_STORAGE_QUERY_PROPERTY` |
+| One entry per physical disk: active time, response time, read / write speed, transfer-rate graph | done | PDH `PhysicalDisk(*)`; titled "Disk 0 (C:)" |
+| Disk model, capacity, type (SSD / HDD), bus, system disk, page file | done | `IOCTL_STORAGE_QUERY_PROPERTY`, `IOCTL_DISK_GET_DRIVE_GEOMETRY_EX` (no admin) |
 | One entry per adapter: send / receive, link speed | done | `GetIfTable2` |
 | Adapter IPv4 / IPv6, DNS name, SSID | done | `GetAdaptersAddresses`, WLAN API |
 | GPU utilization, engines (3D, Copy, Video…), dedicated / shared memory | done | PDH `GPU Engine(*)`, `GPU Adapter Memory(*)` |

@@ -53,7 +53,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Show/hide file name extensions | ✅ | … menu |
 | Show protected OS files | ✅ | separate checkbox; hidden+system items stay out unless it is on |
 | Compact mode | ➖ | |
-| Preview pane (Alt+P) | ✅ | hosts the registered Windows preview handler (Office, PDF, mail, fonts, media) out of process; text and thumbnails otherwise |
+| Preview pane (Alt+P) | ✅ | hosts the registered Windows preview handler (Office, PDF, mail, fonts, media) out of process; text and thumbnails otherwise; files marked as downloaded from the internet get a warning instead, as Explorer |
 | Details pane (Alt+Shift+P) | ✅ | type, size, dates, attributes; totals for a multi-selection |
 | Status bar: item count, selection count and size | ✅ | |
 
@@ -101,7 +101,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | --- | --- | --- |
 | Filter the current folder as you type | ✅ | |
 | Search subfolders (Enter) | ✅ | name match, streamed, skips links |
-| Windows Search index, file contents, `kind:` / `date:` filters | ✅ | queries go to the shell (search-ms), so the index answers where available; without it: own walk with kind:, date:, size:, ext:, name:, content:, wildcards |
+| Windows Search index, file contents, `kind:` / `date:` filters | ✅ | AQS parsed by `IQueryParser`, run by a shell search folder (`ISearchFolderItemFactory`), so the index answers where available; without it: own walk with kind:, date:, size:, ext:, name:, content:, wildcards |
 
 ## Special locations
 

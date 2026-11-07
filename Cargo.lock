@@ -1719,7 +1719,7 @@ dependencies = [
  "explorer-core",
  "explorer-sys",
  "raw-window-handle",
- "ui-fonts",
+ "ui-common",
 ]
 
 [[package]]
@@ -1732,7 +1732,7 @@ dependencies = [
  "raw-window-handle",
  "taskmgr-core",
  "taskmgr-sys",
- "ui-fonts",
+ "ui-common",
 ]
 
 [[package]]
@@ -2437,10 +2437,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "ui-fonts"
+name = "ui-common"
 version = "0.3.0"
 dependencies = [
  "egui",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

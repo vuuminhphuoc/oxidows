@@ -273,7 +273,7 @@ struct App {
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, start: PathBuf, settings: settings::Settings) -> Self {
-        ui_fonts::install(&cc.egui_ctx);
+        ui_common::install_fonts(&cc.egui_ctx);
         settings.apply_theme(&cc.egui_ctx);
         let (tx, rx) = channel();
         let mut app = Self {
@@ -2006,19 +2006,20 @@ fn recent_files(max: usize) -> Vec<Entry> {
         .collect()
 }
 
-/// wgpu on Windows: it falls back to the WARP software rasteriser on machines without a GPU
-/// driver (VMs, RDP, CI runners), where OpenGL is only the 1.1 GDI stub. `OXI_RENDERER=glow`
-/// or `wgpu` overrides.
-fn renderer() -> eframe::Renderer {
-    match std::env::var("OXI_RENDERER").as_deref() {
-        Ok("glow") => eframe::Renderer::Glow,
-        Ok("wgpu") => eframe::Renderer::Wgpu,
-        _ if cfg!(windows) => eframe::Renderer::Wgpu,
-        _ => eframe::Renderer::Glow,
+fn main() -> eframe::Result {
+    // OpenGL where there is a GPU driver, wgpu (WARP) otherwise; see `ui_common::choose_renderer`.
+    let (renderer, auto) = ui_common::choose_renderer();
+    let r = run(renderer);
+    if r.is_err() && auto && renderer == ui_common::Renderer::Glow {
+        eprintln!("OpenGL failed ({r:?}); starting again with wgpu");
+        if ui_common::relaunch_with(ui_common::Renderer::Wgpu).is_ok() {
+            return Ok(());
+        }
     }
+    r
 }
 
-fn main() -> eframe::Result {
+fn run(renderer: ui_common::Renderer) -> eframe::Result {
     let start = std::env::args_os()
         .nth(1)
         .map(PathBuf::from)
@@ -2027,7 +2028,10 @@ fn main() -> eframe::Result {
         .unwrap_or_else(|| PathBuf::from(explorer_core::HOME));
     let settings = settings::Settings::load();
     let options = eframe::NativeOptions {
-        renderer: renderer(),
+        renderer: match renderer {
+            ui_common::Renderer::Glow => eframe::Renderer::Glow,
+            ui_common::Renderer::Wgpu => eframe::Renderer::Wgpu,
+        },
         viewport: egui::ViewportBuilder::default()
             .with_title("Explorer (Rust)")
             .with_inner_size(settings.size)
