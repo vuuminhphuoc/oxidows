@@ -5,8 +5,7 @@ use std::path::{Path, PathBuf};
 use egui::{Align, Layout, RichText, Sense, Ui};
 use egui_extras::{Column, TableBuilder};
 use explorer_core::{
-    SortKey, classify, format_attributes, format_bytes, format_size_kb, format_time, icon_for, location_crumbs,
-    parent_path,
+    SortKey, classify, format_attributes, format_bytes, format_size_kb, format_time, icon_for, parent_path,
 };
 use explorer_sys::DriveKind;
 
@@ -169,7 +168,7 @@ pub fn toolbar(app: &mut App, ui: &mut Ui) {
             ui.add_enabled_ui(recent.len() > 1, |ui| {
                 ui.menu_button("⏷", |ui| {
                     for (steps, p) in recent {
-                        let label = location_crumbs(&p).last().map_or_else(|| p.display().to_string(), |c| c.0.clone());
+                        let label = app.crumbs(&p).last().map_or_else(|| p.display().to_string(), |c| c.0.clone());
                         let text = if steps == 0 { RichText::new(label).strong() } else { RichText::new(label) };
                         if ui.button(text).on_hover_text(p.display().to_string()).clicked() {
                             app.jump_history(steps);
@@ -346,6 +345,7 @@ pub fn toolbar(app: &mut App, ui: &mut Ui) {
                 );
                 ui.checkbox(&mut app.show_extensions, "File name extensions");
                 ui.checkbox(&mut app.item_checkboxes, "Item check boxes");
+                ui.checkbox(&mut app.compact, "Compact view");
                 if ui.button("Open in Terminal").clicked() {
                     if let Err(e) = explorer_sys::open_terminal(&app.cur) {
                         app.status = Some(format!("Terminal: {e}"));
@@ -469,7 +469,7 @@ fn address_bar(app: &mut App, ui: &mut Ui) {
             Sense::click(),
         );
         ui.spacing_mut().item_spacing.x = 0.0;
-        let crumbs = location_crumbs(&app.cur);
+        let crumbs = app.crumbs(&app.cur);
         // Long paths: show the last segments that fit, like Explorer.
         let skip = crumbs.len().saturating_sub(((width / 90.0) as usize).max(2));
         let mut go = None;
@@ -857,7 +857,8 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
     // On Windows the shell's own menus are used (all installed handlers); egui menus are the
     // fallback for the virtual Network page and for non-Windows builds.
     let place = explorer_core::classify(&app.cur);
-    let shell_menus = app.hwnd != 0 && (!place.is_page() || matches!(place, explorer_core::Place::Server(_)));
+    let shell_menus = app.hwnd != 0
+        && (!place.is_page() || matches!(place, explorer_core::Place::Server(_) | explorer_core::Place::Shell(_)));
     let in_bin = app.in_recycle_bin();
     if shell_menus && bg.secondary_clicked() {
         action = Some(Action::ShellMenu(None));
@@ -918,7 +919,8 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
         });
     }
 
-    let row_h = 22.0;
+    // Compact view, as in Explorer: tighter rows.
+    let row_h = if app.compact { 18.0 } else { 22.0 };
     let mut sort_click = None;
     // Right-clicking any header opens the column chooser, as in Explorer.
     let mut toggle_col: Option<SortKey> = None;

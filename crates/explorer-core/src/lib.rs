@@ -519,6 +519,51 @@ pub const LIBRARIES: &str = "::libraries";
 /// by full path.
 pub const GALLERY: &str = "::gallery";
 
+/// Prefix of a shell namespace item that isn't a file-system path: `::shell\\<parsing name>`
+/// (a phone over MTP, Control Panel, a media server…). The shell lists, opens and copies
+/// these; the app only shows them. Items in such a folder are named by full path too.
+pub const SHELL: &str = "::shell";
+
+/// The shell's parsing name of This PC, Network and Control Panel.
+pub const THIS_PC_CLSID: &str = "::{20D04FE0-3AEA-1069-A2D8-08002B30309D}";
+pub const NETWORK_CLSID: &str = "::{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}";
+pub const CONTROL_PANEL_CLSID: &str = "::{26EE0668-A00A-44D7-9371-BEB064C98683}";
+
+/// A parsing name split into its levels: the root (`::{CLSID}`, or a whole path), then one
+/// item ID per level. A device ID such as `\\\\?\\usb#vid_…#{…}` stays one level.
+pub fn shell_segments(parsing: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = parsing;
+    let take = |rest: &mut &str, from: usize| -> String {
+        let end = rest[from..].find('\\').map_or(rest.len(), |i| i + from);
+        let seg = rest[..end].to_string();
+        *rest = rest.get(end + 1..).unwrap_or("");
+        seg
+    };
+    while !rest.is_empty() {
+        let from = if rest.starts_with(r"\\?\") { 4 } else { 0 };
+        let seg = take(&mut rest, from);
+        if !seg.is_empty() {
+            out.push(seg);
+        }
+    }
+    out
+}
+
+/// The app path of the shell item `parsing`.
+pub fn shell_path(parsing: &str) -> PathBuf {
+    PathBuf::from(format!("{SHELL}\\{parsing}"))
+}
+
+/// The shell parsing name behind an app path: the part after `::shell\\`, or the path itself.
+pub fn shell_parsing(p: &Path) -> std::borrow::Cow<'_, str> {
+    let s = p.to_string_lossy();
+    match s.strip_prefix(SHELL).and_then(|r| r.strip_prefix('\\')) {
+        Some(rest) => std::borrow::Cow::Owned(rest.to_string()),
+        None => s,
+    }
+}
+
 /// What kind of location a path is, for the parts that are not plain folders.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Place {
@@ -531,6 +576,8 @@ pub enum Place {
     /// One library, by name.
     Library(String),
     Gallery,
+    /// A shell namespace folder, by parsing name.
+    Shell(String),
     /// `\\server`: the list of its shares.
     Server(String),
     /// `\\server\share\...`
@@ -562,6 +609,9 @@ pub fn classify(p: &Path) -> Place {
     if s == GALLERY {
         return Place::Gallery;
     }
+    if let Some(rest) = s.strip_prefix(SHELL).and_then(|r| r.strip_prefix('\\')).filter(|r| !r.is_empty()) {
+        return Place::Shell(rest.to_string());
+    }
     if let Some(name) = s.strip_prefix(LIBRARIES).and_then(|r| r.strip_prefix(['\\', '/'])).filter(|n| !n.is_empty()) {
         return Place::Library(name.to_string());
     }
@@ -586,7 +636,10 @@ impl Place {
 
     /// A page whose items are named by their full path.
     pub fn names_are_paths(&self) -> bool {
-        matches!(self, Place::ThisPc | Place::Home | Place::Libraries | Place::Library(_) | Place::Gallery)
+        matches!(
+            self,
+            Place::ThisPc | Place::Home | Place::Libraries | Place::Library(_) | Place::Gallery | Place::Shell(_)
+        )
     }
 }
 
@@ -597,6 +650,10 @@ fn has_drive(p: &Path) -> bool {
 
 /// Path of the item `name` inside `cur` (handles the virtual Network and server levels).
 pub fn child_path(cur: &Path, name: &str) -> PathBuf {
+    // Shell items carry their whole path wherever they are listed.
+    if name.starts_with(SHELL) {
+        return PathBuf::from(name);
+    }
     match classify(cur) {
         Place::Network => PathBuf::from(format!(r"\\{name}")),
         p if p.names_are_paths() => PathBuf::from(name),
@@ -610,6 +667,16 @@ pub fn parent_path(cur: &Path) -> Option<PathBuf> {
     match classify(cur) {
         Place::Network | Place::RecycleBin | Place::ThisPc | Place::Home | Place::Libraries | Place::Gallery => None,
         Place::Library(_) => Some(PathBuf::from(LIBRARIES)),
+        Place::Shell(parsing) => {
+            let segs = shell_segments(&parsing);
+            match segs.len() {
+                0 => None,
+                1 => Some(PathBuf::from(THIS_PC)),
+                2 if segs[0].eq_ignore_ascii_case(THIS_PC_CLSID) => Some(PathBuf::from(THIS_PC)),
+                2 if segs[0].eq_ignore_ascii_case(NETWORK_CLSID) => Some(PathBuf::from(NETWORK)),
+                n => Some(shell_path(&segs[..n - 1].join("\\"))),
+            }
+        }
         Place::Server(_) => Some(PathBuf::from(NETWORK)),
         Place::Unc { server, share } => {
             let s = cur.to_string_lossy();
@@ -635,6 +702,21 @@ pub fn location_crumbs(cur: &Path) -> Vec<(String, PathBuf)> {
         Place::Home => vec![("Home".into(), PathBuf::from(HOME))],
         Place::Gallery => vec![("Gallery".into(), PathBuf::from(GALLERY))],
         Place::Libraries => vec![("Libraries".into(), PathBuf::from(LIBRARIES))],
+        // Labels are the raw IDs; the app swaps in the display names it has seen.
+        Place::Shell(parsing) => {
+            let segs = shell_segments(&parsing);
+            let mut out = Vec::new();
+            for i in 0..segs.len() {
+                let path = shell_path(&segs[..=i].join("\\"));
+                match segs[0].to_ascii_uppercase() {
+                    r if i == 0 && r == THIS_PC_CLSID => out.push(("This PC".into(), PathBuf::from(THIS_PC))),
+                    r if i == 0 && r == NETWORK_CLSID => out.push(("Network".into(), PathBuf::from(NETWORK))),
+                    r if i == 0 && r == CONTROL_PANEL_CLSID => out.push(("Control Panel".into(), path)),
+                    _ => out.push((segs[i].clone(), path)),
+                }
+            }
+            out
+        }
         Place::Library(name) => vec![
             ("Libraries".into(), PathBuf::from(LIBRARIES)),
             (name.clone(), PathBuf::from(format!("{LIBRARIES}\\{name}"))),
@@ -830,6 +912,7 @@ pub fn shell_folder_template(name: &str) -> Option<&'static str> {
         "mycomputerfolder" | "thispc" => THIS_PC,
         "home" => HOME,
         "libraries" => LIBRARIES,
+        "controlpanelfolder" | "controlpanel" => "::shell\\::{26EE0668-A00A-44D7-9371-BEB064C98683}",
         "gallery" => GALLERY,
         _ => return None,
     })
@@ -1226,5 +1309,30 @@ mod tests {
         assert_eq!(cloud_status(attr::ARCHIVE, true), "✓ Available on this device");
         assert_eq!(cloud_status(attr::ARCHIVE, false), "");
         assert_eq!(Prop::parse("status"), Some(Prop::Status));
+    }
+
+    #[test]
+    fn shell_namespace_paths() {
+        let phone = r"::{20D04FE0-3AEA-1069-A2D8-08002B30309D}\\\?\usb#vid_04e8&pid_6860#r58m#{6ac27878-a6fa-4155-ba85-f98f491d4f33}\SID-{10001,,1}\{0001}";
+        let segs = shell_segments(phone);
+        assert_eq!(segs.len(), 4, "{segs:?}");
+        assert!(segs[1].starts_with(r"\\?\usb#") && segs[1].ends_with('}'));
+        let p = shell_path(phone);
+        assert_eq!(classify(&p), Place::Shell(phone.into()));
+        assert_eq!(shell_parsing(&p), phone);
+        assert_eq!(shell_parsing(Path::new(r"C:\x")), r"C:\x");
+        let up = parent_path(&p).unwrap();
+        assert_eq!(shell_parsing(&up), segs[..3].join("\\"));
+        let device = shell_path(&segs[..2].join("\\"));
+        assert_eq!(parent_path(&device), Some(PathBuf::from(THIS_PC)));
+        let crumbs = location_crumbs(&p);
+        assert_eq!(crumbs[0], ("This PC".to_string(), PathBuf::from(THIS_PC)));
+        assert_eq!(crumbs.len(), 4);
+        assert_eq!(child_path(&p, &shell_path("x").to_string_lossy()), shell_path("x"));
+        assert!(Place::Shell("x".into()).is_page());
+        assert_eq!(
+            shell_folder_template("controlpanel").map(|t| classify(Path::new(t))),
+            Some(Place::Shell(CONTROL_PANEL_CLSID.into()))
+        );
     }
 }

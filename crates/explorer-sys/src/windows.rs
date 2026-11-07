@@ -93,6 +93,10 @@ fn long_path(p: &Path) -> PathBuf {
     }
 }
 
+pub(crate) fn filetime_parts_to_unix(low: u32, high: u32) -> i64 {
+    filetime_to_unix(FILETIME { dwLowDateTime: low, dwHighDateTime: high })
+}
+
 fn filetime_to_unix(ft: FILETIME) -> i64 {
     let t = ((ft.dwHighDateTime as i64) << 32) | ft.dwLowDateTime as i64;
     if t == 0 { 0 } else { (t - FILETIME_UNIX_EPOCH) / 10_000_000 }
@@ -530,7 +534,23 @@ pub fn shell_icon(path: &Path, is_dir: bool, per_file: bool) -> Option<IconImage
     let attrs = if is_dir { FILE_ATTRIBUTE_DIRECTORY } else { FILE_ATTRIBUTE_NORMAL };
     // Per item: with the shell's overlays (shortcut arrow, OneDrive status, sharing).
     let flags = SHGFI_ICON | SHGFI_SMALLICON | if per_file { SHGFI_ADDOVERLAYS } else { SHGFI_USEFILEATTRIBUTES };
-    let ok = unsafe { SHGetFileInfoW(w.as_ptr(), attrs, &mut info, size_of::<SHFILEINFOW>() as u32, flags) };
+    let ok = if path.starts_with(explorer_core::SHELL) {
+        // Not a file-system path: ask by item ID list.
+        let p: Vec<u16> = explorer_core::shell_parsing(path).encode_utf16().chain(Some(0)).collect();
+        let mut pidl = null_mut();
+        let parsed = unsafe {
+            windows::Win32::UI::Shell::SHParseDisplayName(windows::core::PCWSTR(p.as_ptr()), None, &mut pidl, 0, None)
+        };
+        if parsed.is_err() || pidl.is_null() {
+            return None;
+        }
+        let flags = SHGFI_ICON | SHGFI_SMALLICON | windows_sys::Win32::UI::Shell::SHGFI_PIDL;
+        let r = unsafe { SHGetFileInfoW(pidl as *const u16, 0, &mut info, size_of::<SHFILEINFOW>() as u32, flags) };
+        unsafe { windows::Win32::UI::Shell::ILFree(Some(pidl)) };
+        r
+    } else {
+        unsafe { SHGetFileInfoW(w.as_ptr(), attrs, &mut info, size_of::<SHFILEINFOW>() as u32, flags) }
+    };
     if ok == 0 || info.hIcon.is_null() {
         return None;
     }
