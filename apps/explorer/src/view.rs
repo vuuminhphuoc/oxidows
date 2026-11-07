@@ -778,7 +778,8 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
 pub fn status_bar(app: &mut App, ui: &mut Ui) {
     egui::Panel::bottom("status").show(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.label(format!("{} items", app.view.len()));
+            let n = app.view.len();
+            ui.label(if n == 1 { "1 item".to_string() } else { format!("{n} items") });
             if !app.selected.is_empty() {
                 ui.separator();
                 let sel = app.selected_entries();

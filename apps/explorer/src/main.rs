@@ -879,6 +879,10 @@ impl App {
 
     fn navigate(&mut self, to: PathBuf) {
         if to == self.cur {
+            // As Explorer: the folder's own breadcrumb leaves search results for the folder.
+            if self.deep_search.is_some() {
+                return self.entered_new_folder(None);
+            }
             return self.refresh();
         }
         let from = std::mem::replace(&mut self.cur, to);
