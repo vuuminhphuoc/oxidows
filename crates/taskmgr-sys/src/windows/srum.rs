@@ -252,23 +252,61 @@ fn app_name(blob: &[u8]) -> String {
 }
 
 /// Reads App history. `cycles_per_sec` turns CPU cycles into time (the processor's base clock).
-/// Which interface types Windows bills as metered by default (`NetworkList\DefaultMediaCost`:
-/// 1 unrestricted, 2 fixed). A network marked metered by hand is not seen here.
+/// Which connections count as metered: the per-interface choice the user made in Settings
+/// (`DusmSvc\Profiles\{interface}\*\UserCost`, 2 = metered) where there is one, else the default
+/// for the interface type (`NetworkList\DefaultMediaCost`: 1 unrestricted, 2 fixed).
 struct MeteredTypes {
     ethernet: bool,
     wifi: bool,
     mobile: bool,
+    by_luid: HashMap<u64, Option<bool>>,
 }
 
 impl MeteredTypes {
     fn read() -> Self {
         let key = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\NetworkList\DefaultMediaCost";
         let cost = |v: &str, default: u32| super::hw::reg_dword(key, v).unwrap_or(default) >= 2;
-        Self { ethernet: cost("Ethernet", 1), wifi: cost("WiFi", 1), mobile: cost("4G", 2) || cost("3G", 2) }
+        Self {
+            ethernet: cost("Ethernet", 1),
+            wifi: cost("WiFi", 1),
+            mobile: cost("4G", 2) || cost("3G", 2),
+            by_luid: HashMap::new(),
+        }
+    }
+
+    /// The user's setting for one interface, if they made one.
+    fn user_choice(luid: u64) -> Option<bool> {
+        use windows_sys::Win32::NetworkManagement::IpHelper::ConvertInterfaceLuidToGuid;
+        use windows_sys::Win32::NetworkManagement::Ndis::NET_LUID_LH;
+        let l = NET_LUID_LH { Value: luid };
+        let mut g: windows_sys::core::GUID = unsafe { std::mem::zeroed() };
+        // SAFETY: two plain structs.
+        if unsafe { ConvertInterfaceLuidToGuid(&l, &mut g) } != 0 {
+            return None;
+        }
+        let guid = format!(
+            "{{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}}",
+            g.data1,
+            g.data2,
+            g.data3,
+            g.data4[0],
+            g.data4[1],
+            g.data4[2],
+            g.data4[3],
+            g.data4[4],
+            g.data4[5],
+            g.data4[6],
+            g.data4[7]
+        );
+        let key = format!(r"SOFTWARE\Microsoft\DusmSvc\Profiles\{guid}\*");
+        super::hw::reg_dword(&key, "UserCost").filter(|c| *c != 0).map(|c| c >= 2)
     }
 
     /// The interface type is the top 16 bits of a NET_LUID.
-    fn is_metered(&self, luid: u64) -> bool {
+    fn is_metered(&mut self, luid: u64) -> bool {
+        if let Some(choice) = *self.by_luid.entry(luid).or_insert_with(|| Self::user_choice(luid)) {
+            return choice;
+        }
         match luid >> 48 {
             6 => self.ethernet,
             71 => self.wifi,
@@ -295,7 +333,7 @@ pub fn app_history(cycles_per_sec: f64) -> io::Result<AppHistory> {
 
     // (app id, cpu cycles, bytes sent, bytes received, metered bytes), aggregated below.
     let mut rows: Vec<(u64, u64, u64, u64, u64)> = Vec::new();
-    let metered = MeteredTypes::read();
+    let mut metered = MeteredTypes::read();
     let mut since: Option<f64> = None;
     let mut first = |d: Option<f64>| {
         if let Some(d) = d {

@@ -38,7 +38,7 @@ as the feature.
 | GPU engine column | done | busiest engine per process, from PDH `GPU Engine(*)` |
 | Status column | done | Suspended, Efficiency |
 | Publisher column | done | version resource CompanyName |
-| Power usage, Power usage trend | won't (for now) | no public per-process energy API |
+| Power usage, Power usage trend | done | estimated from CPU, GPU, disk and network (Windows' column is an estimate too); trend is a two-minute average |
 | End process tree | done | children first, PID-reuse guard |
 | Efficiency mode | done | EcoQoS + idle priority |
 | Open file location, Copy command line, Search online | done | |
@@ -67,7 +67,7 @@ as the feature.
 | One entry per GPU adapter with name, dedicated / shared memory used of total | done | DXGI + PDH split by LUID |
 | GPU driver version, driver date, DirectX version | done | DXGI `CheckInterfaceSupport`, the display driver key, D3D12 feature-level probe |
 | GPU physical location | done | SetupAPI `SPDRP_LOCATION_INFORMATION` |
-| NPU | partial | its engines show up as an extra, unnamed GPU entry; no own page yet |
+| NPU | done | DXCore machine-learning adapters without graphics, numbered NPU 0, 1... |
 | Copy to clipboard | done | |
 | Summary view | done | button or double-click; double-click again to come back |
 | Open Resource Monitor | done | launches `resmon` |
@@ -77,7 +77,7 @@ as the feature.
 | Feature | Status | Notes |
 | --- | --- | --- |
 | CPU time, network, uploads, downloads per app since a date | done | SRUM (`sru\SRUDB.dat`) copied with `esentutl /vss`, read with the ESE API; needs administrator |
-| Metered network | partial | by interface type and `DefaultMediaCost`; a Wi-Fi network set to metered by hand is not seen |
+| Metered network | done | the user's per-connection choice (`DusmSvc\Profiles`), else `DefaultMediaCost` for the interface type |
 | Delete usage history | done | keeps a baseline and subtracts it (Windows' own SRUM is left alone) |
 
 ## Startup apps
@@ -86,10 +86,10 @@ as the feature.
 | --- | --- | --- |
 | Name, Publisher, Status, Command, Location | done | Run keys (HKCU, HKLM, WOW6432Node) + Startup folders |
 | Enable / Disable | done | `StartupApproved`, same store as Windows |
-| Startup impact, Disk I/O and CPU at startup | won't (for now) | Windows computes these from boot traces it does not expose |
+| Startup impact, Disk I/O and CPU at startup | done | Microsoft's thresholds (1 s / 3 MB, 300 ms / 300 KB) applied to the app's own CPU and I/O when it started within 5 minutes of boot; Windows uses boot traces, so values can differ |
 | Last BIOS time | done | registry `Power\FwPOSTTime` |
 | Packaged (Store) app startup tasks | done | `AppModel\SystemAppData`, enable / disable |
-| Scheduled-task startup entries | won't | Task Manager does not list them either |
+| Scheduled-task startup entries | done (n/a) | Task Manager does not list them either |
 | Open file location, Search online | done | |
 | Properties | done | shell Properties sheet |
 

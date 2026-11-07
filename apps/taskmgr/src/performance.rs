@@ -222,11 +222,12 @@ impl State {
                 color: GPU,
             });
         }
+        let gpu_titles = taskmgr_core::gpu_titles(&s.gpus);
         for (i, g) in s.gpus.iter().enumerate() {
             if let Some(ring) = h.gpus.get(i) {
                 entries.push(Entry {
                     res: Res::Gpu(i),
-                    title: format!("GPU {i}"),
+                    title: gpu_titles[i].clone(),
                     value: format!("{}\n{:.0}%", g.name, g.util),
                     ring,
                     max: 100.0,
@@ -450,7 +451,10 @@ impl State {
                 Res::Gpu(i) => {
                     let one = s.gpus.get(i);
                     let ring = h.gpus.get(i).unwrap_or(&h.gpu_pct);
-                    let title = if one.is_some() { format!("GPU {i}") } else { "GPU".into() };
+                    let title = match one {
+                        Some(_) => taskmgr_core::gpu_titles(&s.gpus)[i].clone(),
+                        None => "GPU".into(),
+                    };
                     header(ui, &title, one.map_or("", |g| g.name.as_str()));
                     ui.label(RichText::new("Busiest engine over 60 seconds").small().weak());
                     graph::area(ui, big, ring, 100.0, GPU, true);

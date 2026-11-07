@@ -64,6 +64,8 @@ fn app_total(rows: &[ProcessRow], root: usize, children: &[usize]) -> ProcessRow
         t.disk_bps += r.disk_bps;
         t.net_bps += r.net_bps;
         t.gpu_pct = t.gpu_pct.max(r.gpu_pct);
+        t.power += r.power;
+        t.power_trend += r.power_trend;
     }
     t
 }
@@ -371,6 +373,7 @@ impl State {
             .column(Column::exact(90.0))
             .column(Column::exact(90.0))
             .column(Column::exact(60.0))
+            .columns(Column::exact(96.0), 2)
             .column(Column::initial(150.0).clip(true))
             .header(row_h, |mut h| {
                 for (key, title) in [
@@ -382,6 +385,8 @@ impl State {
                     (Some(SortKey::Disk), "Disk"),
                     (Some(SortKey::Network), "Network"),
                     (Some(SortKey::Gpu), "GPU"),
+                    (Some(SortKey::Power), "Power usage"),
+                    (Some(SortKey::PowerTrend), "Power usage trend"),
                     (None, "Publisher"),
                 ] {
                     h.col(|ui| match key {
@@ -406,7 +411,7 @@ impl State {
                                 let arrow = if self.collapsed[gi] { ">" } else { "v" };
                                 ui.label(RichText::new(format!("{arrow} {} ({n})", g.label())).strong());
                             });
-                            for _ in 0..8 {
+                            for _ in 0..10 {
                                 row.col(|_| {});
                             }
                             if row.response().clicked() {
@@ -490,6 +495,13 @@ impl State {
                         ui.painter().rect_filled(ui.max_rect(), 0.0, heat(ui, p.gpu_pct / 100.0));
                         ui.label(format!("{:.0}%", p.gpu_pct));
                     });
+                    for score in [p.power, p.power_trend] {
+                        row.col(|ui| {
+                            ui.painter().rect_filled(ui.max_rect(), 0.0, heat(ui, score / 25.0));
+                            ui.label(taskmgr_core::power_label(score))
+                                .on_hover_text("Estimated from CPU, GPU, disk and network use");
+                        });
+                    }
                     row.col(|ui| {
                         ui.label(&p.info.publisher);
                     });
