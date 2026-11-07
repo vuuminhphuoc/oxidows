@@ -14,6 +14,7 @@ taskmgr-core = { path = "crates/taskmgr-core" }
 taskmgr-sys = { path = "crates/taskmgr-sys" }
 explorer-core = { path = "crates/explorer-core" }
 explorer-sys = { path = "crates/explorer-sys" }
+ui-fonts = { path = "crates/ui-fonts" }
 eframe = { version = "0.36", default-features = false }
 egui = "0.36"
 egui_extras = { version = "0.36", default-features = false }

@@ -273,6 +273,7 @@ struct App {
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, start: PathBuf, settings: settings::Settings) -> Self {
+        ui_fonts::install(&cc.egui_ctx);
         settings.apply_theme(&cc.egui_ctx);
         let (tx, rx) = channel();
         let mut app = Self {

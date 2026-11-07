@@ -293,6 +293,7 @@ impl App {
             }
         }
         let settings = settings::Settings::load();
+        ui_fonts::install(&cc.egui_ctx);
         settings.apply_theme(&cc.egui_ctx);
         if settings.always_on_top {
             settings.apply_on_top(&cc.egui_ctx);
