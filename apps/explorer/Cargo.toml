@@ -16,3 +16,7 @@ ui-common = { workspace = true }
 egui_extras = { workspace = true }
 raw-window-handle = "0.6"
 eframe = { workspace = true, features = ["default_fonts", "glow", "wgpu", "x11", "wayland"] }
+
+# The exe icon and version info (shown by Explorer, Task Manager and the taskbar).
+[target.'cfg(windows)'.build-dependencies]
+winresource = { workspace = true }

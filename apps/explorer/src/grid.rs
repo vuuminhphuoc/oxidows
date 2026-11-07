@@ -132,6 +132,7 @@ pub fn show(
     let text = ui.visuals().text_color();
     let sel_fill = ui.visuals().selection.bg_fill.gamma_multiply(0.6);
     let hover_fill = ui.visuals().widgets.hovered.weak_bg_fill;
+    let folder = ui_common::Palette::of(ui).folder;
 
     scroll.show_viewport(ui, |ui, viewport| {
         let origin = ui.max_rect().min;
@@ -282,7 +283,7 @@ pub fn show(
                         if state.is_none() {
                             wanted_icons.push(key);
                         }
-                        let color = if e.is_dir { egui::Color32::from_rgb(230, 180, 60) } else { text };
+                        let color = if e.is_dir { folder } else { text };
                         ui.painter().text(
                             img_rect.center(),
                             egui::Align2::CENTER_CENTER,
