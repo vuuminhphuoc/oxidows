@@ -48,6 +48,25 @@ pub fn has_preview_handler(ext: &str) -> bool {
     }
 }
 
+/// The security zone a downloaded file came from (its Mark of the Web: the `Zone.Identifier`
+/// stream): 3 = Internet, 4 = Restricted. `None` when it has none (made locally, FAT drives).
+pub fn zone_of(path: &Path) -> Option<u32> {
+    #[cfg(windows)]
+    {
+        use std::io::Read;
+        let mut stream = path.as_os_str().to_owned();
+        stream.push(":Zone.Identifier");
+        let mut text = String::new();
+        std::fs::File::open(stream).ok()?.take(64 * 1024).read_to_string(&mut text).ok()?;
+        explorer_core::parse_zone_id(&text)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        None
+    }
+}
+
 /// Off Windows there are no preview handlers; this stands in so the app needs no `cfg`.
 #[cfg(not(windows))]
 pub struct PreviewHost;

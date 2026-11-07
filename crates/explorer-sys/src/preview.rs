@@ -35,6 +35,11 @@ fn to_io(e: windows::core::Error) -> io::Error {
     io::Error::other(e.message())
 }
 
+/// Names the step that failed: "DoPreview: Not implemented" says more than the HRESULT alone.
+fn step(name: &'static str) -> impl Fn(windows::core::Error) -> io::Error {
+    move |e| io::Error::other(format!("{name}: {}", e.message()))
+}
+
 /// The CLSID of the preview handler registered for `ext` (".docx"), if any.
 pub fn handler_for(ext: &str) -> Option<GUID> {
     if ext.is_empty() {
@@ -76,20 +81,30 @@ fn to_rect(r: [i32; 4]) -> RECT {
     RECT { left: r[0], top: r[1], right: r[2], bottom: r[3] }
 }
 
-/// Hands the file to the handler through whichever initializer it implements.
+/// Hands the file to the handler through whichever initializer it implements, trying the next
+/// one when an initializer is there but refuses the file.
 fn initialize(handler: &IPreviewHandler, path: &Path) -> windows::core::Result<()> {
     let p = wide(&path.to_string_lossy());
     let p = PCWSTR(p.as_ptr());
+    let mut last = windows::core::Error::from(windows::Win32::Foundation::E_NOINTERFACE);
     if let Ok(i) = handler.cast::<IInitializeWithItem>() {
         let item: IShellItem = unsafe { SHCreateItemFromParsingName(p, None) }?;
-        return unsafe { i.Initialize(&item, STGM_READ.0) };
+        match unsafe { i.Initialize(&item, STGM_READ.0) } {
+            Ok(()) => return Ok(()),
+            Err(e) => last = e,
+        }
     }
     if let Ok(i) = handler.cast::<IInitializeWithStream>() {
         let stream = unsafe { SHCreateStreamOnFileEx(p, (STGM_READ | STGM_SHARE_DENY_NONE).0, 0, false, None) }?;
-        return unsafe { i.Initialize(&stream, STGM_READ.0) };
+        match unsafe { i.Initialize(&stream, STGM_READ.0) } {
+            Ok(()) => return Ok(()),
+            Err(e) => last = e,
+        }
     }
-    let i: IInitializeWithFile = handler.cast()?;
-    unsafe { i.Initialize(p, STGM_READ.0) }
+    if let Ok(i) = handler.cast::<IInitializeWithFile>() {
+        return unsafe { i.Initialize(p, STGM_READ.0) };
+    }
+    Err(last)
 }
 
 impl PreviewHost {
@@ -108,8 +123,8 @@ impl PreviewHost {
         }
         let handler: IPreviewHandler = unsafe { CoCreateInstance(&clsid, None, CLSCTX_LOCAL_SERVER) }
             .or_else(|_| unsafe { CoCreateInstance(&clsid, None, CLSCTX_INPROC_SERVER) })
-            .map_err(to_io)?;
-        initialize(&handler, path).map_err(to_io)?;
+            .map_err(step("create"))?;
+        initialize(&handler, path).map_err(step("initialize"))?;
         let hwnd = unsafe {
             CreateWindowExW(
                 WINDOW_EX_STYLE(0),
@@ -129,8 +144,8 @@ impl PreviewHost {
         .map_err(to_io)?;
         let host = PreviewHost { handler, hwnd, rect, visible: false };
         let inner = to_rect([0, 0, rect[2] - rect[0], rect[3] - rect[1]]);
-        unsafe { host.handler.SetWindow(hwnd, &inner) }.map_err(to_io)?;
-        unsafe { host.handler.DoPreview() }.map_err(to_io)?;
+        unsafe { host.handler.SetWindow(hwnd, &inner) }.map_err(step("SetWindow"))?;
+        unsafe { host.handler.DoPreview() }.map_err(step("DoPreview"))?;
         Ok(host)
     }
 

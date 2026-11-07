@@ -670,6 +670,22 @@ pub fn location_crumbs(cur: &Path) -> Vec<(String, PathBuf)> {
     }
 }
 
+/// `ZoneId` from a `Zone.Identifier` stream (`[ZoneTransfer]` / `ZoneId=3` / …).
+pub fn parse_zone_id(text: &str) -> Option<u32> {
+    text.lines().find_map(|l| {
+        let (k, v) = l.split_once('=')?;
+        k.trim().eq_ignore_ascii_case("ZoneId").then(|| v.trim().parse().ok()).flatten()
+    })
+}
+
+/// Windows Explorer no longer previews files marked as downloaded from the Internet or the
+/// Restricted zone (a preview handler can be made to leak NTLM credentials); it shows this text.
+pub fn preview_blocked(zone: Option<u32>) -> bool {
+    zone.is_some_and(|z| z >= 3)
+}
+
+pub const PREVIEW_BLOCKED_TEXT: &str = "This file came from the internet and could harm your computer. If you trust it and its source, open it to see its contents.";
+
 /// Extensions the preview pane shows as text.
 pub fn is_text_ext(ext: &str) -> bool {
     matches!(
@@ -970,6 +986,15 @@ pub fn batch_names(base: &str, items: &[(String, bool)]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn zone_identifier() {
+        let t = "[ZoneTransfer]\r\nZoneId=3\r\nReferrerUrl=https://example.com/\r\n";
+        assert_eq!(parse_zone_id(t), Some(3));
+        assert!(preview_blocked(parse_zone_id(t)));
+        assert!(!preview_blocked(parse_zone_id("[ZoneTransfer]\nZoneId=2")));
+        assert!(!preview_blocked(parse_zone_id("")));
+    }
+
     use super::*;
 
     fn f(name: &str, size: u64) -> Entry {

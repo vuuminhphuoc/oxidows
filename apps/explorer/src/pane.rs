@@ -36,6 +36,8 @@ pub enum PreviewState {
     Image(egui::TextureHandle),
     Text(String),
     Nothing,
+    /// Marked as downloaded from the internet: Explorer shows a warning instead of a preview.
+    Blocked,
     /// A Windows preview handler; `None` until the pane's rectangle is known.
     Handler(Option<explorer_sys::PreviewHost>),
 }
@@ -83,7 +85,13 @@ impl App {
                 // Drop the old handler first: it may hold the file open.
                 self.preview = None;
                 let ext = path.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default();
-                if !is_text && self.hwnd != 0 && explorer_sys::has_preview_handler(&ext) {
+                let handler = !is_text && self.hwnd != 0 && explorer_sys::has_preview_handler(&ext);
+                // As Explorer: no preview handler for files downloaded from the internet.
+                if handler && explorer_core::preview_blocked(explorer_sys::zone_of(&path)) {
+                    self.preview = Some((path, PreviewState::Blocked));
+                    return;
+                }
+                if handler {
                     self.preview = Some((path, PreviewState::Handler(None)));
                     return;
                 }
@@ -161,7 +169,8 @@ fn handler_preview(app: &mut App, ui: &mut Ui) {
         if host.is_none() && !covered && px[2] > px[0] && px[3] > px[1] {
             match explorer_sys::PreviewHost::open(app.hwnd, path, px) {
                 Ok(h) => *host = Some(h),
-                Err(_) => {
+                Err(e) => {
+                    eprintln!("preview handler for {}: {e}", path.display());
                     let path = path.clone();
                     return app.load_preview(path, false);
                 }
@@ -184,6 +193,7 @@ fn preview(app: &mut App, ui: &mut Ui) {
             ui.centered_and_justified(|ui| ui.spinner());
         }
         Some((_, PreviewState::Nothing)) => centered_note(ui, "No preview available."),
+        Some((_, PreviewState::Blocked)) => centered_note(ui, explorer_core::PREVIEW_BLOCKED_TEXT),
         Some((_, PreviewState::Handler(_))) => {}
         Some((_, PreviewState::Image(tex))) => {
             let size = tex.size_vec2();
