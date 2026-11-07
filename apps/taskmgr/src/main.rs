@@ -293,6 +293,7 @@ impl App {
             }
         }
         let settings = settings::Settings::load();
+        ui_common::install_fonts(&cc.egui_ctx);
         settings.apply_theme(&cc.egui_ctx);
         if settings.always_on_top {
             settings.apply_on_top(&cc.egui_ctx);
@@ -651,21 +652,28 @@ impl eframe::App for App {
     }
 }
 
-/// wgpu by default on Windows: it falls back to DirectX WARP (software) on machines without a usable
-/// GPU driver (VMs, RDP, CI runners), where OpenGL is only the 1.1 GDI stub. `OXI_RENDERER=glow`
-/// opts into OpenGL, which uses less memory where a real driver exists.
-fn renderer() -> eframe::Renderer {
-    match std::env::var("OXI_RENDERER").as_deref() {
-        Ok("glow") => eframe::Renderer::Glow,
-        Ok("wgpu") => eframe::Renderer::Wgpu,
-        _ if cfg!(windows) => eframe::Renderer::Wgpu,
-        _ => eframe::Renderer::Glow,
+fn main() -> eframe::Result {
+    // OpenGL where there is a GPU driver, wgpu (WARP) otherwise; see `ui_common::choose_renderer`.
+    let (renderer, auto) = ui_common::choose_renderer();
+    let r = run(renderer);
+    // Only OpenGL start-up failures: an error from the app itself would fail the same way again.
+    let gl_failed =
+        matches!(r, Err(eframe::Error::Glutin(_) | eframe::Error::NoGlutinConfigs(..) | eframe::Error::OpenGL(_)));
+    if gl_failed && auto && renderer == ui_common::Renderer::Glow {
+        eprintln!("OpenGL failed ({r:?}); starting again with wgpu");
+        if ui_common::relaunch_with(ui_common::Renderer::Wgpu).is_ok() {
+            return Ok(());
+        }
     }
+    r
 }
 
-fn main() -> eframe::Result {
+fn run(renderer: ui_common::Renderer) -> eframe::Result {
     let mut options = eframe::NativeOptions {
-        renderer: renderer(),
+        renderer: match renderer {
+            ui_common::Renderer::Glow => eframe::Renderer::Glow,
+            ui_common::Renderer::Wgpu => eframe::Renderer::Wgpu,
+        },
         viewport: egui::ViewportBuilder::default()
             .with_title("Task Manager (oxidows)")
             .with_inner_size([1000.0, 660.0])

@@ -1,0 +1,15 @@
+[package]
+name = "ui-common"
+description = "UI plumbing shared by the oxidows egui apps: system font, renderer choice"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+egui = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging"] }

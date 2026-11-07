@@ -710,6 +710,8 @@ pub struct History {
     pub gpu_pct: Ring,
     /// Per physical disk: active time %.
     pub disks: Vec<Ring>,
+    /// Per physical disk: (read, write) bytes per second.
+    pub disk_io: Vec<(Ring, Ring)>,
     /// Per adapter: (receive, send) bytes per second.
     pub adapters: Vec<(Ring, Ring)>,
     /// Per GPU: utilization %.
@@ -750,6 +752,13 @@ impl History {
         }
         for (ring, d) in self.disks.iter_mut().zip(&s.disks) {
             ring.push(d.active_pct);
+        }
+        if self.disk_io.len() != s.disks.len() {
+            self.disk_io = vec![(Ring::default(), Ring::default()); s.disks.len()];
+        }
+        for ((r, w), d) in self.disk_io.iter_mut().zip(&s.disks) {
+            r.push(d.read_bps as f32);
+            w.push(d.write_bps as f32);
         }
         if self.adapters.len() != s.adapters.len() {
             self.adapters = vec![(Ring::default(), Ring::default()); s.adapters.len()];
