@@ -20,6 +20,8 @@ confirm on first run. Run it as administrator to see and end elevated processes.
 
 <sub>Screenshots from the Linux development build.</sub>
 
+Startup time, memory, idle CPU and feature coverage of every release next to the Windows originals: [docs/benchmarks.md](docs/benchmarks.md).
+
 ## Layout
 
 - `apps/<name>`: one executable per rewritten app.
