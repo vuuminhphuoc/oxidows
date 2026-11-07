@@ -13,6 +13,7 @@ use crate::graph;
 const CPU: Color32 = Color32::from_rgb(17, 125, 187);
 const MEM: Color32 = Color32::from_rgb(139, 18, 174);
 const DISK: Color32 = Color32::from_rgb(77, 166, 12);
+const DISK_WRITE: Color32 = Color32::from_rgb(40, 110, 8);
 const NET: Color32 = Color32::from_rgb(167, 79, 1);
 const NET_TX: Color32 = Color32::from_rgb(220, 140, 40);
 const GPU: Color32 = Color32::from_rgb(10, 140, 120);
@@ -181,7 +182,7 @@ impl State {
             if let Some(ring) = h.disks.get(i) {
                 entries.push(Entry {
                     res: Res::Disk(i),
-                    title: format!("Disk {}", d.name),
+                    title: disk_title(&d.name),
                     value: format!("{:.0}%", d.active_pct),
                     ring,
                     max: 100.0,
@@ -328,10 +329,20 @@ impl State {
                                     .clone()
                             })
                             .unwrap_or_default();
-                        header(ui, &format!("Disk {}", d.name), &info.model);
+                        header(ui, &disk_title(&d.name), &info.model);
                         ui.label(RichText::new("Active time over 60 seconds").small().weak());
                         if let Some(ring) = h.disks.get(i) {
-                            graph::area(ui, big, ring, 100.0, DISK, true);
+                            graph::area(ui, Vec2::new(big.x, big.y * 0.6), ring, 100.0, DISK, true);
+                        }
+                        // Task Manager's second graph: read (solid) and write on one scale.
+                        if let Some((r, w)) = h.disk_io.get(i) {
+                            let max = r.max().max(w.max()).max(1024.0 * 1024.0);
+                            ui.label(
+                                RichText::new(format!("Disk transfer rate (max {}/s)", format_bytes(max as f64)))
+                                    .small()
+                                    .weak(),
+                            );
+                            graph::multi(ui, Vec2::new(big.x, big.y * 0.4), &[(r, DISK), (w, DISK_WRITE)], max);
                         }
                         let sys = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into()).to_uppercase();
                         let is_sys = letters.contains(&sys);
@@ -617,4 +628,12 @@ fn stats(ui: &mut Ui, items: &[(&str, String)]) -> String {
         }
     });
     items.iter().map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>().join("\n")
+}
+
+/// PDH names a disk `0 C: D:`; Task Manager shows `Disk 0 (C: D:)`, or `Disk 0` with no volumes.
+fn disk_title(pdh: &str) -> String {
+    match pdh.split_once(' ') {
+        Some((n, vols)) if !vols.trim().is_empty() => format!("Disk {n} ({})", vols.trim()),
+        _ => format!("Disk {}", pdh.trim()),
+    }
 }

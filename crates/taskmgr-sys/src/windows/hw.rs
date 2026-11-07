@@ -128,7 +128,8 @@ use windows_sys::Win32::System::IO::DeviceIoControl;
 use windows_sys::Win32::System::SystemInformation::GetSystemFirmwareTable;
 
 const IOCTL_STORAGE_QUERY_PROPERTY: u32 = 0x002D_1400;
-const IOCTL_DISK_GET_LENGTH_INFO: u32 = 0x0007_405C;
+// FILE_ANY_ACCESS, so it works on the zero-access handle (IOCTL_DISK_GET_LENGTH_INFO needs read access).
+const IOCTL_DISK_GET_DRIVE_GEOMETRY_EX: u32 = 0x0007_00A0;
 const STORAGE_DEVICE_PROPERTY: u32 = 0;
 const STORAGE_SEEK_PENALTY_PROPERTY: u32 = 7;
 
@@ -195,9 +196,10 @@ pub fn disk_info(number: u32) -> io::Result<DiskInfo> {
     if ioctl(h, IOCTL_STORAGE_QUERY_PROPERTY, &query(STORAGE_SEEK_PENALTY_PROPERTY), &mut pen).is_some_and(|n| n >= 9) {
         info.kind = if pen[8] == 0 { "SSD" } else { "HDD" }.into();
     }
-    let mut len = [0u8; 8];
-    if ioctl(h, IOCTL_DISK_GET_LENGTH_INFO, &[], &mut len) == Some(8) {
-        info.capacity = u64::from_le_bytes(len);
+    // DISK_GEOMETRY_EX: a 24-byte DISK_GEOMETRY, then DiskSize (i64).
+    let mut geo = [0u8; 256];
+    if ioctl(h, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, &[], &mut geo).is_some_and(|n| n >= 32) {
+        info.capacity = u64::from_le_bytes(geo[24..32].try_into().unwrap_or_default());
     }
     // SAFETY: handle opened above.
     unsafe { CloseHandle(h) };
