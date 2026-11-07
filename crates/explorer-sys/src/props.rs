@@ -32,9 +32,8 @@ fn key(p: Prop) -> Option<&'static PROPERTYKEY> {
 
 /// The display text of each of `props` for `path` (empty where the item has none).
 pub fn read_props(path: &Path, props: &[Prop]) -> Vec<String> {
-    use std::os::windows::ffi::OsStrExt;
     crate::windows::com_init();
-    let w: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let w: Vec<u16> = explorer_core::shell_parsing(path).encode_utf16().chain(Some(0)).collect();
     let store: Option<IPropertyStore> = unsafe {
         SHCreateItemFromParsingName::<_, _, IShellItem2>(PCWSTR(w.as_ptr()), None)
             .and_then(|item| item.GetPropertyStore(GPS_BESTEFFORT))

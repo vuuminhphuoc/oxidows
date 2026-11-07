@@ -12,9 +12,8 @@ use windows_sys::Win32::Graphics::Gdi::{BITMAP, DeleteObject, GetDC, GetObjectW,
 use crate::IconImage;
 
 pub fn thumbnail(path: &Path, size: u32) -> Option<IconImage> {
-    use std::os::windows::ffi::OsStrExt;
     crate::windows::com_init();
-    let w: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let w: Vec<u16> = explorer_core::shell_parsing(path).encode_utf16().chain(Some(0)).collect();
     let factory: IShellItemImageFactory = unsafe { SHCreateItemFromParsingName(PCWSTR(w.as_ptr()), None) }.ok()?;
     let s = SIZE { cx: size as i32, cy: size as i32 };
     let hbmp = unsafe { factory.GetImage(s, SIIGBF_RESIZETOFIT) }.ok()?;

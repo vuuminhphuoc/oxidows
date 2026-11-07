@@ -529,3 +529,30 @@ fn default_file_manager_round_trip() {
             .contains("oxi")
     );
 }
+
+#[test]
+fn shell_namespace_lists_control_panel_and_this_pc() {
+    let _g = guard("shell_namespace_lists_control_panel_and_this_pc");
+    let w = watchdog("shell namespace", 60);
+    let mut pc = Vec::new();
+    explorer_sys::shell_list(Path::new(explorer_core::THIS_PC_CLSID), &AtomicBool::new(false), &mut |b| pc.extend(b))
+        .expect("This PC");
+    // Drives come back as real paths, labelled with their display names.
+    assert!(pc.iter().any(|e| e.name.eq_ignore_ascii_case(r"C:\") && e.is_dir && e.label.is_some()), "{pc:?}");
+    let cp = explorer_core::shell_path(explorer_core::CONTROL_PANEL_CLSID);
+    assert!(explorer_sys::shell_is_folder(&cp));
+    assert!(explorer_sys::shell_display_name(&cp).is_some_and(|n| !n.is_empty()));
+    let mut items = Vec::new();
+    explorer_sys::shell_list(&cp, &AtomicBool::new(false), &mut |b| items.extend(b)).expect("Control Panel");
+    w.store(true, Ordering::Relaxed);
+    println!("control panel: {:?}", items.iter().map(|e| e.display()).collect::<Vec<_>>());
+    assert!(!items.is_empty());
+    let first = items.iter().find(|e| e.name.starts_with(explorer_core::SHELL)).expect("a shell item");
+    // Breadcrumb parent and icon work on the shell path.
+    assert_eq!(
+        explorer_core::classify(Path::new(&first.name)),
+        explorer_core::Place::Shell(explorer_core::shell_parsing(Path::new(&first.name)).into_owned())
+    );
+    assert!(explorer_sys::shell_icon(Path::new(&first.name), first.is_dir, true).is_some(), "{first:?}");
+    assert!(explorer_sys::shell_menu_verbs(&cp, &[PathBuf::from(&first.name)]).is_ok());
+}

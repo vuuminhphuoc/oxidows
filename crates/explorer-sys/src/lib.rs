@@ -33,6 +33,8 @@ mod search;
 #[cfg(windows)]
 mod shell_menu;
 #[cfg(windows)]
+mod shell_ns;
+#[cfg(windows)]
 mod thumbs;
 #[cfg(windows)]
 pub use preview::PreviewHost;
@@ -137,6 +139,64 @@ pub fn set_default_file_manager(exe: Option<&Path>) -> io::Result<()> {
     {
         let _ = exe;
         Err(io::Error::new(io::ErrorKind::Unsupported, "only on Windows"))
+    }
+}
+
+/// Lists a shell namespace folder (`::shell\\…`, or This PC / Network by CLSID): phones,
+/// Control Panel, media servers. Items are named by full path (`::shell\\…` or a real path)
+/// with their display name as `label`. Off Windows: `Unsupported`.
+pub fn shell_list(path: &Path, cancel: &AtomicBool, sink: &mut dyn FnMut(Vec<Entry>)) -> io::Result<()> {
+    #[cfg(windows)]
+    return shell_ns::list(path, cancel, sink);
+    #[cfg(not(windows))]
+    {
+        let _ = (path, cancel, sink);
+        Err(io::Error::new(io::ErrorKind::Unsupported, "the shell namespace needs Windows"))
+    }
+}
+
+/// Runs a shell item's default verb (opens an applet, a file on a phone…).
+pub fn shell_open(hwnd: isize, path: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    return shell_ns::open(hwnd, path);
+    #[cfg(not(windows))]
+    {
+        let _ = (hwnd, path);
+        Err(io::Error::new(io::ErrorKind::Unsupported, "the shell namespace needs Windows"))
+    }
+}
+
+/// Whether a shell item is a folder one can go into.
+pub fn shell_is_folder(path: &Path) -> bool {
+    #[cfg(windows)]
+    return shell_ns::is_folder(path);
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        false
+    }
+}
+
+/// A shell item's display name ("Galaxy S24").
+pub fn shell_display_name(path: &Path) -> Option<String> {
+    #[cfg(windows)]
+    return shell_ns::display_name(path);
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+/// Runs a canonical verb of the shell's menu for `items` (or the folder `dir` when empty)
+/// without showing it: "copy", "cut", "paste", "delete", "properties".
+pub fn shell_verb(hwnd: isize, dir: &Path, items: &[PathBuf], verb: &str) -> io::Result<()> {
+    #[cfg(windows)]
+    return shell_menu::invoke_verb(hwnd, dir, items, verb);
+    #[cfg(not(windows))]
+    {
+        let _ = (hwnd, dir, items, verb);
+        Err(io::Error::new(io::ErrorKind::Unsupported, "shell verbs need Windows"))
     }
 }
 
