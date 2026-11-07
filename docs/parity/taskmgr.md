@@ -66,7 +66,7 @@ as the feature.
 | GPU utilization, engines (3D, Copy, Video…), dedicated / shared memory | done | PDH `GPU Engine(*)`, `GPU Adapter Memory(*)` |
 | One entry per GPU adapter with name, dedicated / shared memory used of total | done | DXGI + PDH split by LUID |
 | GPU driver version, driver date, DirectX version | done | DXGI `CheckInterfaceSupport`, the display driver key, D3D12 feature-level probe |
-| GPU physical location | todo | needs SetupAPI |
+| GPU physical location | done | SetupAPI `SPDRP_LOCATION_INFORMATION` |
 | NPU | partial | its engines show up as an extra, unnamed GPU entry; no own page yet |
 | Copy to clipboard | done | |
 | Summary view | done | button or double-click; double-click again to come back |
