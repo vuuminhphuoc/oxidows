@@ -2010,7 +2010,10 @@ fn main() -> eframe::Result {
     // OpenGL where there is a GPU driver, wgpu (WARP) otherwise; see `ui_common::choose_renderer`.
     let (renderer, auto) = ui_common::choose_renderer();
     let r = run(renderer);
-    if r.is_err() && auto && renderer == ui_common::Renderer::Glow {
+    // Only OpenGL start-up failures: an error from the app itself would fail the same way again.
+    let gl_failed =
+        matches!(r, Err(eframe::Error::Glutin(_) | eframe::Error::NoGlutinConfigs(..) | eframe::Error::OpenGL(_)));
+    if gl_failed && auto && renderer == ui_common::Renderer::Glow {
         eprintln!("OpenGL failed ({r:?}); starting again with wgpu");
         if ui_common::relaunch_with(ui_common::Renderer::Wgpu).is_ok() {
             return Ok(());

@@ -986,6 +986,8 @@ pub fn batch_names(base: &str, items: &[(String, bool)]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn zone_identifier() {
         let t = "[ZoneTransfer]\r\nZoneId=3\r\nReferrerUrl=https://example.com/\r\n";
@@ -994,8 +996,6 @@ mod tests {
         assert!(!preview_blocked(parse_zone_id("[ZoneTransfer]\nZoneId=2")));
         assert!(!preview_blocked(parse_zone_id("")));
     }
-
-    use super::*;
 
     fn f(name: &str, size: u64) -> Entry {
         Entry { name: name.into(), size, ..Default::default() }
