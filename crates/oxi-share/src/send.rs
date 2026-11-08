@@ -165,56 +165,74 @@ fn run(inner: &Arc<Inner>, device: &Device, id: u64, items: Vec<Item>, cancel: &
     };
     let body = serde_json::to_vec(&req).map_err(io::Error::other)?;
 
-    // The receiver's user decides while this request is open; a cancel here closes the socket.
-    let tls = match device.protocol {
-        Protocol::Https => Some(crate::tls::client_config(&inner.id, expected).map_err(io::Error::other)?),
-        Protocol::Http => None,
-    };
-    let mut s = http::connect(device.addr(), tls, Duration::from_secs(5))?;
-    s.tcp().set_read_timeout(Some(Duration::from_secs(1)))?;
-    let tcp = s.tcp().try_clone()?;
-    let done = Arc::new(AtomicBool::new(false));
-    let watcher = {
-        let (cancel, done, inner2) = (cancel.clone(), done.clone(), inner.clone());
-        thread::spawn(move || {
-            while !done.load(Ordering::Relaxed) {
-                if cancel.load(Ordering::Relaxed) || inner2.stop.load(Ordering::Relaxed) {
-                    let _ = tcp.shutdown(std::net::Shutdown::Both);
-                    return;
+    // The receiver's user decides while this request is open, so it runs on its own thread and a
+    // cancel or shutdown here does not wait for it. (Closing the socket from another thread does
+    // not wake a blocked read on Windows.) The receiver answers the open request once it hears
+    // about the cancel, which ends that thread too.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let tcp = Arc::new(Mutex::new(None::<std::net::TcpStream>));
+    {
+        let (inner, addr, protocol, fingerprint, tcp, cancel) =
+            (inner.clone(), device.addr(), device.protocol, expected.map(str::to_string), tcp.clone(), cancel.clone());
+        thread::Builder::new().name("oxi-share-prepare".into()).spawn(move || {
+            let r = (|| {
+                let tls = match protocol {
+                    Protocol::Https => {
+                        Some(crate::tls::client_config(&inner.id, fingerprint.as_deref()).map_err(io::Error::other)?)
+                    }
+                    Protocol::Http => None,
+                };
+                let mut s = http::connect(addr, tls, Duration::from_secs(5))?;
+                s.tcp().set_read_timeout(Some(Duration::from_secs(15 * 60)))?;
+                {
+                    // A cancel while connecting must not open a dialog nobody will close.
+                    let mut slot = tcp.lock().unwrap_or_else(|e| e.into_inner());
+                    if cancel.load(Ordering::Relaxed) || inner.stop.load(Ordering::Relaxed) {
+                        return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+                    }
+                    *slot = s.tcp().try_clone().ok();
                 }
-                thread::sleep(Duration::from_millis(200));
-            }
-        })
-    };
-    let host = device.addr().to_string();
-    // Long waits are fine: the read timeout only paces the cancel check through retries below.
-    s.tcp().set_read_timeout(Some(Duration::from_secs(15 * 60)))?;
-    let resp = http::request(
-        &mut s,
-        "POST",
-        &host,
-        "/api/localsend/v2/prepare-upload",
-        "application/json",
-        &mut &body[..],
-        body.len() as u64,
-        &mut |_| true,
-    );
-    done.store(true, Ordering::Relaxed);
-    let _ = watcher.join();
-    if cancel.load(Ordering::Relaxed) {
-        // Tell the receiver to close its dialog.
-        let _ = call(
-            inner,
-            device.addr(),
-            device.protocol,
-            expected,
-            "/api/localsend/v2/cancel",
-            b"",
-            Duration::from_secs(3),
-            Duration::from_secs(3),
-        );
-        return Ok(State::Cancelled);
+                let host = addr.to_string();
+                http::request(
+                    &mut s,
+                    "POST",
+                    &host,
+                    "/api/localsend/v2/prepare-upload",
+                    "application/json",
+                    &mut &body[..],
+                    body.len() as u64,
+                    &mut |_| true,
+                )
+            })();
+            let _ = tx.send(r);
+        })?;
     }
+    let resp = loop {
+        if cancel.load(Ordering::Relaxed) || inner.stop.load(Ordering::Relaxed) {
+            if let Some(t) = tcp.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                let _ = t.shutdown(std::net::Shutdown::Both);
+            }
+            // Tell the receiver to close its dialog.
+            let _ = call(
+                inner,
+                device.addr(),
+                device.protocol,
+                expected,
+                "/api/localsend/v2/cancel",
+                b"",
+                Duration::from_secs(3),
+                Duration::from_secs(3),
+            );
+            return Ok(State::Cancelled);
+        }
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(r) => break r,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(io::Error::other("the request thread stopped"));
+            }
+        }
+    };
     let resp = resp?;
     match resp.status {
         200 => {}
