@@ -26,11 +26,30 @@ fn main() {
     )
     .expect("start");
     println!("listening on {} as {}", share.port(), share.fingerprint());
+    for (name, ip, prefix) in oxi_share::local_ipv4() {
+        println!("interface {name}: {ip}/{prefix}");
+    }
+    println!("received files go to {}", root.join("in").display());
     share.refresh();
     let mut sent = files.is_empty();
-    loop {
+    let mut seen = String::new();
+    for tick in 1u64.. {
         std::thread::sleep(Duration::from_secs(1));
+        if tick % 15 == 0 {
+            share.refresh();
+        }
         let s = share.snapshot();
+        let now: String = s
+            .devices
+            .iter()
+            .map(|d| {
+                format!("  {} ({:?}, {:?}) at {} {:?}\n", d.alias, d.device_model, d.device_type, d.addr(), d.protocol)
+            })
+            .collect();
+        if now != seen {
+            println!("devices found: {}\n{now}", s.devices.len());
+            seen = now;
+        }
         if !sent && let Some(d) = s.devices.first() {
             println!("sending to {} at {}", d.alias, d.addr());
             share.send(d, files.clone());
