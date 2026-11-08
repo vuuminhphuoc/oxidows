@@ -13,7 +13,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use explorer_core::{Entry, shell_parsing, shell_path};
 use windows::Win32::Foundation::HWND;
-use windows::Win32::Storage::EnhancedStorage::{PKEY_DateModified, PKEY_ItemTypeText, PKEY_Size};
+use windows::Win32::Storage::EnhancedStorage::{
+    PKEY_Capacity, PKEY_DateModified, PKEY_FreeSpace, PKEY_ItemTypeText, PKEY_Size,
+};
 use windows::Win32::System::Com::{CoTaskMemAlloc, CoTaskMemFree};
 use windows::Win32::System::SystemServices::{SFGAO_FILESYSTEM, SFGAO_FOLDER, SFGAO_HIDDEN, SFGAO_STREAM};
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
@@ -219,17 +221,76 @@ fn entry_of(child: &IShellItem) -> Option<Entry> {
         s
     });
     let is_dir = a.contains(SFGAO_FOLDER) && !a.contains(SFGAO_STREAM);
+    let name = full.to_string_lossy().into_owned();
+    // A phone's storage: shown like a drive, "265 GB free of 456 GB" (its type would be
+    // "Generic hierarchical").
+    let space = (is_dir && is_storage(&name)).then(|| i2.as_ref().and_then(space_of)).flatten();
+    let note = match space {
+        Some((total, free)) => {
+            Some(format!("{} free of {}", explorer_core::format_bytes(free), explorer_core::format_bytes(total)))
+        }
+        None => kind.filter(|k| !k.is_empty()),
+    };
     Some(Entry {
-        name: full.to_string_lossy().into_owned(),
+        name,
         label: Some(display),
-        note: kind.filter(|k| !k.is_empty()),
+        note,
         is_dir,
-        size: if is_dir { 0 } else { size },
+        size: match space {
+            Some((total, _)) => total,
+            None if is_dir => 0,
+            None => size,
+        },
         modified,
         hidden: a.contains(SFGAO_HIDDEN),
         attrs: if is_dir { explorer_core::attr::DIRECTORY } else { explorer_core::attr::ARCHIVE },
         ..Default::default()
     })
+}
+
+/// A portable device's storage (internal storage, an SD card): WPD names them `SID-{…}`.
+fn is_storage(name: &str) -> bool {
+    name.rsplit('\\').next().is_some_and(|last| last.starts_with("SID-"))
+}
+
+/// Capacity and free bytes of a storage, when it reports them.
+fn space_of(i: &IShellItem2) -> Option<(u64, u64)> {
+    let total = unsafe { i.GetUInt64(&PKEY_Capacity) }.ok().filter(|&t| t > 0)?;
+    let free = unsafe { i.GetUInt64(&PKEY_FreeSpace) }.unwrap_or(0);
+    Some((total, free.min(total)))
+}
+
+/// Phones, cameras and media players under This PC (shell items with no drive letter), with
+/// the space of all their storages added up.
+pub fn devices() -> Vec<crate::ShellDevice> {
+    crate::windows::com_init();
+    let mut out = Vec::new();
+    let _ = list(Path::new(explorer_core::THIS_PC_CLSID), &AtomicBool::new(false), &mut |batch| {
+        out.extend(batch.into_iter().filter(|e| e.is_dir && e.name.starts_with(explorer_core::SHELL)).map(|e| {
+            crate::ShellDevice {
+                label: e.display().to_string(),
+                kind: e.note.clone().unwrap_or_else(|| "Device".into()),
+                path: PathBuf::from(e.name),
+                total: 0,
+                free: 0,
+            }
+        }));
+    });
+    for d in &mut out {
+        let _ = list(&d.path, &AtomicBool::new(false), &mut |batch| {
+            for e in batch.iter().filter(|e| e.is_dir && is_storage(&e.name) && e.size > 0) {
+                d.total += e.size;
+                d.free += crate::shell_free_space(Path::new(&e.name)).unwrap_or(0);
+            }
+        });
+    }
+    out
+}
+
+/// Free bytes of a phone's storage.
+pub fn free_space(path: &Path) -> Option<u64> {
+    let i2: IShellItem2 = item(path).ok()?.cast().ok()?;
+    space_of(&i2).map(|(_, free)| free)
 }
 
 /// The children of the shell folder `path` (an app path or a parsing name), in batches.
