@@ -52,8 +52,10 @@ original.
 | oxidows explorer v0.1 (PR #1) | wgpu | 47 ms | 136 MB | 488 MB | 0.05 % | 77 of 82 |
 | this branch | OpenGL (default on GPU PCs) | 47 ms | **40 MB** | **121 MB** | 0.00 % | 77 of 82 |
 
-\* Rows of [`parity/explorer.md`](parity/explorer.md) marked ✅, out of all rows. The rest:
-Network page WSD devices (partial), phones over MTP (not yet), and three rows out of scope.
+\* Rows of [`parity/explorer.md`](parity/explorer.md) marked ✅, out of all rows. The rest
+then: Network page WSD devices (partial), phones over MTP (not yet), and three rows out of
+scope. All 82 are ✅ since the shell-namespace release (phones, Control Panel, WSD and media
+devices through the shell; Compact view).
 
 Fixed on this branch after testing on the real PC (none of these show up on the CI runner):
 

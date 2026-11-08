@@ -31,8 +31,8 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | `\\server` lists its shares | ✅ | `NetShareEnum`; tested against a real share on CI |
 | Login prompt when a share needs credentials (remember password) | ✅ | Windows' own credential dialog, asked once per share, plus a Sign in button |
 | Map / disconnect network drive | ✅ | … menu, sidebar right-click; reconnect at sign-in |
-| Network page: computers on the LAN | 🟡 | `WNetOpenEnum` browse list; WSD-only devices not found yet |
-| Network media devices (DLNA), WSD printers | ➖ | not file locations |
+| Network page: computers on the LAN | ✅ | NetBIOS browse list plus the shell Network folder (Function Discovery: WSD computers) |
+| Network media devices (DLNA), WSD printers | ✅ | listed from the shell Network folder; opened and browsed through the shell |
 
 ## Views and columns
 
@@ -52,7 +52,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Show/hide hidden items | ✅ | |
 | Show/hide file name extensions | ✅ | … menu |
 | Show protected OS files | ✅ | separate checkbox; hidden+system items stay out unless it is on |
-| Compact mode | ➖ | |
+| Compact mode | ✅ | … menu ▸ Compact view: tighter rows and tiles |
 | Preview pane (Alt+P) | ✅ | hosts the registered Windows preview handler (Office, PDF, mail, fonts, media) out of process; text and thumbnails otherwise; files marked as downloaded from the internet get a warning instead, as Explorer |
 | Details pane (Alt+Shift+P) | ✅ | type, size, dates, attributes; totals for a multi-selection |
 | Status bar: item count, selection count and size | ✅ | |
@@ -111,8 +111,8 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Home / Recent files | ✅ | Quick access + recent files from the Recent folder |
 | Libraries, Gallery | ✅ | libraries read with IShellLibrary, folders merged; Gallery = Pictures library pictures and videos, newest first |
 | OneDrive status | ✅ | overlays on cloud files, plus a Status column (available when online / on this device / always available) |
-| Control Panel and other shell namespaces | ➖ | not the file system |
-| Phones (MTP) | ❌ | |
+| Control Panel and other shell namespaces | ✅ | `::shell\<parsing name>` folders listed with IShellItem; shell:ControlPanelFolder in the address bar; items open with their default verb |
+| Phones (MTP) | ✅ | under This PC; browse, open, thumbnails, preview, copy/cut/paste both ways and delete through the shell's copy engine (`IFileOperation`), right-click menu. Tested on an Honor Magic8 Pro |
 
 ## Behaviour
 
