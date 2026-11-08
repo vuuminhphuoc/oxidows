@@ -75,6 +75,13 @@ pub fn show(
     if sp.style == Style::Content {
         sp.tile.x = (avail.x - 14.0).max(320.0);
     }
+    // Compact view: less padding around every item.
+    if app.compact {
+        sp.tile.y -= if sp.style == Style::Inline { 4.0 } else { 8.0 };
+        if sp.style == Style::Stacked {
+            sp.tile.x -= 8.0;
+        }
+    }
     // Grid shape: `major` lines (rows, or List's columns) of `per_line` items.
     let per_line = if sp.column_major {
         ((avail.y / sp.tile.y).floor() as usize).max(1)

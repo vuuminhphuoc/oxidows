@@ -8,7 +8,7 @@ mod renderer;
 pub mod theme;
 mod widgets;
 
-pub use fonts::{ICONS, SEMIBOLD, has_icon_font};
+pub use fonts::{ICONS, SEMIBOLD, ensure_glyphs, has_icon_font};
 pub use icons::{ICON_SIZE, Icon};
 pub use renderer::{Renderer, choose as choose_renderer, relaunch_with};
 pub use theme::{Palette, Theme, setup};

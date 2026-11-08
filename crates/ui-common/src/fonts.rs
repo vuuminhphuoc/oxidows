@@ -8,8 +8,9 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
+use egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
 use egui::{FontData, FontDefinitions, FontFamily};
 
 /// The family [`crate::Icon`] glyphs are drawn with.
@@ -76,6 +77,56 @@ fn definitions(dir: Option<&Path>) -> FontDefinitions {
     icons.extend(defaults);
     fonts.families.insert(fam(ICONS), icons);
     fonts
+}
+
+/// Fallback fonts for scripts neither Segoe UI nor egui's fonts cover, loaded the first time
+/// such text is about to be shown: they are large (Microsoft YaHei is ~20 MB), and most
+/// sessions never need them. Bit set once a script's font is in.
+static LOADED: AtomicU8 = AtomicU8::new(0);
+const HAN: u8 = 1;
+const HANGUL: u8 = 2;
+
+fn script_of(c: char) -> u8 {
+    match c as u32 {
+        // Hangul syllables and jamo.
+        0x1100..=0x11FF | 0x3130..=0x318F | 0xAC00..=0xD7AF => HANGUL,
+        // CJK radicals, kana, ideographs, compatibility and full-width forms.
+        0x2E80..=0x2FFF | 0x3000..=0x312F | 0x3190..=0x9FFF | 0xF900..=0xFAFF | 0xFE30..=0xFE4F | 0xFF00..=0xFFEF => {
+            HAN
+        }
+        0x20000..=0x3FFFF => HAN,
+        _ => 0,
+    }
+}
+
+/// Makes sure `text` can be drawn: adds Microsoft YaHei (Chinese, Japanese) or Malgun Gothic
+/// (Korean) as a fallback when `text` needs it. Cheap for text that doesn't ("荣耀Magic8 Pro"
+/// otherwise drew as boxes).
+pub fn ensure_glyphs(ctx: &egui::Context, text: &str) {
+    if text.is_ascii() {
+        return;
+    }
+    let need = text.chars().fold(0, |acc, c| acc | script_of(c)) & !LOADED.load(Ordering::Relaxed);
+    if need == 0 {
+        return;
+    }
+    LOADED.fetch_or(need, Ordering::Relaxed);
+    let Some(dir) = fonts_dir() else { return };
+    for (bit, file, name) in [(HAN, "msyh.ttc", "Microsoft YaHei"), (HANGUL, "malgun.ttf", "Malgun Gothic")] {
+        if need & bit == 0 {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(dir.join(file)) else { continue };
+        ctx.add_font(FontInsert::new(
+            name,
+            FontData::from_owned(bytes),
+            // Headings too: the semibold family is its own list, copied from Proportional at start-up.
+            [FontFamily::Proportional, FontFamily::Monospace, FontFamily::Name(SEMIBOLD.into())]
+                .into_iter()
+                .map(|family| InsertFontFamily { family, priority: FontPriority::Lowest })
+                .collect(),
+        ));
+    }
 }
 
 #[cfg(test)]

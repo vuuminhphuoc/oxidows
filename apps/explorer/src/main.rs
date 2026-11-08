@@ -207,6 +207,7 @@ struct App {
     /// Show hidden + system ("protected operating system") files too.
     pub show_protected: bool,
     pub item_checkboxes: bool,
+    pub compact: bool,
     pub group_ascending: bool,
     /// Groups of `view` when grouping is on (empty otherwise).
     pub groups: Vec<explorer_core::Group>,
@@ -263,6 +264,8 @@ struct App {
     title: String,
     /// Main window handle (Windows), for the shell's menus and dialogs; 0 if unknown.
     pub hwnd: isize,
+    /// Display names of shell items seen in listings, for breadcrumbs and tab titles.
+    pub shell_labels: HashMap<PathBuf, String>,
     /// All tabs; the active one's slot is stale while it is shown (its state lives in `App`).
     pub tabs: Vec<TabSnap>,
     /// Navigation tree: subfolders of each expanded folder (loaded on first expand).
@@ -305,6 +308,7 @@ impl App {
             group_by: explorer_core::GroupBy::None,
             show_protected: false,
             item_checkboxes: false,
+            compact: false,
             group_ascending: true,
             groups: Vec::new(),
             persist: settings::Persist::new(settings.clone()),
@@ -347,6 +351,7 @@ impl App {
             was_focused: true,
             title: String::new(),
             hwnd: 0,
+            shell_labels: HashMap::new(),
             tabs: Vec::new(),
             tree: HashMap::new(),
             tree_pending: HashSet::new(),
@@ -442,19 +447,50 @@ impl App {
                 let t = Instant::now();
                 let r = match classify(&dir) {
                     // Computers and shares are shown as folders.
+                    // The NetBIOS browse list, plus what the shell's Network folder finds through
+                    // Function Discovery (WSD computers, media servers, phones on the LAN).
                     Place::Network => {
                         let names = explorer_sys::network_computers();
+                        let mut seen: HashSet<String> =
+                            names.iter().map(|n| n.trim_start_matches('\\').to_ascii_uppercase()).collect();
                         let batch = names
                             .into_iter()
                             .map(|n| Entry {
                                 name: n.trim_start_matches('\\').to_string(),
                                 is_dir: true,
+                                note: Some("Computer".into()),
                                 ..Default::default()
                             })
                             .collect();
                         let _ = tx.send(Msg::Batch(generation, batch));
+                        ctx.request_repaint();
+                        let _ =
+                            explorer_sys::shell_list(Path::new(explorer_core::NETWORK_CLSID), &cancel, &mut |batch| {
+                                let batch: Vec<Entry> = batch
+                                    .into_iter()
+                                    .filter_map(|mut e| {
+                                        let parsing = explorer_core::shell_parsing(Path::new(&e.name)).into_owned();
+                                        // A computer: shown by name, opened as \\NAME.
+                                        if let Some(host) = parsing.strip_prefix(r"\\") {
+                                            if !seen.insert(host.to_ascii_uppercase()) {
+                                                return None;
+                                            }
+                                            e.name = host.to_string();
+                                            e.label = None;
+                                            e.is_dir = true;
+                                        }
+                                        Some(e)
+                                    })
+                                    .collect();
+                                let _ = tx.send(Msg::Batch(generation, batch));
+                                ctx.request_repaint();
+                            });
                         Ok(())
                     }
+                    Place::Shell(_) => explorer_sys::shell_list(&dir, &cancel, &mut |batch| {
+                        let _ = tx.send(Msg::Batch(generation, batch));
+                        ctx.request_repaint();
+                    }),
                     // Name = the `$R` data path (unique), label = original name, note = its folder.
                     Place::RecycleBin => {
                         let batch = explorer_sys::recycle_bin_items()
@@ -578,6 +614,22 @@ impl App {
                             ..Default::default()
                         });
                         let _ = tx.send(Msg::Batch(generation, folders.chain(drives).collect()));
+                        ctx.request_repaint();
+                        // Devices without a drive letter: phones and cameras (MTP), media servers.
+                        let _ =
+                            explorer_sys::shell_list(Path::new(explorer_core::THIS_PC_CLSID), &cancel, &mut |batch| {
+                                let devices: Vec<Entry> = batch
+                                    .into_iter()
+                                    .filter(|e| e.name.starts_with(explorer_core::SHELL))
+                                    .map(|mut e| {
+                                        e.note = Some(e.note.unwrap_or_else(|| "Device".into()));
+                                        e
+                                    })
+                                    .collect();
+                                if !devices.is_empty() {
+                                    let _ = tx.send(Msg::Batch(generation, devices));
+                                }
+                            });
                         Ok(())
                     }
                     Place::Server(server) => explorer_sys::list_shares(&server).map(|shares| {
@@ -778,6 +830,15 @@ impl App {
                         self.replace_on_next_batch = false;
                         self.entries.clear();
                     }
+                    for e in &batch {
+                        // Chinese, Japanese or Korean names load a font that can draw them.
+                        ui_common::ensure_glyphs(&self.ctx, e.display());
+                        if e.name.starts_with(explorer_core::SHELL)
+                            && let Some(l) = &e.label
+                        {
+                            self.shell_labels.insert(PathBuf::from(&e.name), l.clone());
+                        }
+                    }
                     self.entries.extend(batch);
                     self.version += 1;
                 }
@@ -969,7 +1030,18 @@ impl App {
 
     pub fn tab_title(&self, i: usize) -> String {
         let p = if i == self.active_tab { &self.cur } else { &self.tabs[i].cur };
-        explorer_core::location_crumbs(p).last().map_or_else(|| p.to_string_lossy().into_owned(), |(l, _)| l.clone())
+        self.crumbs(p).last().map_or_else(|| p.to_string_lossy().into_owned(), |(l, _)| l.clone())
+    }
+
+    /// Breadcrumbs, with display names for shell items ("Galaxy S24 › Internal storage").
+    pub fn crumbs(&self, p: &Path) -> Vec<(String, PathBuf)> {
+        let mut c = explorer_core::location_crumbs(p);
+        for (label, path) in &mut c {
+            if let Some(l) = self.shell_labels.get(path) {
+                label.clone_from(l);
+            }
+        }
+        c
     }
 
     fn entered_new_folder(&mut self, select: Option<String>) {
@@ -981,6 +1053,16 @@ impl App {
         self.pending_select = select;
         self.scroll_to = Some(0);
         self.changed_at = None;
+        // Names for the breadcrumbs of a shell folder reached by typing or history.
+        for (_, p) in explorer_core::location_crumbs(&self.cur) {
+            if p.starts_with(explorer_core::SHELL)
+                && !self.shell_labels.contains_key(&p)
+                && let Some(n) = explorer_sys::shell_display_name(&p)
+            {
+                ui_common::ensure_glyphs(&self.ctx, &n);
+                self.shell_labels.insert(p, n);
+            }
+        }
         self.thumbs.clear();
         self.thumb_wanted.clear();
         self.props.clear();
@@ -991,9 +1073,8 @@ impl App {
     fn back(&mut self) {
         if let Some(p) = self.history.back(self.cur.clone()) {
             // Going back up to a parent selects the folder we were in.
-            let child = (parent_path(&self.cur).as_deref() == Some(p.as_path()))
-                .then(|| self.cur.file_name().map(|n| n.to_string_lossy().into_owned()))
-                .flatten();
+            let child =
+                (parent_path(&self.cur).as_deref() == Some(p.as_path())).then(|| self.name_in_parent(&p)).flatten();
             self.cur = p;
             self.entered_new_folder(child);
         }
@@ -1040,14 +1121,24 @@ impl App {
         child_path(&self.cur, name)
     }
 
-    fn up(&mut self) {
-        let Some(parent) = parent_path(&self.cur) else { return };
-        let child = match classify(&self.cur) {
+    /// The entry name the current folder has in `parent`'s listing, to select it after Up or
+    /// Back: its last component, its full path where the parent names items by path (This
+    /// PC, a phone's folders), the server name on the Network page.
+    fn name_in_parent(&self, parent: &Path) -> Option<String> {
+        match classify(&self.cur) {
             Place::Server(s) => Some(s),
+            _ if self.cur.starts_with(explorer_core::SHELL) || classify(parent).names_are_paths() => {
+                Some(self.cur.to_string_lossy().into_owned())
+            }
             _ => Path::new(self.cur.to_string_lossy().trim_end_matches('\\'))
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned()),
-        };
+        }
+    }
+
+    fn up(&mut self) {
+        let Some(parent) = parent_path(&self.cur) else { return };
+        let child = self.name_in_parent(&parent);
         let from = std::mem::replace(&mut self.cur, parent);
         self.history.visit(from);
         self.entered_new_folder(child);
@@ -1142,6 +1233,10 @@ impl App {
         let path = self.child(&e.name);
         if e.is_dir {
             self.navigate(path);
+        } else if path.starts_with(explorer_core::SHELL) {
+            if let Err(err) = explorer_sys::shell_open(self.hwnd, &path) {
+                self.status = Some(format!("Could not open {}: {err}", e.display()));
+            }
         } else if let Err(err) = explorer_sys::open(&path) {
             self.status = Some(format!("Could not open {}: {err}", e.name));
         }
@@ -1287,6 +1382,11 @@ impl App {
 
     // ---- commands ------------------------------------------------------------------------
 
+    /// In a shell namespace folder (a phone) the shell does copy, paste and delete itself.
+    fn in_shell_folder(&self) -> bool {
+        matches!(classify(&self.cur), Place::Shell(_))
+    }
+
     fn copy_selection(&mut self, cut: bool) {
         if self.in_recycle_bin() {
             return;
@@ -1295,17 +1395,51 @@ impl App {
         if paths.is_empty() {
             return;
         }
+        if self.in_shell_folder() || paths.iter().any(|p| p.starts_with(explorer_core::SHELL)) {
+            // The shell's data object: files on a phone can then be pasted anywhere.
+            if let Err(e) = explorer_sys::shell_verb(self.hwnd, &self.cur, &paths, if cut { "cut" } else { "copy" }) {
+                self.status = Some(format!("Clipboard error: {e}"));
+            } else {
+                self.status = Some(format!("{} {} item(s)", if cut { "Cut" } else { "Copied" }, paths.len()));
+            }
+            return;
+        }
         self.status = Some(match explorer_sys::clipboard_set_files(&paths, cut) {
             Ok(()) => format!("{} {} item(s)", if cut { "Cut" } else { "Copied" }, paths.len()),
             Err(e) => format!("Clipboard error: {e}"),
         });
     }
 
+    /// Runs a shell copy, move or delete (to or from a phone) off the UI thread; the shell
+    /// shows its own progress and confirmation dialogs.
+    fn run_shell_op(&mut self, desc: String, f: impl FnOnce(isize) -> std::io::Result<bool> + Send + 'static) {
+        self.ops_running += 1;
+        let (tx, ctx, hwnd) = (self.tx.clone(), self.ctx.clone(), self.hwnd);
+        thread::Builder::new()
+            .name("shell-op".into())
+            .spawn(move || {
+                let r = f(hwnd);
+                let _ = tx.send(Msg::OpDone(desc, r, None));
+                ctx.request_repaint();
+            })
+            .expect("spawn shell-op thread");
+    }
+
     fn paste_into(&mut self, dest: PathBuf) {
+        if matches!(classify(&dest), Place::Shell(_)) {
+            // Into a phone folder: the shell's copy engine talks MTP (the folder's own Paste
+            // verb does nothing there).
+            return self.run_shell_op("Pasted".into(), move |hwnd| explorer_sys::shell_paste(hwnd, &dest));
+        }
         if classify(&dest).is_page() {
             return;
         }
         let Some((files, cut)) = explorer_sys::clipboard_get_files() else {
+            // Not files on disk (copied from a phone, say): the shell copies any data object
+            // Explorer itself could paste.
+            if cfg!(windows) {
+                return self.run_shell_op("Pasted".into(), move |hwnd| explorer_sys::shell_paste(hwnd, &dest));
+            }
             self.status = Some("Nothing to paste".into());
             return;
         };
@@ -1324,6 +1458,13 @@ impl App {
             return self.purge_selection();
         }
         let paths = self.selected_paths();
+        if self.in_shell_folder() {
+            if paths.is_empty() {
+                return;
+            }
+            let desc = format!("Deleted {} item(s)", paths.len());
+            return self.run_shell_op(desc, move |hwnd| explorer_sys::shell_delete(hwnd, &paths));
+        }
         self.run_op(if permanently { FileOp::Delete } else { FileOp::Recycle }, paths, None);
     }
 
@@ -1823,9 +1964,11 @@ impl eframe::App for App {
         if let Some(t) = self.tabs.get_mut(self.active_tab) {
             t.cur.clone_from(&self.cur);
         }
+        // The folder's name as in the breadcrumbs: "This PC", a phone's "Internal storage",
+        // not the parsing name behind it.
         let title = match self.cur.file_name() {
-            Some(n) => n.to_string_lossy().into_owned(),
-            None => self.cur.to_string_lossy().into_owned(),
+            Some(n) if !classify(&self.cur).is_page() => n.to_string_lossy().into_owned(),
+            _ => self.tab_title(self.active_tab),
         };
         if title != self.title {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Title(format!("{title} - File Explorer (oxidows)")));

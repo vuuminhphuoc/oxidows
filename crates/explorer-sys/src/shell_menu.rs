@@ -11,8 +11,7 @@ use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
     CMF_CANRENAME, CMF_EXPLORE, CMF_EXTENDEDVERBS, CMF_NORMAL, CMIC_MASK_PTINVOKE, CMIC_MASK_SHIFT_DOWN,
     CMINVOKECOMMANDINFO, CMINVOKECOMMANDINFOEX, DefSubclassProc, GCS_VERBW, IContextMenu, IContextMenu2, IContextMenu3,
-    ILFree, IShellFolder, RemoveWindowSubclass, SHBindToParent, SHGetDesktopFolder, SHParseDisplayName,
-    SetWindowSubclass,
+    ILFree, IShellFolder, RemoveWindowSubclass, SHBindToParent, SHGetDesktopFolder, SetWindowSubclass,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreatePopupMenu, DestroyMenu, GetCursorPos, SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenuEx,
@@ -64,9 +63,9 @@ unsafe extern "system" fn forward_proc(
     unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
 }
 
+/// A path, or for `::shell\\…` items the shell parsing name, as UTF-16.
 fn wide(s: &Path) -> Vec<u16> {
-    use std::os::windows::ffi::OsStrExt;
-    s.as_os_str().encode_wide().chain(Some(0)).collect()
+    explorer_core::shell_parsing(s).encode_utf16().chain(Some(0)).collect()
 }
 
 fn to_io(e: windows::core::Error) -> io::Error {
@@ -86,10 +85,8 @@ impl Drop for Pidls {
 fn parse(paths: &[PathBuf]) -> io::Result<Pidls> {
     let mut out = Pidls(Vec::with_capacity(paths.len()));
     for p in paths {
-        let w = wide(p);
-        let mut pidl = std::ptr::null_mut();
-        unsafe { SHParseDisplayName(PCWSTR(w.as_ptr()), None, &mut pidl, 0, None) }.map_err(to_io)?;
-        out.0.push(pidl);
+        // Phone items are found through their parent folder's ID list (see `shell_ns`).
+        out.0.push(crate::shell_ns::pidl(p)?.into_raw());
     }
     Ok(out)
 }
@@ -186,7 +183,11 @@ pub fn show(hwnd: isize, dir: &Path, items: &[PathBuf], extended: bool) -> io::R
         let verb = verb_of(&cm, offset);
         // Rename needs an in-place editor; opening a folder should stay in this window.
         let host = verb == "rename"
-            || ((verb == "open" || verb == "explore") && items.iter().all(|p| p.is_dir()) && !items.is_empty());
+            || ((verb == "open" || verb == "explore")
+                && !items.is_empty()
+                && items
+                    .iter()
+                    .all(|p| p.is_dir() || (p.starts_with(explorer_core::SHELL) && crate::shell_ns::is_folder(p))));
         if host {
             MenuOutcome::Host(verb)
         } else {
@@ -281,4 +282,35 @@ pub fn resolve_link(lnk: &Path) -> Option<PathBuf> {
         let n = buf.iter().position(|&c| c == 0)?;
         (n > 0).then(|| PathBuf::from(String::from_utf16_lossy(&buf[..n])))
     }
+}
+
+/// Runs one canonical verb ("copy", "cut", "paste", "delete", "properties", "rename"…) of the
+/// shell's menu for `items` (or for the folder `dir` when empty), without showing the menu.
+/// Used for keyboard shortcuts in shell namespace folders (a phone), where the shell itself
+/// has to do the work.
+pub fn invoke_verb(hwnd: isize, dir: &Path, items: &[PathBuf], verb: &str) -> io::Result<()> {
+    let hwnd = HWND(hwnd as *mut c_void);
+    let cm = context_menu(hwnd, dir, items)?;
+    let menu = unsafe { CreatePopupMenu() }.map_err(to_io)?;
+    let r = (|| {
+        unsafe { cm.QueryContextMenu(menu, 0, FIRST_ID, LAST_ID, CMF_NORMAL | CMF_EXPLORE) }.ok().map_err(to_io)?;
+        let verb_a: Vec<u8> = verb.bytes().chain(Some(0)).collect();
+        let verb_w: Vec<u16> = verb.encode_utf16().chain(Some(0)).collect();
+        let dir_w = wide(dir);
+        let ex = CMINVOKECOMMANDINFOEX {
+            cbSize: std::mem::size_of::<CMINVOKECOMMANDINFOEX>() as u32,
+            fMask: CMIC_MASK_UNICODE,
+            hwnd,
+            lpVerb: PCSTR(verb_a.as_ptr()),
+            lpVerbW: PCWSTR(verb_w.as_ptr()),
+            lpDirectoryW: PCWSTR(dir_w.as_ptr()),
+            nShow: SW_SHOWNORMAL.0,
+            ..Default::default()
+        };
+        unsafe { cm.InvokeCommand(&ex as *const CMINVOKECOMMANDINFOEX as *const CMINVOKECOMMANDINFO) }.map_err(to_io)
+    })();
+    unsafe {
+        let _ = DestroyMenu(menu);
+    }
+    r
 }
