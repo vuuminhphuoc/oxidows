@@ -230,6 +230,7 @@ fn register<R: io::BufRead>(
             protocol: info.protocol.unwrap_or(Protocol::Https),
             version: info.version.clone(),
             last_seen: Instant::now(),
+            missed: 0,
         });
     }
     Reply::Json(200, info_json(inner))
@@ -263,6 +264,7 @@ fn prepare_upload<R: io::BufRead>(
             protocol: req.info.protocol.unwrap_or(Protocol::Https),
             version: req.info.version.clone(),
             last_seen: Instant::now(),
+            missed: 0,
         });
     }
 

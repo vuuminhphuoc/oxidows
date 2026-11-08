@@ -107,15 +107,27 @@ impl Hotspot {
     }
 }
 
-/// Whether Windows Firewall has the inbound rule for nearby sharing.
-pub fn firewall_rule_exists() -> bool {
-    #[cfg(windows)]
-    return wifi_direct::firewall_rule_exists();
-    #[cfg(not(windows))]
-    true
+/// What Windows Firewall does with connections to this exe from phones.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FirewallState {
+    /// The nearby sharing rule is in place.
+    Allowed,
+    /// No rule yet: private networks may work after the first-run prompt, public ones do not.
+    Missing,
+    /// A block rule (left by a cancelled first-run prompt, or added by hand) stops phones.
+    Blocked,
 }
 
-/// Adds the inbound firewall rule for this exe on all network profiles (asks for admin rights).
+/// Reads the inbound firewall rules for this exe.
+pub fn firewall_state() -> FirewallState {
+    #[cfg(windows)]
+    return wifi_direct::firewall_state();
+    #[cfg(not(windows))]
+    FirewallState::Allowed
+}
+
+/// Replaces this exe's inbound firewall rules with one allow rule on all network profiles (asks
+/// for admin rights).
 pub fn allow_in_firewall() -> io::Result<()> {
     #[cfg(windows)]
     return wifi_direct::allow_in_firewall();

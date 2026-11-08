@@ -61,6 +61,9 @@ pub struct Device {
     pub protocol: Protocol,
     pub version: String,
     pub last_seen: Instant,
+    /// Refresh rounds in a row it did not answer. A phone on flaky Wi-Fi, or with LocalSend
+    /// briefly in the background, misses one now and then, so it stays listed for a few.
+    pub missed: u8,
 }
 
 impl Device {

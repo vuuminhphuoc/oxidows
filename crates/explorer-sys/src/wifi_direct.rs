@@ -121,24 +121,79 @@ fn run(ssid: &str, pass: &str, status: &Arc<Mutex<HotspotStatus>>, stop: &Receiv
 
 const RULE: &str = "oxi-explorer nearby sharing";
 
-/// Whether Windows Firewall already has our inbound rule (needs no elevation to ask).
-pub fn firewall_rule_exists() -> bool {
-    use std::os::windows::process::CommandExt;
-    std::process::Command::new("netsh")
-        .args(["advfirewall", "firewall", "show", "rule", &format!("name={RULE}")])
-        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
-        .output()
-        .is_ok_and(|o| o.status.success())
+/// Reads the inbound rules for this exe through the firewall's COM API (no elevation, and no
+/// localized `netsh` text to parse). A block rule wins over any allow rule, and Windows adds one
+/// when its first-run "allow access" prompt is cancelled.
+pub fn firewall_state() -> crate::FirewallState {
+    // Its own MTA thread, whatever the caller's apartment is.
+    thread::spawn(|| unsafe { read_firewall() }).join().unwrap_or(Ok(crate::FirewallState::Missing)).unwrap_or(
+        // Without the API (service off, policy), assume the rule is needed: the button still works.
+        crate::FirewallState::Missing,
+    )
 }
 
-/// Adds an inbound allow rule for this exe on every network profile. The Wi-Fi Direct group is
-/// a "public" network, which the first-run firewall prompt leaves blocked. Shows the UAC prompt.
+unsafe fn read_firewall() -> windows::core::Result<crate::FirewallState> {
+    use windows::Win32::Foundation::VARIANT_FALSE;
+    use windows::Win32::NetworkManagement::WindowsFirewall::{
+        INetFwPolicy2, INetFwRule, NET_FW_ACTION_BLOCK, NET_FW_RULE_DIR_IN, NetFwPolicy2,
+    };
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
+    use windows::Win32::System::Ole::IEnumVARIANT;
+    use windows::Win32::System::Variant::{VARIANT, VT_DISPATCH, VariantClear};
+    use windows::core::Interface;
+
+    let exe = std::env::current_exe().map(|p| p.to_string_lossy().to_lowercase()).unwrap_or_default();
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let policy: INetFwPolicy2 = CoCreateInstance(&NetFwPolicy2, None, CLSCTX_INPROC_SERVER)?;
+        let rules = policy.Rules()?;
+        let all: IEnumVARIANT = rules._NewEnum()?.cast()?;
+        let (mut ours, mut blocked) = (false, false);
+        loop {
+            let mut v = [VARIANT::default()];
+            let mut got = 0u32;
+            if all.Next(&mut v, &mut got).is_err() || got == 0 {
+                break;
+            }
+            let inner = &v[0].Anonymous.Anonymous;
+            if inner.vt == VT_DISPATCH
+                && let Some(d) = inner.Anonymous.pdispVal.as_ref()
+                && let Ok(rule) = d.cast::<INetFwRule>()
+            {
+                let name = rule.Name().map(|n| n.to_string()).unwrap_or_default();
+                let app = rule.ApplicationName().map(|n| n.to_string().to_lowercase()).unwrap_or_default();
+                let enabled = rule.Enabled().is_ok_and(|e| e != VARIANT_FALSE);
+                let inbound = rule.Direction().is_ok_and(|d| d == NET_FW_RULE_DIR_IN);
+                if enabled && inbound && !exe.is_empty() && app == exe {
+                    if rule.Action().is_ok_and(|a| a == NET_FW_ACTION_BLOCK) {
+                        blocked = true;
+                    } else if name == RULE {
+                        ours = true;
+                    }
+                }
+            }
+            let _ = VariantClear(&mut v[0]);
+        }
+        Ok(if blocked {
+            crate::FirewallState::Blocked
+        } else if ours {
+            crate::FirewallState::Allowed
+        } else {
+            crate::FirewallState::Missing
+        })
+    }
+}
+
+/// Replaces every inbound rule for this exe (including block rules from a cancelled first-run
+/// prompt) with one allow rule on every network profile. The Wi-Fi Direct group is a "public"
+/// network, which the first-run prompt leaves blocked. Shows the UAC prompt.
 pub fn allow_in_firewall() -> io::Result<()> {
     let exe = std::env::current_exe()?;
     let cmd = format!(
         "/c netsh advfirewall firewall delete rule name=\"{RULE}\" >nul & \
-         netsh advfirewall firewall add rule name=\"{RULE}\" dir=in action=allow program=\"{}\" enable=yes profile=any",
-        exe.display()
+         netsh advfirewall firewall delete rule name=all dir=in program=\"{exe}\" >nul & \
+         netsh advfirewall firewall add rule name=\"{RULE}\" dir=in action=allow program=\"{exe}\" enable=yes profile=any",
+        exe = exe.display()
     );
     crate::imp::shell_execute_hidden("runas", "cmd.exe", &cmd)
 }

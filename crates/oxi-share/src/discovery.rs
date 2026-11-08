@@ -115,6 +115,7 @@ fn device_from(msg: &DeviceInfo, ip: IpAddr, fingerprint: String) -> Device {
         protocol: msg.protocol.unwrap_or(Protocol::Https),
         version: msg.version.clone(),
         last_seen: Instant::now(),
+        missed: 0,
     }
 }
 
@@ -217,6 +218,9 @@ pub(crate) fn announce(inner: &Arc<Inner>) {
     });
 }
 
+/// Refresh rounds a device may miss in a row before it leaves the list.
+const MISSES_TO_FORGET: u8 = 3;
+
 pub(crate) fn refresh(inner: &Arc<Inner>) {
     let since = Instant::now();
     if let Some(h) = inner.discovery.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
@@ -226,14 +230,21 @@ pub(crate) fn refresh(inner: &Arc<Inner>) {
     let inner = inner.clone();
     thread::spawn(move || {
         thread::sleep(Duration::from_secs(3));
-        let fresh = inner.snap().devices.iter().any(|d| d.last_seen >= since);
-        if !fresh {
+        // Multicast may not reach everyone (client isolation, a firewall blocking the answers),
+        // so scan whenever a known device, or every device, stayed silent.
+        let silent = {
+            let s = inner.snap();
+            s.devices.is_empty() || s.devices.iter().any(|d| d.last_seen < since)
+        };
+        if silent {
             scan(&inner);
         }
-        // Devices that did not answer this round are gone.
         let mut s = inner.snap();
         let before = s.devices.len();
-        s.devices.retain(|d| d.last_seen >= since);
+        for d in s.devices.iter_mut().filter(|d| d.last_seen < since) {
+            d.missed = d.missed.saturating_add(1);
+        }
+        s.devices.retain(|d| d.missed < MISSES_TO_FORGET);
         let changed = s.devices.len() != before;
         drop(s);
         if changed {

@@ -592,5 +592,5 @@ fn wifi_direct_group_starts_or_reports_why_not() {
 fn firewall_rule_lookup_needs_no_elevation() {
     let _g = guard("firewall_rule_lookup_needs_no_elevation");
     // Just must not hang or panic; the answer depends on the machine.
-    eprintln!("rule exists: {}", explorer_sys::firewall_rule_exists());
+    eprintln!("firewall: {:?}", explorer_sys::firewall_state());
 }

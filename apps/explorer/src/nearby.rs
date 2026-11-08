@@ -36,7 +36,7 @@ pub struct Nearby {
     /// Device whose "send text" box is open, and the text.
     text_for: Option<(String, String)>,
     probe_ip: String,
-    firewall_ok: Option<bool>,
+    firewall: Option<explorer_sys::FirewallState>,
     editing_alias: Option<String>,
     /// Request already brought to the user's attention.
     attention_for: u64,
@@ -137,7 +137,7 @@ fn sync(app: &mut App, ctx: &egui::Context) {
             app.nearby.share = Some(s);
             app.nearby.lock = Some(lock);
             app.nearby.error = None;
-            app.nearby.firewall_ok = Some(explorer_sys::firewall_rule_exists());
+            app.nearby.firewall = Some(explorer_sys::firewall_state());
         }
         Err(e) => app.nearby.error = Some(e.to_string()),
     }
@@ -359,20 +359,33 @@ fn window(app: &mut App, ui: &mut Ui) {
         }
         None => {}
     }
-    if app.nearby.firewall_ok == Some(false) {
+    if let Some(state @ (explorer_sys::FirewallState::Missing | explorer_sys::FirewallState::Blocked)) =
+        app.nearby.firewall
+    {
         ui.horizontal_wrapped(|ui| {
-            ui.label(Icon::Warning.sized(14.0).color(Palette::of(ui).warning));
-            ui.label(RichText::new("Windows Firewall may block phones on Wi-Fi Direct and public networks.").weak());
+            let p = Palette::of(ui);
+            if state == explorer_sys::FirewallState::Blocked {
+                ui.label(Icon::Warning.sized(14.0).color(p.danger));
+                ui.label(
+                    RichText::new("Windows Firewall blocks this app, so phones cannot find or send to this PC.")
+                        .color(p.danger),
+                );
+            } else {
+                ui.label(Icon::Warning.sized(14.0).color(p.warning));
+                ui.label(
+                    RichText::new("Windows Firewall may block phones on Wi-Fi Direct and public networks.").weak(),
+                );
+            }
             if ui.button("Allow").on_hover_text("Adds an inbound rule for this app (asks for admin rights)").clicked() {
                 match explorer_sys::allow_in_firewall() {
-                    Ok(()) => app.nearby.firewall_ok = None,
+                    Ok(()) => app.nearby.firewall = None,
                     Err(e) => app.status = Some(format!("Firewall: {e}")),
                 }
             }
         });
     }
-    if app.nearby.firewall_ok.is_none() && ui.ctx().cumulative_frame_nr().is_multiple_of(120) {
-        app.nearby.firewall_ok = Some(explorer_sys::firewall_rule_exists());
+    if app.nearby.firewall.is_none() && ui.ctx().cumulative_frame_nr().is_multiple_of(120) {
+        app.nearby.firewall = Some(explorer_sys::firewall_state());
     }
     ui.separator();
 
