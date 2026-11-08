@@ -29,6 +29,8 @@ enum Msg {
     /// A sign-in to a share finished.
     Connected(PathBuf, std::io::Result<()>),
     Drives(Vec<Drive>),
+    /// Phones and other devices under This PC.
+    Devices(Vec<explorer_sys::ShellDevice>),
     /// A file operation finished, with what it did if that can be undone.
     OpDone(String, std::io::Result<bool>, Option<undo::Undoable>),
     /// The watched folder changed on disk.
@@ -37,8 +39,8 @@ enum Msg {
     Thumb(PathBuf, Option<explorer_sys::IconImage>),
     /// Every `Prop::ALL` value of one file.
     Props(PathBuf, Vec<String>),
-    /// Subfolder names for the navigation tree.
-    Tree(PathBuf, Vec<String>),
+    /// Subfolder names for the navigation tree, and display names of shell folders among them.
+    Tree(PathBuf, Vec<String>, Vec<(PathBuf, String)>),
     Preview(PathBuf, pane::PreviewData),
 }
 
@@ -256,6 +258,8 @@ struct App {
     thumb_px: u32,
     icon_tx: Option<Sender<IconKey>>,
     drives: Vec<Drive>,
+    /// Phones and cameras under This PC, for the navigation pane.
+    pub devices: Vec<explorer_sys::ShellDevice>,
     places: Vec<(&'static str, PathBuf)>,
     utc_offset: i64,
     started: Instant,
@@ -344,6 +348,7 @@ impl App {
             thumb_px: 96,
             icon_tx: None,
             drives: Vec::new(),
+            devices: Vec::new(),
             places: explorer_sys::known_folders(),
             utc_offset: explorer_sys::utc_offset_secs(),
             started: Instant::now(),
@@ -615,21 +620,30 @@ impl App {
                         });
                         let _ = tx.send(Msg::Batch(generation, folders.chain(drives).collect()));
                         ctx.request_repaint();
-                        // Devices without a drive letter: phones and cameras (MTP), media servers.
-                        let _ =
-                            explorer_sys::shell_list(Path::new(explorer_core::THIS_PC_CLSID), &cancel, &mut |batch| {
-                                let devices: Vec<Entry> = batch
-                                    .into_iter()
-                                    .filter(|e| e.name.starts_with(explorer_core::SHELL))
-                                    .map(|mut e| {
-                                        e.note = Some(e.note.unwrap_or_else(|| "Device".into()));
-                                        e
-                                    })
-                                    .collect();
-                                if !devices.is_empty() {
-                                    let _ = tx.send(Msg::Batch(generation, devices));
-                                }
-                            });
+                        // Devices without a drive letter: phones and cameras (MTP), media servers,
+                        // with their storage space like a drive's.
+                        let devices: Vec<Entry> = explorer_sys::shell_devices()
+                            .into_iter()
+                            .map(|d| Entry {
+                                name: d.path.to_string_lossy().into_owned(),
+                                label: Some(d.label),
+                                note: Some(if d.total > 0 {
+                                    format!(
+                                        "{} free of {}",
+                                        explorer_core::format_bytes(d.free),
+                                        explorer_core::format_bytes(d.total)
+                                    )
+                                } else {
+                                    d.kind
+                                }),
+                                is_dir: true,
+                                size: d.total,
+                                ..Default::default()
+                            })
+                            .collect();
+                        if !devices.is_empty() {
+                            let _ = tx.send(Msg::Batch(generation, devices));
+                        }
                         Ok(())
                     }
                     Place::Server(server) => explorer_sys::list_shares(&server).map(|shares| {
@@ -775,11 +789,31 @@ impl App {
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         thread::spawn(move || {
             let mut names = Vec::new();
-            let _ = explorer_sys::list_dir(&dir, &AtomicBool::new(false), &mut |b| {
-                names.extend(b.into_iter().filter(|e| e.is_dir && !e.hidden && !e.system).map(|e| e.name));
-            });
-            names.sort_by(|a, b| explorer_core::natural_cmp(a, b));
-            let _ = tx.send(Msg::Tree(dir, names));
+            let mut labels = Vec::new();
+            if matches!(classify(&dir), Place::Shell(_)) {
+                // A phone's folders: named by the ID after the parent's path, shown by label.
+                let prefix = format!("{}\\", dir.to_string_lossy());
+                let _ = explorer_sys::shell_list(&dir, &AtomicBool::new(false), &mut |b| {
+                    for e in b.into_iter().filter(|e| e.is_dir && !e.hidden) {
+                        if let Some(id) = e.name.strip_prefix(&prefix) {
+                            if let Some(l) = &e.label {
+                                labels.push((PathBuf::from(&e.name), l.clone()));
+                            }
+                            names.push((id.to_string(), e.display().to_string()));
+                        }
+                    }
+                });
+                names.sort_by(|a, b| explorer_core::natural_cmp(&a.1, &b.1));
+            } else {
+                let _ = explorer_sys::list_dir(&dir, &AtomicBool::new(false), &mut |b| {
+                    names.extend(
+                        b.into_iter().filter(|e| e.is_dir && !e.hidden && !e.system).map(|e| (e.name, String::new())),
+                    );
+                });
+                names.sort_by(|a, b| explorer_core::natural_cmp(&a.0, &b.0));
+            }
+            let names = names.into_iter().map(|(n, _)| n).collect();
+            let _ = tx.send(Msg::Tree(dir, names, labels));
             ctx.request_repaint();
         });
     }
@@ -788,6 +822,9 @@ impl App {
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         thread::spawn(move || {
             let _ = tx.send(Msg::Drives(explorer_sys::drives()));
+            ctx.request_repaint();
+            // After the drives: asking a phone for its storage takes longer.
+            let _ = tx.send(Msg::Devices(explorer_sys::shell_devices()));
             ctx.request_repaint();
         });
     }
@@ -877,6 +914,13 @@ impl App {
                     Err(e) => self.status = Some(format!("Could not connect to {}: {e}", root.display())),
                 },
                 Msg::Drives(d) => self.drives = d,
+                Msg::Devices(d) => {
+                    for dev in &d {
+                        ui_common::ensure_glyphs(&self.ctx, &dev.label);
+                        self.shell_labels.insert(dev.path.clone(), dev.label.clone());
+                    }
+                    self.devices = d;
+                }
                 Msg::Changed(dir) if dir == self.cur && self.deep_search.is_none() => {
                     self.changed_at.get_or_insert_with(Instant::now);
                 }
@@ -901,9 +945,13 @@ impl App {
                         self.props.insert(p, Some(v));
                     }
                 }
-                Msg::Tree(dir, names) => {
+                Msg::Tree(dir, names, labels) => {
                     self.tree_pending.remove(&dir);
                     self.tree.insert(dir, names);
+                    for (p, l) in labels {
+                        ui_common::ensure_glyphs(&self.ctx, &l);
+                        self.shell_labels.insert(p, l);
+                    }
                 }
                 Msg::Icon(key, img) => {
                     let state = match img {
@@ -1242,10 +1290,98 @@ impl App {
         }
     }
 
+    /// What the address box holds when editing starts: the path, or for a phone's folders
+    /// the names the breadcrumbs show ("This PC\Galaxy S24\Internal storage\DCIM"), as
+    /// Explorer does. `submit_address` reads both forms back.
+    pub fn address_text(&self) -> String {
+        if matches!(classify(&self.cur), Place::Shell(_)) {
+            let crumbs = self.crumbs(&self.cur);
+            // Only when every level has a name (raw IDs contain backslashes themselves).
+            if crumbs.iter().all(|(l, _)| !l.is_empty() && !l.contains('\\')) {
+                return crumbs.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>().join("\\");
+            }
+        }
+        self.cur.to_string_lossy().into_owned()
+    }
+
+    /// The location behind a path typed with display names: "This PC\Galaxy S24\DCIM",
+    /// "This PC\Windows (C:)\Users", "Control Panel\…". `None` if it isn't one, or a
+    /// level isn't there.
+    fn resolve_display_path(&mut self, text: &str) -> Option<PathBuf> {
+        let mut parts = text.split(['\\', '/']).filter(|s| !s.is_empty());
+        let root = parts.next()?;
+        let mut rest: Vec<&str> = parts.collect();
+        if rest.is_empty() {
+            return None;
+        }
+        let mut cur = if root.eq_ignore_ascii_case("this pc") {
+            PathBuf::from(explorer_core::THIS_PC)
+        } else if root.eq_ignore_ascii_case("control panel") {
+            explorer_core::shell_path(explorer_core::CONTROL_PANEL_CLSID)
+        } else {
+            return None;
+        };
+        while !rest.is_empty() {
+            let seg = rest.remove(0);
+            if classify(&cur) == Place::ThisPc {
+                // A drive by its name or letter: the rest is an ordinary path under it.
+                let drive = self.drives.iter().find(|d| {
+                    let root = d.root.to_string_lossy();
+                    view::drive_label(d).eq_ignore_ascii_case(seg)
+                        || root.trim_end_matches('\\').eq_ignore_ascii_case(seg.trim_end_matches('\\'))
+                });
+                if let Some(d) = drive {
+                    return Some(rest.iter().fold(d.root.clone(), |p, s| p.join(s)));
+                }
+            }
+            let known = self
+                .shell_labels
+                .iter()
+                .find(|(p, l)| l.eq_ignore_ascii_case(seg) && parent_path(p).as_deref() == Some(cur.as_path()))
+                .map(|(p, _)| p.clone());
+            cur = match known {
+                Some(p) => p,
+                None => {
+                    // Not seen yet: ask the shell for this level's items.
+                    let folder = if classify(&cur) == Place::ThisPc {
+                        PathBuf::from(explorer_core::THIS_PC_CLSID)
+                    } else {
+                        cur.clone()
+                    };
+                    let mut found = None;
+                    let _ = explorer_sys::shell_list(&folder, &AtomicBool::new(false), &mut |b| {
+                        for e in b {
+                            if let Some(l) = &e.label {
+                                if found.is_none() && l.eq_ignore_ascii_case(seg) {
+                                    found = Some(PathBuf::from(&e.name));
+                                }
+                                if e.name.starts_with(explorer_core::SHELL) {
+                                    self.shell_labels.insert(PathBuf::from(&e.name), l.clone());
+                                }
+                            }
+                        }
+                    });
+                    match found {
+                        // A real folder (a drive the shell lists): the rest is a plain path.
+                        Some(p) if !p.starts_with(explorer_core::SHELL) => {
+                            return Some(rest.iter().fold(p, |p, s| p.join(s)));
+                        }
+                        Some(p) => p,
+                        None => return None,
+                    }
+                }
+            };
+        }
+        Some(cur)
+    }
+
     fn submit_address(&mut self, text: &str) {
         let t = text.trim().trim_matches('"');
         if t.is_empty() {
             return;
+        }
+        if let Some(p) = self.resolve_display_path(t) {
+            return self.go_or_open(p);
         }
         let env = |k: &str| std::env::var(k).ok();
         // shell:startup, shell:sendto, …; redirected known folders come from the system.
@@ -1274,7 +1410,17 @@ impl App {
         let p = if t.eq_ignore_ascii_case("network") { PathBuf::from(explorer_core::NETWORK) } else { p };
         let p = if t.eq_ignore_ascii_case("this pc") { PathBuf::from(explorer_core::THIS_PC) } else { p };
         let p = if t.eq_ignore_ascii_case("recycle bin") { PathBuf::from(explorer_core::RECYCLE_BIN) } else { p };
-        let p = if p.is_relative() && classify(&p) == Place::Local { self.cur.join(p) } else { p };
+        // A shell parsing name as copied from elsewhere ("::{20D04FE0-…}\\?\usb#…").
+        let p = if t.starts_with("::{") { explorer_core::shell_path(t) } else { p };
+        // A relative path is under the current folder; a phone's folder has no paths under it.
+        let p = if p.is_relative() && classify(&p) == Place::Local && !classify(&self.cur).is_page() {
+            self.cur.join(p)
+        } else {
+            p
+        };
+        if matches!(classify(&p), Place::Shell(_)) {
+            return self.go_or_open(p);
+        }
         if matches!(classify(&p), Place::Network | Place::Server(_)) || p.is_dir() {
             self.navigate(p);
         } else if p.exists() {
@@ -1283,6 +1429,25 @@ impl App {
             }
         } else {
             self.status = Some(format!("Can't find '{t}'. Check the spelling and try again."));
+        }
+    }
+
+    /// Goes into a folder (a phone's too) or opens a file.
+    fn go_or_open(&mut self, p: PathBuf) {
+        if matches!(classify(&p), Place::Shell(_)) {
+            if explorer_sys::shell_is_folder(&p) {
+                self.navigate(p);
+            } else if let Err(e) = explorer_sys::shell_open(self.hwnd, &p) {
+                self.status = Some(format!("Can't find '{}': {e}", p.display()));
+            }
+        } else if classify(&p) != Place::Local || p.is_dir() {
+            self.navigate(p);
+        } else if p.exists() {
+            if let Err(e) = explorer_sys::open(&p) {
+                self.status = Some(format!("Could not open {}: {e}", p.display()));
+            }
+        } else {
+            self.status = Some(format!("Can't find '{}'. Check the spelling and try again.", p.display()));
         }
     }
 
@@ -1775,7 +1940,7 @@ impl App {
             self.load_drives();
         }
         if addr {
-            self.address_edit = Some(self.cur.to_string_lossy().into_owned());
+            self.address_edit = Some(self.address_text());
         }
         if find {
             self.focus_search = true;

@@ -200,6 +200,40 @@ pub fn shell_verb(hwnd: isize, dir: &Path, items: &[PathBuf], verb: &str) -> io:
     }
 }
 
+/// A phone, camera or media player under This PC: a shell folder with no drive letter.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShellDevice {
+    /// `::shell\…` app path.
+    pub path: PathBuf,
+    /// "Galaxy S24".
+    pub label: String,
+    /// "Portable Device".
+    pub kind: String,
+    /// All its storages together, in bytes; 0 when unknown (locked phone, camera).
+    pub total: u64,
+    pub free: u64,
+}
+
+/// Phones and other devices under This PC, with their storage space. Talks to each device
+/// (tens of milliseconds); call off the UI thread. Empty off Windows.
+pub fn shell_devices() -> Vec<ShellDevice> {
+    #[cfg(windows)]
+    return shell_ns::devices();
+    #[cfg(not(windows))]
+    Vec::new()
+}
+
+/// Free bytes of a phone's storage (`::shell\…\SID-{…}`).
+pub fn shell_free_space(path: &Path) -> Option<u64> {
+    #[cfg(windows)]
+    return shell_ns::free_space(path);
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        None
+    }
+}
+
 /// Pastes the clipboard (files, or shell items such as a phone's photos) into `dest`, which
 /// may be a phone folder, through the shell's copy engine. Blocks; call off the UI thread.
 /// `Ok(false)`: cancelled, or nothing to paste.

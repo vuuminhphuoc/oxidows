@@ -518,7 +518,7 @@ fn address_bar(app: &mut App, ui: &mut Ui) {
     if let Some(p) = go {
         app.navigate(p);
     } else if edit {
-        app.address_edit = Some(app.cur.to_string_lossy().into_owned());
+        app.address_edit = Some(app.address_text());
     }
 }
 
@@ -546,9 +546,11 @@ pub fn drop_hover(resp: &egui::Response, dragging: bool, path: &Path, out: &mut 
 }
 
 /// Expandable node: arrow + clickable label; children are listed lazily the first time it opens.
+#[allow(clippy::too_many_arguments)]
 fn tree_node(
     ui: &mut Ui,
     tree: &std::collections::HashMap<PathBuf, Vec<String>>,
+    labels: &std::collections::HashMap<PathBuf, String>,
     cur: &PathBuf,
     path: &PathBuf,
     (icon, label): (Icon, &str),
@@ -564,7 +566,9 @@ fn tree_node(
                 Some(children) if depth < 32 => {
                     for name in children {
                         let child = path.join(name);
-                        tree_node(ui, tree, cur, &child, (Icon::FolderFilled, name), out, depth + 1);
+                        // A phone's folders are named by ID; show their display names.
+                        let shown = labels.get(&child).map_or(name.as_str(), String::as_str);
+                        tree_node(ui, tree, labels, cur, &child, (Icon::FolderFilled, shown), out, depth + 1);
                     }
                     if children.is_empty() {
                         ui.label(RichText::new("(empty)").small().weak());
@@ -583,8 +587,9 @@ fn tree_node(
         out.go = Some(path.clone());
     }
     drop_hover(&header.inner, out.dragging, path, &mut out.drop);
-    // Drive roots keep their own menu (Disconnect); folders can be pinned.
-    if path.parent().is_some() {
+    // Drive roots keep their own menu (Disconnect); folders can be pinned (not a phone's,
+    // which have no path to keep).
+    if path.parent().is_some() && !path.starts_with(explorer_core::SHELL) {
         let pinned = out.pinned.contains(&crate::settings::folder_key(path));
         let mut req = None;
         header.inner.context_menu(|ui| {
@@ -619,6 +624,22 @@ pub fn drive_label(d: &explorer_sys::Drive) -> String {
         (true, DriveKind::Optical) => format!("DVD Drive ({letter})"),
         (true, DriveKind::Other) => letter.to_string(),
     }
+}
+
+/// The used-space bar and "X free of Y" under a drive or phone in the navigation pane.
+fn space_bar(ui: &mut Ui, total: u64, free: u64) {
+    let used = 1.0 - free as f32 / total as f32;
+    ui.horizontal(|ui| {
+        ui.add_space(24.0);
+        ui.add(egui::ProgressBar::new(used).desired_width(ui.available_width() - 4.0).desired_height(5.0).fill({
+            let p = ui_common::Palette::of(ui);
+            if used > 0.9 { p.danger } else { p.accent }
+        }));
+    });
+    ui.horizontal(|ui| {
+        ui.add_space(24.0);
+        ui.label(RichText::new(format!("{} free of {}", format_bytes(free), format_bytes(total))).small().weak());
+    });
 }
 
 pub fn sidebar(app: &mut App, ui: &mut Ui) {
@@ -656,13 +677,13 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
                     "Videos" => Icon::Videos,
                     _ => Icon::Folder,
                 };
-                tree_node(ui, &app.tree, &app.cur, path, (icon, name), &mut tree_out, 0);
+                tree_node(ui, &app.tree, &app.shell_labels, &app.cur, path, (icon, name), &mut tree_out, 0);
             }
             // Quick access pins, after the standard folders (which are always there).
             for path in &app.persist.settings.pinned {
                 let name =
                     path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
-                tree_node(ui, &app.tree, &app.cur, path, (Icon::Pin, &name), &mut tree_out, 0);
+                tree_node(ui, &app.tree, &app.shell_labels, &app.cur, path, (Icon::Pin, &name), &mut tree_out, 0);
             }
             ui.add_space(6.0);
             ui.separator();
@@ -680,7 +701,8 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
                     DriveKind::Removable => Icon::Usb,
                     _ => Icon::Drive,
                 };
-                let r = tree_node(ui, &app.tree, &app.cur, &d.root, (icon, &label), &mut tree_out, 0);
+                let r =
+                    tree_node(ui, &app.tree, &app.shell_labels, &app.cur, &d.root, (icon, &label), &mut tree_out, 0);
                 if d.kind == DriveKind::Network {
                     let letter = letter.chars().next().unwrap_or('Z');
                     r.context_menu(|ui| {
@@ -691,27 +713,14 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
                     });
                 }
                 if d.total > 0 {
-                    let used = 1.0 - d.free as f32 / d.total as f32;
-                    ui.horizontal(|ui| {
-                        ui.add_space(24.0);
-                        ui.add(
-                            egui::ProgressBar::new(used)
-                                .desired_width(ui.available_width() - 4.0)
-                                .desired_height(5.0)
-                                .fill({
-                                    let p = ui_common::Palette::of(ui);
-                                    if used > 0.9 { p.danger } else { p.accent }
-                                }),
-                        );
-                    });
-                    ui.horizontal(|ui| {
-                        ui.add_space(24.0);
-                        ui.label(
-                            RichText::new(format!("{} free of {}", format_bytes(d.free), format_bytes(d.total)))
-                                .small()
-                                .weak(),
-                        );
-                    });
+                    space_bar(ui, d.total, d.free);
+                }
+            }
+            // Phones and cameras, as Explorer lists them with the drives.
+            for d in &app.devices {
+                tree_node(ui, &app.tree, &app.shell_labels, &app.cur, &d.path, (Icon::Usb, &d.label), &mut tree_out, 0);
+                if d.total > 0 {
+                    space_bar(ui, d.total, d.free);
                 }
             }
             ui.add_space(6.0);
