@@ -306,6 +306,8 @@ pub struct GpuAdapter {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GpuStats {
     pub name: String,
+    /// "0xHIGH_0xLOW", as in PDH instance names.
+    pub luid: String,
     /// Busiest engine type, percent.
     pub util: f32,
     pub engines: Vec<(String, f32)>,
@@ -368,6 +370,7 @@ pub fn split_gpus(
             let a = adapters.iter().find(|a| a.luid.eq_ignore_ascii_case(l));
             GpuStats {
                 name: a.map_or_else(|| format!("GPU {i}"), |a| a.name.clone()),
+                luid: l.to_string(),
                 util: usage.total,
                 engines: usage.engines,
                 dedicated_used: sum(dedicated, l),

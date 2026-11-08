@@ -291,3 +291,75 @@ unsafe fn npu_info(a: *mut c_void) -> GpuAdapter {
         }
     }
 }
+
+#[repr(C)]
+struct OpenAdapterFromLuid {
+    luid_low: u32,
+    luid_high: i32,
+    adapter: u32,
+}
+
+#[repr(C)]
+struct QueryAdapterInfo {
+    adapter: u32,
+    kind: u32,
+    data: *mut c_void,
+    size: u32,
+}
+
+/// D3DKMT_ADAPTER_PERFDATA (Windows 10 2004+).
+#[repr(C)]
+#[derive(Default)]
+struct AdapterPerfData {
+    physical_index: u32,
+    memory_frequency: u64,
+    max_memory_frequency: u64,
+    max_memory_frequency_oc: u64,
+    memory_bandwidth: u64,
+    pcie_bandwidth: u64,
+    fan_rpm: u32,
+    power: u32,
+    /// Deci-degrees Celsius.
+    temperature: u32,
+    power_state_override: u8,
+}
+
+const KMTQAITYPE_ADAPTERPERFDATA: u32 = 62;
+
+type KmtOpen = unsafe extern "system" fn(*mut OpenAdapterFromLuid) -> i32;
+type KmtQuery = unsafe extern "system" fn(*const QueryAdapterInfo) -> i32;
+type KmtClose = unsafe extern "system" fn(*const u32) -> i32;
+
+/// GPU temperature in °C, as Task Manager shows it, for the adapter with this PDH-style LUID
+/// ("0x00000000_0x0000D5E1"). None when the driver does not report one (WARP, most VMs).
+pub fn gpu_temperature(luid: &str) -> Option<f32> {
+    use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+    let (hi, lo) = luid.split_once('_')?;
+    let hex = |s: &str| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok();
+    let (hi, lo) = (hex(hi)?, hex(lo)?);
+    let dll: Vec<u16> = "gdi32.dll".encode_utf16().chain(Some(0)).collect();
+    // SAFETY: documented D3DKMT thunks with their C layouts; the adapter handle is closed below.
+    unsafe {
+        let lib = LoadLibraryW(dll.as_ptr());
+        if lib.is_null() {
+            return None;
+        }
+        let open: KmtOpen = std::mem::transmute(GetProcAddress(lib, c"D3DKMTOpenAdapterFromLuid".as_ptr().cast())?);
+        let query: KmtQuery = std::mem::transmute(GetProcAddress(lib, c"D3DKMTQueryAdapterInfo".as_ptr().cast())?);
+        let close: KmtClose = std::mem::transmute(GetProcAddress(lib, c"D3DKMTCloseAdapter".as_ptr().cast())?);
+        let mut o = OpenAdapterFromLuid { luid_low: lo, luid_high: hi as i32, adapter: 0 };
+        if open(&mut o) < 0 {
+            return None;
+        }
+        let mut perf = AdapterPerfData::default();
+        let q = QueryAdapterInfo {
+            adapter: o.adapter,
+            kind: KMTQAITYPE_ADAPTERPERFDATA,
+            data: (&raw mut perf).cast(),
+            size: size_of::<AdapterPerfData>() as u32,
+        };
+        let r = query(&q);
+        close(&o.adapter);
+        (r >= 0 && perf.temperature > 0).then(|| perf.temperature as f32 / 10.0)
+    }
+}

@@ -67,6 +67,8 @@ as the feature.
 | One entry per GPU adapter with name, dedicated / shared memory used of total | done | DXGI + PDH split by LUID |
 | GPU driver version, driver date, DirectX version | done | DXGI `CheckInterfaceSupport`, the display driver key, D3D12 feature-level probe |
 | GPU physical location | done | SetupAPI `SPDRP_LOCATION_INFORMATION` |
+| GPU temperature | done | D3DKMT adapter perf data; shown where the driver reports it |
+| Disk temperature | done | `StorageDeviceTemperatureProperty`; shown where the drive reports it |
 | NPU | done | DXCore machine-learning adapters without graphics, numbered NPU 0, 1... |
 | Copy to clipboard | done | |
 | Summary view | done | button or double-click; double-click again to come back |

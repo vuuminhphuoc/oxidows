@@ -44,6 +44,25 @@ pub struct State {
     disk_info: std::collections::HashMap<u32, Option<DiskInfo>>,
     /// Speed and slots from SMBIOS, read once.
     memory: Option<MemoryInfo>,
+    /// Temperatures by "disk N" / GPU LUID, re-read every two seconds.
+    temps: std::collections::HashMap<String, (Instant, Option<f32>)>,
+}
+
+impl State {
+    fn temp(&mut self, key: String, read: impl FnOnce() -> Option<f32>) -> Option<f32> {
+        match self.temps.get(&key) {
+            Some((at, t)) if at.elapsed() < Duration::from_secs(2) => *t,
+            _ => {
+                let t = read();
+                self.temps.insert(key, (Instant::now(), t));
+                t
+            }
+        }
+    }
+}
+
+fn celsius(t: Option<f32>) -> String {
+    t.map_or("-".into(), |t| format!("{t:.0} °C"))
 }
 
 impl Default for State {
@@ -67,6 +86,7 @@ impl Default for State {
             adapter: None,
             disk_info: Default::default(),
             memory: None,
+            temps: Default::default(),
         }
     }
 }
@@ -225,10 +245,14 @@ impl State {
         let gpu_titles = taskmgr_core::gpu_titles(&s.gpus);
         for (i, g) in s.gpus.iter().enumerate() {
             if let Some(ring) = h.gpus.get(i) {
+                let t = self.temp(g.luid.clone(), || taskmgr_sys::gpu_temperature(&g.luid));
                 entries.push(Entry {
                     res: Res::Gpu(i),
                     title: gpu_titles[i].clone(),
-                    value: format!("{}\n{:.0}%", g.name, g.util),
+                    value: match t {
+                        Some(t) => format!("{}\n{:.0}% ({t:.0} °C)", g.name, g.util),
+                        None => format!("{}\n{:.0}%", g.name, g.util),
+                    },
                     ring,
                     max: 100.0,
                     color: GPU,
@@ -372,6 +396,12 @@ impl State {
                                 ),
                                 ("System disk", yes_no(is_sys)),
                                 ("Page file", yes_no(pagefile)),
+                                (
+                                    "Temperature",
+                                    celsius(number.and_then(|n| {
+                                        self.temp(format!("disk {n}"), || taskmgr_sys::disk_temperature(n))
+                                    })),
+                                ),
                             ],
                         )
                     }
@@ -479,6 +509,10 @@ impl State {
                     let mut items =
                         vec![("Utilization", util), ("Dedicated GPU memory", ded), ("Shared GPU memory", shared)];
                     if let Some(g) = one {
+                        let t = self.temp(g.luid.clone(), || taskmgr_sys::gpu_temperature(&g.luid));
+                        if t.is_some() {
+                            items.push(("GPU temperature", celsius(t)));
+                        }
                         for (k, v) in [
                             ("Driver version", &g.driver_version),
                             ("Driver date", &g.driver_date),
