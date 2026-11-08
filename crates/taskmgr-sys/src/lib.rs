@@ -143,6 +143,16 @@ pub fn memory_info() -> taskmgr_core::MemoryInfo {
     imp::memory_info()
 }
 
+/// °C, where the drive reports it.
+pub fn disk_temperature(number: u32) -> Option<f32> {
+    imp::disk_temperature(number)
+}
+
+/// °C for the GPU with this LUID (as in [`taskmgr_core::GpuStats::luid`]), where the driver reports it.
+pub fn gpu_temperature(luid: &str) -> Option<f32> {
+    imp::gpu_temperature(luid)
+}
+
 /// Blocked threads of a process and what they wait on ("Analyze wait chain").
 pub fn wait_chain(pid: u32) -> io::Result<Vec<taskmgr_core::WaitChain>> {
     imp::wait_chain(pid)

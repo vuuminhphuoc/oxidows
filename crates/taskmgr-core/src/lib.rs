@@ -298,12 +298,16 @@ pub struct GpuAdapter {
     pub driver_date: String,
     /// "PCI bus 0, device 2, function 0"; empty for software adapters.
     pub location: String,
+    /// A neural processor (machine learning only, no graphics), shown as "NPU n".
+    pub npu: bool,
 }
 
 /// One GPU's figures for a sample.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GpuStats {
     pub name: String,
+    /// "0xHIGH_0xLOW", as in PDH instance names.
+    pub luid: String,
     /// Busiest engine type, percent.
     pub util: f32,
     pub engines: Vec<(String, f32)>,
@@ -315,6 +319,19 @@ pub struct GpuStats {
     pub directx: String,
     pub driver_date: String,
     pub location: String,
+    pub npu: bool,
+}
+
+/// "GPU 0", "GPU 1", "NPU 0"...: GPUs and NPUs are numbered separately, as Task Manager does.
+pub fn gpu_titles(gpus: &[GpuStats]) -> Vec<String> {
+    let (mut g, mut n) = (0, 0);
+    gpus.iter()
+        .map(|x| {
+            let (kind, i) = if x.npu { ("NPU", &mut n) } else { ("GPU", &mut g) };
+            *i += 1;
+            format!("{kind} {}", *i - 1)
+        })
+        .collect()
 }
 
 fn luid_of(instance: &str) -> Option<&str> {
@@ -353,6 +370,7 @@ pub fn split_gpus(
             let a = adapters.iter().find(|a| a.luid.eq_ignore_ascii_case(l));
             GpuStats {
                 name: a.map_or_else(|| format!("GPU {i}"), |a| a.name.clone()),
+                luid: l.to_string(),
                 util: usage.total,
                 engines: usage.engines,
                 dedicated_used: sum(dedicated, l),
@@ -363,6 +381,7 @@ pub fn split_gpus(
                 directx: a.map(|a| a.directx.clone()).unwrap_or_default(),
                 driver_date: a.map(|a| a.driver_date.clone()).unwrap_or_default(),
                 location: a.map(|a| a.location.clone()).unwrap_or_default(),
+                npu: a.is_some_and(|a| a.npu),
             }
         })
         .collect()
@@ -439,6 +458,39 @@ pub struct ProcessRow {
     pub gpu_pct: f32,
     /// Owns a visible top-level window (an "App" in the Processes tab).
     pub has_window: bool,
+    /// Estimated power draw now, see [`power_score`].
+    pub power: f32,
+    /// The same averaged over about two minutes ("Power usage trend").
+    pub power_trend: f32,
+}
+
+/// An estimate of a process's power draw from what it uses, on the scale [`power_label`] reads.
+/// Windows' own column is also an estimate (its Energy Estimation Engine weighs the same four).
+pub fn power_score(cpu_pct: f32, gpu_pct: f32, disk_bps: f64, net_bps: f64) -> f32 {
+    cpu_pct + gpu_pct * 0.5 + (disk_bps / 1e6) as f32 * 0.4 + (net_bps * 8.0 / 1e6) as f32 * 0.05
+}
+
+/// Startup impact by Microsoft's published thresholds: High above 1 s of CPU or 3 MB of disk I/O,
+/// Medium above 300 ms or 300 KB, Low below both.
+pub fn startup_impact(cpu_100ns: u64, io_bytes: u64) -> &'static str {
+    if cpu_100ns > 10_000_000 || io_bytes > 3_000_000 {
+        "High"
+    } else if cpu_100ns > 3_000_000 || io_bytes > 300_000 {
+        "Medium"
+    } else {
+        "Low"
+    }
+}
+
+/// Task Manager's five power levels.
+pub fn power_label(score: f32) -> &'static str {
+    match score {
+        s if s < 0.5 => "Very low",
+        s if s < 3.0 => "Low",
+        s if s < 10.0 => "Moderate",
+        s if s < 25.0 => "High",
+        _ => "Very high",
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -775,6 +827,7 @@ struct PrevProc {
     cpu_time: u64,
     io: u64,
     net: u64,
+    power_trend: f32,
 }
 
 /// Turns raw cumulative samples into rates. Keep one per collector.
@@ -826,7 +879,16 @@ impl Sampler {
                     }
                     _ => (0.0, 0.0, 0.0),
                 };
-                procs_now.insert(key, PrevProc { cpu_time: p.cpu_time, io, net: p.net_bytes });
+                let power = power_score(cpu_pct, gpu_of(p.pid), disk_bps, net_bps);
+                // Exponential average with a two-minute time constant; a new process starts at its current draw.
+                let power_trend = match (secs, self.prev_procs.get(&key)) {
+                    (Some(secs), Some(prev)) => {
+                        let a = (secs / 120.0).min(1.0) as f32;
+                        prev.power_trend + (power - prev.power_trend) * a
+                    }
+                    _ => power,
+                };
+                procs_now.insert(key, PrevProc { cpu_time: p.cpu_time, io, net: p.net_bytes, power_trend });
                 thread_count += u64::from(p.threads);
                 handle_count += u64::from(p.handles);
                 ProcessRow {
@@ -852,6 +914,8 @@ impl Sampler {
                     info: p.info,
                     gpu_pct: gpu_of(p.pid),
                     has_window: p.has_window,
+                    power,
+                    power_trend,
                 }
             })
             .collect();
@@ -958,6 +1022,8 @@ pub enum SortKey {
     Network,
     Gpu,
     Threads,
+    Power,
+    PowerTrend,
 }
 
 /// The three sections of the Processes tab.
@@ -1038,6 +1104,8 @@ pub fn sorted_view(rows: &[ProcessRow], filter: &str, key: SortKey, descending: 
             SortKey::Gpu => a.gpu_pct.total_cmp(&b.gpu_pct),
             SortKey::Network => a.net_bps.total_cmp(&b.net_bps),
             SortKey::Threads => a.threads.cmp(&b.threads),
+            SortKey::Power => a.power.total_cmp(&b.power),
+            SortKey::PowerTrend => a.power_trend.total_cmp(&b.power_trend),
         };
         let ord = if descending { ord.reverse() } else { ord };
         ord.then(a.pid.cmp(&b.pid))
@@ -1077,6 +1145,19 @@ pub fn format_uptime(d: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_impact_levels() {
+        assert_eq!(startup_impact(2_000_000, 100_000), "Low");
+        assert_eq!(startup_impact(5_000_000, 0), "Medium");
+        assert_eq!(startup_impact(0, 4_000_000), "High");
+    }
+
+    #[test]
+    fn npus_numbered_apart() {
+        let g = |npu| GpuStats { npu, ..Default::default() };
+        assert_eq!(gpu_titles(&[g(false), g(true), g(false)]), ["GPU 0", "NPU 0", "GPU 1"]);
+    }
 
     #[test]
     fn service_groups() {
@@ -1232,6 +1313,8 @@ mod tests {
                 info: Arc::default(),
                 gpu_pct: 0.0,
                 has_window: false,
+                power: 0.0,
+                power_trend: 0.0,
             })
             .collect();
         assert_eq!(sorted_view(&rows, "", SortKey::Cpu, true), vec![1, 0, 2]);
@@ -1264,6 +1347,8 @@ mod tests {
             info: Arc::new(StaticInfo { user: "svc".into(), ..Default::default() }),
             gpu_pct: 0.0,
             has_window: false,
+            power: 0.0,
+            power_trend: 0.0,
         };
         let rows = [row(1, 0, 1.0, 10), row(2, 1, 2.0, 20), row(3, 1, 3.0, 30)];
         let sessions = [Session { id: 1, user: "PC\\phuoc".into(), state: "Active".into() }];
@@ -1313,6 +1398,8 @@ mod tests {
             info: Arc::new(StaticInfo { path: path.into(), ..Default::default() }),
             gpu_pct: 0.0,
             has_window: win,
+            power: 0.0,
+            power_trend: 0.0,
         };
         let w = r"C:\Windows";
         assert_eq!(group_of(&mk("notepad.exe", r"C:\Windows\System32\notepad.exe", true), w), ProcGroup::Apps);

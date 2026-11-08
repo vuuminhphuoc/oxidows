@@ -132,6 +132,7 @@ const IOCTL_STORAGE_QUERY_PROPERTY: u32 = 0x002D_1400;
 const IOCTL_DISK_GET_DRIVE_GEOMETRY_EX: u32 = 0x0007_00A0;
 const STORAGE_DEVICE_PROPERTY: u32 = 0;
 const STORAGE_SEEK_PENALTY_PROPERTY: u32 = 7;
+const STORAGE_TEMPERATURE_PROPERTY: u32 = 52;
 
 fn ioctl(h: *mut core::ffi::c_void, code: u32, input: &[u8], out: &mut [u8]) -> Option<usize> {
     let mut got = 0u32;
@@ -155,6 +156,34 @@ fn query(property: u32) -> [u8; 12] {
     let mut q = [0u8; 12];
     q[..4].copy_from_slice(&property.to_le_bytes()); // QueryType 0 = PropertyStandardQuery
     q
+}
+
+/// Current temperature of physical disk `number` in °C, where the drive reports one (most NVMe
+/// and many SATA SSDs). Read on demand; it takes a single IOCTL.
+pub fn disk_temperature(number: u32) -> Option<f32> {
+    let path: Vec<u16> = format!(r"\\.\PhysicalDrive{number}").encode_utf16().chain(Some(0)).collect();
+    // SAFETY: zero access rights: only a property query is sent.
+    let h = unsafe {
+        CreateFileW(path.as_ptr(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, null_mut(), OPEN_EXISTING, 0, null_mut())
+    };
+    if h == INVALID_HANDLE_VALUE {
+        return None;
+    }
+    // STORAGE_TEMPERATURE_DATA_DESCRIPTOR: a 24-byte header with InfoCount at 12, then 16-byte
+    // STORAGE_TEMPERATURE_INFO entries whose Temperature (i16, °C) sits at offset 2. Entry 0 is the
+    // drive's composite temperature.
+    let mut buf = [0u8; 256];
+    let n = ioctl(h, IOCTL_STORAGE_QUERY_PROPERTY, &query(STORAGE_TEMPERATURE_PROPERTY), &mut buf);
+    // SAFETY: handle opened above.
+    unsafe { CloseHandle(h) };
+    let n = n?;
+    let count = u16::from_le_bytes([buf[12], buf[13]]);
+    if count == 0 || n < 24 + 16 {
+        return None;
+    }
+    let t = i16::from_le_bytes([buf[26], buf[27]]);
+    // Drives without a sensor report 0 or nonsense.
+    (t > 0 && t < 150).then_some(t as f32)
 }
 
 /// Facts about physical disk `number` (as in PDH's "0 C:"). Opening the disk needs no rights.

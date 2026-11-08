@@ -339,3 +339,9 @@ pub fn uac_virtualization(_pid: u32) -> Option<bool> {
 pub fn set_uac_virtualization(_pid: u32, _on: bool) -> io::Result<()> {
     unsupported()
 }
+pub fn disk_temperature(_number: u32) -> Option<f32> {
+    None
+}
+pub fn gpu_temperature(_luid: &str) -> Option<f32> {
+    None
+}
