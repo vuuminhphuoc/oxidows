@@ -722,7 +722,16 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
             }
             // Phones and cameras, as Explorer lists them with the drives.
             for d in &app.devices {
-                tree_node(ui, &app.tree, &app.shell_labels, &app.cur, &d.path, (Icon::Usb, &d.label), &mut tree_out, 0);
+                tree_node(
+                    ui,
+                    &app.tree,
+                    &app.shell_labels,
+                    &app.cur,
+                    &d.path,
+                    (Icon::Phone, &d.label),
+                    &mut tree_out,
+                    0,
+                );
                 if d.total > 0 {
                     space_bar(ui, d.total, d.free);
                 }
