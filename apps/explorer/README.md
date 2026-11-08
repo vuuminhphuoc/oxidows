@@ -19,6 +19,22 @@ A fast Windows File Explorer written in Rust. First version: browse, open, and m
 - Keyboard: arrows/Home/End/PageUp/PageDown (Shift to extend), Enter, Backspace, Alt+Left/Right/Up,
   F5, Ctrl+A, Ctrl+F, Esc, Alt+Enter, type the first letters of a name to jump to it.
 
+## Nearby sharing (LocalSend)
+
+The **Share** button and **Nearby sharing** in the sidebar send and receive files with phones and
+computers running the free [LocalSend](https://localsend.org) app (Android, iPhone, Mac, Linux,
+Windows; no account, no internet, no Google services needed). `crates/oxi-share` implements the
+open [LocalSend v2 protocol](https://github.com/localsend/protocol): multicast discovery on every
+network interface (with a subnet scan for networks that drop multicast), a HTTPS server with
+self-signed certificates identified by fingerprint, and the sending side. Sharing is off until
+turned on in the window.
+
+- On the same Wi-Fi: open LocalSend on the phone; this PC shows up under *Send*, and the phone
+  shows up in Explorer's window. Received files go to Downloads (changeable).
+- No common Wi-Fi: *Connect with Wi-Fi Direct* makes the PC open its own Wi-Fi Direct network and
+  shows a QR code. The phone's camera joins it, then LocalSend works over it. Needs a Wi-Fi adapter
+  with Wi-Fi Direct (most made after 2015); *Allow* adds the firewall rule that network needs.
+
 ## Layout
 
 | Path | What it does |

@@ -124,3 +124,10 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Remembers window size, view and sort per folder | ✅ | `%APPDATA%\oxidows\explorer.ini` |
 | Dark / light theme follows Windows | ✅ | System / Light / Dark in the … menu |
 | Replace Win+E / default folder handler | ✅ | opt-in checkbox in the … menu; per user (HKCU) folders, drives and Win+E; untick restores File Explorer |
+
+## Sharing
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| Share button, Nearby sharing (send to devices around you, receive from them) | ✅ | Windows' Nearby Share only reaches other Windows PCs. Here it speaks the open LocalSend v2 protocol (`crates/oxi-share`), so phones (Android, iPhone) and Mac/Linux/Windows PCs with the free LocalSend app take part. Accept/decline prompt, text messages, folders, progress, cancel, drag files onto a device |
+| Share when there is no common Wi-Fi | ✅ | Wi-Fi Direct group owned by the PC (`WiFiDirectAdvertisementPublisher`, legacy mode) with a QR code the phone's camera joins; the PC keeps its own Wi-Fi |
