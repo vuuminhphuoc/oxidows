@@ -13,6 +13,8 @@ explorer-core = { workspace = true }
 explorer-sys = { workspace = true }
 egui = { workspace = true }
 ui-common = { workspace = true }
+oxi-share = { workspace = true }
+qrcode = { version = "0.14", default-features = false }
 egui_extras = { workspace = true }
 raw-window-handle = "0.6"
 eframe = { workspace = true, features = ["default_fonts", "glow", "wgpu", "x11", "wayland"] }

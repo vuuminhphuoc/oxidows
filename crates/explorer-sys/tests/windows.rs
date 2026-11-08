@@ -556,3 +556,41 @@ fn shell_namespace_lists_control_panel_and_this_pc() {
     assert!(explorer_sys::shell_icon(Path::new(&first.name), first.is_dir, true).is_some(), "{first:?}");
     assert!(explorer_sys::shell_menu_verbs(&cp, &[PathBuf::from(&first.name)]).is_ok());
 }
+
+/// The Wi-Fi Direct group goes through WinRT on its own thread. The CI runner has no Wi-Fi
+/// adapter, so it must end in a clear failure (not hang or crash); on a PC with Wi-Fi it starts.
+#[test]
+fn wifi_direct_group_starts_or_reports_why_not() {
+    let _g = guard("wifi_direct_group_starts_or_reports_why_not");
+    let t = Instant::now();
+    let h = match explorer_sys::Hotspot::start("DIRECT-oxi-ci", "k3x9q2mz") {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("start refused: {e}");
+            return;
+        }
+    };
+    let status = loop {
+        let s = h.status();
+        if s != explorer_sys::HotspotStatus::Starting || t.elapsed() > Duration::from_secs(20) {
+            break s;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    eprintln!("Wi-Fi Direct after {:?}: {status:?}", t.elapsed());
+    assert!(
+        matches!(status, explorer_sys::HotspotStatus::Started | explorer_sys::HotspotStatus::Failed(_)),
+        "{status:?}"
+    );
+    // Stopping joins the thread promptly.
+    let t = Instant::now();
+    drop(h);
+    assert!(t.elapsed() < Duration::from_secs(5));
+}
+
+#[test]
+fn firewall_rule_lookup_needs_no_elevation() {
+    let _g = guard("firewall_rule_lookup_needs_no_elevation");
+    // Just must not hang or panic; the answer depends on the machine.
+    eprintln!("firewall: {:?}", explorer_sys::firewall_state());
+}

@@ -15,6 +15,7 @@ taskmgr-sys = { path = "crates/taskmgr-sys" }
 explorer-core = { path = "crates/explorer-core" }
 explorer-sys = { path = "crates/explorer-sys" }
 ui-common = { path = "crates/ui-common" }
+oxi-share = { path = "crates/oxi-share" }
 eframe = { version = "0.36", default-features = false }
 egui = "0.36"
 egui_extras = { version = "0.36", default-features = false }

@@ -31,8 +31,12 @@ windows-sys = { workspace = true, features = [
 ] }
 # COM interfaces (IShellFolder, IContextMenu) for the shell's own right-click menu.
 windows = { version = "0.62", features = [
+  "Devices_WiFiDirect",
+  "Foundation",
+  "Security_Credentials",
   "Win32_Foundation",
   "Win32_Graphics_Gdi",
+  "Win32_NetworkManagement_WindowsFirewall",
   "Win32_Storage_EnhancedStorage",
   "Win32_Storage_FileSystem",
   "Win32_System_Com",
