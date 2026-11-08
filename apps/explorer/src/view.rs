@@ -9,6 +9,8 @@ use explorer_core::{
 };
 use explorer_sys::DriveKind;
 
+use ui_common::Icon;
+
 use crate::{App, Dialog, IconKey, IconState, MapDrive, ViewMode};
 
 /// Temp-data key of the Details rubber band: [start x on screen, start as a fractional row].
@@ -84,8 +86,8 @@ pub fn tab_bar(app: &mut App, ui: &mut Ui) {
                 };
                 let r = ui
                     .add(
-                        egui::Button::selectable(active, short)
-                            .min_size(egui::vec2(90.0, 22.0))
+                        egui::Button::selectable(active, Icon::FolderFilled.with(short))
+                            .min_size(egui::vec2(120.0, 28.0))
                             .sense(Sense::click_and_drag()),
                     )
                     .on_hover_text(&title);
@@ -103,7 +105,7 @@ pub fn tab_bar(app: &mut App, ui: &mut Ui) {
                     close = Some(i);
                 }
                 if ui
-                    .add(egui::Button::new(RichText::new("×").weak()).frame(false))
+                    .add(egui::Button::new(Icon::Close.sized(10.0)).frame_when_inactive(false))
                     .on_hover_text("Close tab (Ctrl+W)")
                     .clicked()
                 {
@@ -111,7 +113,7 @@ pub fn tab_bar(app: &mut App, ui: &mut Ui) {
                 }
                 ui.add_space(4.0);
             }
-            if ui.button("+").on_hover_text("New tab (Ctrl+T)").clicked() {
+            if ui_common::tool_button(ui, Icon::Add, true, "New tab (Ctrl+T)").clicked() {
                 app.new_tab(PathBuf::from(explorer_core::HOME), true);
             }
             let pointer = ui.input(|i| i.pointer.latest_pos());
@@ -152,21 +154,16 @@ pub fn toolbar(app: &mut App, ui: &mut Ui) {
     egui::Panel::top("toolbar").show(ui, |ui| {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            if ui.add_enabled(app.history.can_back(), egui::Button::new("⬅")).on_hover_text("Back (Alt+Left)").clicked()
-            {
+            if ui_common::tool_button(ui, Icon::Back, app.history.can_back(), "Back (Alt+Left)").clicked() {
                 app.back();
             }
-            if ui
-                .add_enabled(app.history.can_forward(), egui::Button::new("➡"))
-                .on_hover_text("Forward (Alt+Right)")
-                .clicked()
-            {
+            if ui_common::tool_button(ui, Icon::Forward, app.history.can_forward(), "Forward (Alt+Right)").clicked() {
                 app.forward();
             }
             // Recent locations.
             let recent = app.history.recent(&app.cur);
             ui.add_enabled_ui(recent.len() > 1, |ui| {
-                ui.menu_button("⏷", |ui| {
+                ui_common::tool_menu(ui, Icon::ChevronDown, "Recent locations", |ui| {
                     for (steps, p) in recent {
                         let label = app.crumbs(&p).last().map_or_else(|| p.display().to_string(), |c| c.0.clone());
                         let text = if steps == 0 { RichText::new(label).strong() } else { RichText::new(label) };
@@ -175,22 +172,16 @@ pub fn toolbar(app: &mut App, ui: &mut Ui) {
                             ui.close();
                         }
                     }
-                })
-                .response
-                .on_hover_text("Recent locations");
+                });
             });
-            if ui
-                .add_enabled(parent_path(&app.cur).is_some(), egui::Button::new("⬆"))
-                .on_hover_text("Up (Alt+Up)")
-                .clicked()
-            {
+            if ui_common::tool_button(ui, Icon::Up, parent_path(&app.cur).is_some(), "Up (Alt+Up)").clicked() {
                 app.up();
             }
-            if ui.button("⟳").on_hover_text("Refresh (F5)").clicked() {
+            if ui_common::tool_button(ui, Icon::Refresh, true, "Refresh (F5)").clicked() {
                 app.refresh();
                 app.load_drives();
             }
-            ui.menu_button("…", |ui| {
+            ui_common::tool_menu(ui, Icon::More, "See more", |ui| {
                 if ui.button("New folder").clicked() {
                     app.begin_new_folder();
                     ui.close();
@@ -331,7 +322,8 @@ pub fn toolbar(app: &mut App, ui: &mut Ui) {
                     use crate::settings::Theme;
                     ui.label("Theme:");
                     let before = app.persist.settings.theme;
-                    for (t, label) in [(Theme::System, "System"), (Theme::Light, "Light"), (Theme::Dark, "Dark")] {
+                    for (t, label) in Theme::ALL {
+                        let label = if t == Theme::System { "System" } else { label };
                         ui.selectable_value(&mut app.persist.settings.theme, t, label);
                     }
                     if app.persist.settings.theme != before {
@@ -363,7 +355,7 @@ pub fn toolbar(app: &mut App, ui: &mut Ui) {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let search = ui.add(
                     egui::TextEdit::singleline(&mut app.filter)
-                        .hint_text("🔍 Search (Enter: subfolders)")
+                        .hint_text(Icon::Search.with("Search (Enter: subfolders)"))
                         .desired_width(200.0),
                 );
                 if std::mem::take(&mut app.focus_search) {
@@ -561,35 +553,31 @@ fn tree_node(
     labels: &std::collections::HashMap<PathBuf, String>,
     cur: &PathBuf,
     path: &PathBuf,
-    label: &str,
+    (icon, label): (Icon, &str),
     out: &mut TreeOut,
     depth: usize,
 ) -> egui::Response {
     let id = ui.make_persistent_id(("tree", path));
     let state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
     let open = state.is_open();
-    let (_, header, _) = state
-        .show_header(ui, |ui| {
-            ui.with_layout(Layout::top_down_justified(Align::LEFT), |ui| {
-                ui.add(egui::Button::selectable(path == cur, label).min_size(egui::vec2(0.0, 20.0)))
-            })
-            .inner
-        })
-        .body(|ui| match tree.get(path) {
-            Some(children) if depth < 32 => {
-                for name in children {
-                    let child = path.join(name);
-                    // A phone's folders are named by ID; show their display names.
-                    let shown = labels.get(&child).map_or(name.as_str(), String::as_str);
-                    tree_node(ui, tree, labels, cur, &child, &format!("📁 {shown}"), out, depth + 1);
+    let (_, header, _) =
+        state.show_header(ui, |ui| ui_common::nav_item(ui, Some(icon), label, path == cur)).body(|ui| {
+            match tree.get(path) {
+                Some(children) if depth < 32 => {
+                    for name in children {
+                        let child = path.join(name);
+                        // A phone's folders are named by ID; show their display names.
+                        let shown = labels.get(&child).map_or(name.as_str(), String::as_str);
+                        tree_node(ui, tree, labels, cur, &child, (Icon::FolderFilled, shown), out, depth + 1);
+                    }
+                    if children.is_empty() {
+                        ui.label(RichText::new("(empty)").small().weak());
+                    }
                 }
-                if children.is_empty() {
-                    ui.label(RichText::new("(empty)").small().weak());
+                Some(_) => {}
+                None => {
+                    ui.spinner();
                 }
-            }
-            Some(_) => {}
-            None => {
-                ui.spinner();
             }
         });
     if open && !tree.contains_key(path) {
@@ -643,12 +631,10 @@ fn space_bar(ui: &mut Ui, total: u64, free: u64) {
     let used = 1.0 - free as f32 / total as f32;
     ui.horizontal(|ui| {
         ui.add_space(24.0);
-        ui.add(
-            egui::ProgressBar::new(used)
-                .desired_width(ui.available_width() - 4.0)
-                .desired_height(5.0)
-                .fill(if used > 0.9 { egui::Color32::from_rgb(218, 38, 38) } else { ui.visuals().selection.bg_fill }),
-        );
+        ui.add(egui::ProgressBar::new(used).desired_width(ui.available_width() - 4.0).desired_height(5.0).fill({
+            let p = ui_common::Palette::of(ui);
+            if used > 0.9 { p.danger } else { p.accent }
+        }));
     });
     ui.horizontal(|ui| {
         ui.add_space(24.0);
@@ -666,60 +652,43 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
             let pinned = app.persist.settings.pinned.iter().map(|p| crate::settings::folder_key(p)).collect();
             let mut tree_out = TreeOut { dragging, pinned, ..Default::default() };
             let mut place_drop: Option<PathBuf> = None;
-            let mut place = |ui: &mut Ui, icon: &str, name: &str, path: &PathBuf, cur: &PathBuf| {
-                let selected = path == cur;
-                let r = ui
-                    .with_layout(Layout::top_down_justified(Align::LEFT), |ui| {
-                        ui.add(
-                            egui::Button::selectable(selected, format!("{icon}  {name}"))
-                                .min_size(egui::vec2(0.0, 22.0)),
-                        )
-                    })
-                    .inner;
+            let mut place = |ui: &mut Ui, icon: Icon, name: &str, path: &PathBuf, cur: &PathBuf| {
+                let r = ui_common::nav_item(ui, Some(icon), name, path == cur);
                 if path.as_os_str() != explorer_core::NETWORK {
                     drop_hover(&r, dragging, path, &mut place_drop);
                 }
                 r.clicked()
             };
             let home_page = PathBuf::from(explorer_core::HOME);
-            if place(ui, "🏠", "Home", &home_page, &app.cur) {
+            if place(ui, Icon::Home, "Home", &home_page, &app.cur) {
                 go = Some(home_page);
             }
             let gallery = PathBuf::from(explorer_core::GALLERY);
-            if place(ui, "🖼", "Gallery", &gallery, &app.cur) {
+            if place(ui, Icon::Gallery, "Gallery", &gallery, &app.cur) {
                 go = Some(gallery);
             }
             for (name, path) in &app.places {
                 let icon = match *name {
-                    "Desktop" => "🖥",
-                    "Downloads" => "⬇",
-                    "Documents" => "📄",
-                    "Pictures" => "🖼",
-                    "Music" => "🎵",
-                    "Videos" => "🎞",
-                    _ => "📁",
+                    "Desktop" => Icon::Desktop,
+                    "Downloads" => Icon::Downloads,
+                    "Documents" => Icon::Document,
+                    "Pictures" => Icon::Pictures,
+                    "Music" => Icon::Music,
+                    "Videos" => Icon::Videos,
+                    _ => Icon::Folder,
                 };
-                tree_node(
-                    ui,
-                    &app.tree,
-                    &app.shell_labels,
-                    &app.cur,
-                    path,
-                    &format!("{icon}  {name}"),
-                    &mut tree_out,
-                    0,
-                );
+                tree_node(ui, &app.tree, &app.shell_labels, &app.cur, path, (icon, name), &mut tree_out, 0);
             }
             // Quick access pins, after the standard folders (which are always there).
             for path in &app.persist.settings.pinned {
                 let name =
                     path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
-                tree_node(ui, &app.tree, &app.shell_labels, &app.cur, path, &format!("📌  {name}"), &mut tree_out, 0);
+                tree_node(ui, &app.tree, &app.shell_labels, &app.cur, path, (Icon::Pin, &name), &mut tree_out, 0);
             }
             ui.add_space(6.0);
             ui.separator();
             let this_pc = PathBuf::from(explorer_core::THIS_PC);
-            if place(ui, "💻", "This PC", &this_pc, &app.cur) {
+            if place(ui, Icon::ThisPc, "This PC", &this_pc, &app.cur) {
                 go = Some(this_pc);
             }
             for d in &app.drives {
@@ -727,21 +696,13 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
                 let letter = root.trim_end_matches('\\');
                 let label = drive_label(d);
                 let icon = match d.kind {
-                    DriveKind::Network => "🖧",
-                    DriveKind::Optical => "💿",
-                    DriveKind::Removable => "💾",
-                    _ => "🖴",
+                    DriveKind::Network => Icon::NetworkDrive,
+                    DriveKind::Optical => Icon::Disc,
+                    DriveKind::Removable => Icon::Usb,
+                    _ => Icon::Drive,
                 };
-                let r = tree_node(
-                    ui,
-                    &app.tree,
-                    &app.shell_labels,
-                    &app.cur,
-                    &d.root,
-                    &format!("{icon}  {label}"),
-                    &mut tree_out,
-                    0,
-                );
+                let r =
+                    tree_node(ui, &app.tree, &app.shell_labels, &app.cur, &d.root, (icon, &label), &mut tree_out, 0);
                 if d.kind == DriveKind::Network {
                     let letter = letter.chars().next().unwrap_or('Z');
                     r.context_menu(|ui| {
@@ -757,31 +718,22 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
             }
             // Phones and cameras, as Explorer lists them with the drives.
             for d in &app.devices {
-                tree_node(
-                    ui,
-                    &app.tree,
-                    &app.shell_labels,
-                    &app.cur,
-                    &d.path,
-                    &format!("📱  {}", d.label),
-                    &mut tree_out,
-                    0,
-                );
+                tree_node(ui, &app.tree, &app.shell_labels, &app.cur, &d.path, (Icon::Usb, &d.label), &mut tree_out, 0);
                 if d.total > 0 {
                     space_bar(ui, d.total, d.free);
                 }
             }
             ui.add_space(6.0);
             let libraries = PathBuf::from(explorer_core::LIBRARIES);
-            if place(ui, "📚", "Libraries", &libraries, &app.cur) {
+            if place(ui, Icon::Libraries, "Libraries", &libraries, &app.cur) {
                 go = Some(libraries);
             }
             let network = PathBuf::from(explorer_core::NETWORK);
-            if place(ui, "🖧", "Network", &network, &app.cur) {
+            if place(ui, Icon::Network, "Network", &network, &app.cur) {
                 go = Some(network);
             }
             let bin = PathBuf::from(explorer_core::RECYCLE_BIN);
-            if place(ui, "🗑", "Recycle Bin", &bin, &app.cur) {
+            if place(ui, Icon::RecycleBin, "Recycle Bin", &bin, &app.cur) {
                 go = Some(bin);
             }
             if let Some(l) = unmap {
@@ -1126,11 +1078,7 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                                     wanted_icons.push(key);
                                 }
                                 let icon = RichText::new(icon_for(e));
-                                ui.label(if e.is_dir {
-                                    icon.color(egui::Color32::from_rgb(230, 180, 60))
-                                } else {
-                                    icon
-                                });
+                                ui.label(if e.is_dir { icon.color(ui_common::Palette::of(ui).folder) } else { icon });
                             }
                         }
                         ui.add_space(4.0);

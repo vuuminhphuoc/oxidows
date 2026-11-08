@@ -63,6 +63,20 @@ impl Tab {
         }
     }
 
+    fn icon(self) -> ui_common::Icon {
+        use ui_common::Icon;
+        match self {
+            Tab::Processes => Icon::Processes,
+            Tab::Performance => Icon::Performance,
+            Tab::AppHistory => Icon::AppHistory,
+            Tab::Startup => Icon::Startup,
+            Tab::Users => Icon::Users,
+            Tab::Details => Icon::Details,
+            Tab::Services => Icon::Services,
+            Tab::Settings => Icon::Settings,
+        }
+    }
+
     fn find(v: &str) -> Option<Tab> {
         let v = v.to_lowercase();
         Tab::ALL.into_iter().find(|t| !v.is_empty() && t.label().to_lowercase().starts_with(&v))
@@ -168,6 +182,8 @@ struct App {
     /// Whether Ctrl+Shift+Esc opens this exe; None where that cannot be changed.
     replaces_taskmgr: Option<bool>,
     tray: bool,
+    /// Navigation pane expanded (icons and labels) or collapsed to icons.
+    nav_open: bool,
     started: Instant,
     first_data_logged: bool,
     /// OXI_TASKMGR_TIMING: frames drawn since `frames_since`.
@@ -293,8 +309,7 @@ impl App {
             }
         }
         let settings = settings::Settings::load();
-        ui_common::install_fonts(&cc.egui_ctx);
-        settings.apply_theme(&cc.egui_ctx);
+        ui_common::setup(&cc.egui_ctx, settings.theme);
         if settings.always_on_top {
             settings.apply_on_top(&cc.egui_ctx);
         }
@@ -322,6 +337,7 @@ impl App {
             settings,
             replaces_taskmgr: cfg!(windows).then(taskmgr_sys::replaces_taskmgr),
             tray: false,
+            nav_open: true,
             status,
             started: Instant::now(),
             first_data_logged: false,
@@ -489,6 +505,93 @@ impl App {
     }
 }
 
+impl App {
+    /// The navigation pane, as in Windows 11's Task Manager: a menu button that collapses it to
+    /// icons, the pages, and Settings at the bottom.
+    fn nav(&mut self, ui: &mut egui::Ui) {
+        // Narrow windows get the icon strip, as Task Manager does.
+        let open = self.nav_open && ui.ctx().content_rect().width() >= 720.0;
+        let width = if open { 200.0 } else { 52.0 };
+        egui::Panel::left("nav").resizable(false).exact_size(width).show(ui, |ui| {
+            ui.add_space(4.0);
+            let menu = ui_common::Icon::Menu;
+            if ui_common::tool_button(ui, menu, true, if open { "Collapse navigation" } else { "Expand navigation" })
+                .clicked()
+            {
+                self.nav_open = !open;
+            }
+            ui.add_space(4.0);
+            let mut item = |ui: &mut egui::Ui, t: Tab| {
+                let label = if open { t.label() } else { "" };
+                let r = ui_common::nav_item(ui, Some(t.icon()), label, self.tab == t);
+                let r = if open { r } else { r.on_hover_text(t.label()) };
+                if r.clicked() {
+                    self.tab = t;
+                }
+            };
+            for t in Tab::ALL.into_iter().filter(|t| *t != Tab::Settings) {
+                item(ui, t);
+            }
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                ui.add_space(6.0);
+                item(ui, Tab::Settings);
+            });
+        });
+    }
+
+    /// The page title on the left, commands on the right.
+    fn header(&mut self, ui: &mut egui::Ui) {
+        egui::Panel::top("header").show_separator_line(false).show(ui, |ui| {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.add_space(4.0);
+                ui_common::page_title(ui, self.tab.label());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let mut ms = INTERVAL_MS.load(Ordering::Relaxed);
+                    let label = match ms {
+                        0 => "Paused",
+                        500 => "0.5 s",
+                        1000 => "1 s",
+                        _ => "2 s",
+                    };
+                    egui::ComboBox::from_id_salt("interval")
+                        .selected_text(ui_common::Icon::Stopwatch.with(label))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut ms, 500, "High (0.5 s)");
+                            ui.selectable_value(&mut ms, 1000, "Normal (1 s)");
+                            ui.selectable_value(&mut ms, 2000, "Low (2 s)");
+                            ui.selectable_value(&mut ms, 0, "Paused");
+                        })
+                        .response
+                        .on_hover_text("Real time update speed");
+                    if ms != INTERVAL_MS.load(Ordering::Relaxed) {
+                        INTERVAL_MS.store(ms, Ordering::Relaxed);
+                        self.settings.interval_ms = ms;
+                        self.save_settings();
+                    }
+                    if !self.elevated
+                        && ui
+                            .button(ui_common::Icon::Shield.with("Run as administrator"))
+                            .on_hover_text(
+                                "Needed to end elevated processes, control services and edit machine-wide startup apps",
+                            )
+                            .clicked()
+                    {
+                        match taskmgr_sys::restart_elevated() {
+                            Ok(()) => std::process::exit(0),
+                            Err(e) => self.status.set(e.to_string()),
+                        }
+                    }
+                    if ui.button(ui_common::Icon::NewWindow.with("Run new task")).clicked() {
+                        self.status.open(Dialog::RunTask { command: String::new(), admin: false });
+                    }
+                });
+            });
+            ui.add_space(4.0);
+        });
+    }
+}
+
 impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         taskmgr_sys::shutdown();
@@ -540,50 +643,8 @@ impl eframe::App for App {
         // Summary view: the Performance list alone, as in Task Manager.
         let summary = self.tab == Tab::Performance && self.performance.summary;
         if !summary {
-            egui::Panel::top("tabs").show(ui, |ui| {
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    for t in Tab::ALL {
-                        ui.selectable_value(&mut self.tab, t, t.label());
-                    }
-                    ui.separator();
-                    if ui.button("Run new task").clicked() {
-                        self.status.open(Dialog::RunTask { command: String::new(), admin: false });
-                    }
-                    let mut ms = INTERVAL_MS.load(Ordering::Relaxed);
-                    let label = match ms {
-                        0 => "Paused",
-                        500 => "Update: 0.5 s",
-                        1000 => "Update: 1 s",
-                        _ => "Update: 2 s",
-                    };
-                    egui::ComboBox::from_id_salt("interval").selected_text(label).show_ui(ui, |ui| {
-                        ui.selectable_value(&mut ms, 500, "0.5 s");
-                        ui.selectable_value(&mut ms, 1000, "1 s");
-                        ui.selectable_value(&mut ms, 2000, "2 s");
-                        ui.selectable_value(&mut ms, 0, "Paused");
-                    });
-                    if ms != INTERVAL_MS.load(Ordering::Relaxed) {
-                        INTERVAL_MS.store(ms, Ordering::Relaxed);
-                        self.settings.interval_ms = ms;
-                        self.save_settings();
-                    }
-                    if !self.elevated
-                        && ui
-                            .button("Run as administrator")
-                            .on_hover_text(
-                                "Needed to end elevated processes, control services and edit machine-wide startup apps",
-                            )
-                            .clicked()
-                    {
-                        match taskmgr_sys::restart_elevated() {
-                            Ok(()) => std::process::exit(0),
-                            Err(e) => self.status.set(e.to_string()),
-                        }
-                    }
-                });
-                ui.add_space(2.0);
-            });
+            self.nav(ui);
+            self.header(ui);
         }
         if let Some(pid) = self.status.goto_details.lock().ok().and_then(|mut g| g.take()) {
             self.tab = Tab::Details;
@@ -618,7 +679,8 @@ impl eframe::App for App {
             });
         }
 
-        egui::CentralPanel::default().show(ui, |ui| match self.tab {
+        let content = ui_common::content_frame(ui.style());
+        egui::CentralPanel::default().frame(content).show(ui, |ui| match self.tab {
             Tab::Processes => self.processes.show(ui, &snap),
             Tab::Performance => self.performance.show(ui, &snap),
             Tab::AppHistory => self.history.show(ui, self.elevated),
@@ -676,6 +738,9 @@ fn run(renderer: ui_common::Renderer) -> eframe::Result {
         },
         viewport: egui::ViewportBuilder::default()
             .with_title("Task Manager (oxidows)")
+            .with_icon(Arc::new(
+                eframe::icon_data::from_png_bytes(ui_common::app_icon::TASKMGR_PNG).expect("embedded icon is a PNG"),
+            ))
             .with_inner_size([1000.0, 660.0])
             .with_min_inner_size([560.0, 360.0]),
         ..Default::default()

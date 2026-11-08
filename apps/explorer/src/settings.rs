@@ -15,13 +15,7 @@ use crate::{App, ViewMode};
 /// Folders whose view is remembered; the least recently changed are forgotten first.
 const MAX_FOLDERS: usize = 400;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum Theme {
-    #[default]
-    System,
-    Light,
-    Dark,
-}
+pub use ui_common::Theme;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct FolderView {
@@ -175,13 +169,7 @@ impl Settings {
                     }
                 }
                 "pin" if !v.is_empty() => s.pinned.push(PathBuf::from(v)),
-                "theme" => {
-                    s.theme = match v {
-                        "light" => Theme::Light,
-                        "dark" => Theme::Dark,
-                        _ => Theme::System,
-                    }
-                }
+                "theme" => s.theme = Theme::parse(v),
                 _ => {}
             }
         }
@@ -195,11 +183,7 @@ impl Settings {
             Pane::Preview => "preview",
             Pane::Details => "details",
         };
-        let theme = match self.theme {
-            Theme::System => "system",
-            Theme::Light => "light",
-            Theme::Dark => "dark",
-        };
+        let theme = self.theme.key();
         let mut out = format!(
             "width={}\nheight={}\nmaximized={}\nview={}\nshow_hidden={}\nshow_extensions={}\ncol_created={}\n\
              col_attrs={}\npane={pane}\ntheme={theme}\n",
@@ -262,11 +246,7 @@ impl Settings {
     }
 
     pub fn apply_theme(&self, ctx: &egui::Context) {
-        ctx.set_theme(match self.theme {
-            Theme::System => egui::ThemePreference::System,
-            Theme::Light => egui::ThemePreference::Light,
-            Theme::Dark => egui::ThemePreference::Dark,
-        });
+        ui_common::theme::apply(ctx, self.theme);
     }
 }
 

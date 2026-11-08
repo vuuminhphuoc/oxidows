@@ -68,6 +68,7 @@ fn has_gpu_driver() -> bool {
 
 /// Adapter names of vendors with real OpenGL drivers. "Microsoft Basic Display Adapter",
 /// "Microsoft Remote Display Adapter", Hyper-V and other virtual adapters are not.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn is_gpu_vendor(device: &str) -> bool {
     let d = device.to_ascii_lowercase();
     ["nvidia", "amd ", "radeon", "intel(r)", "intel "].iter().any(|v| d.contains(v)) || d.starts_with("amd")
