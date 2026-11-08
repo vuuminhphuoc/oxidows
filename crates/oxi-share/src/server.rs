@@ -7,7 +7,7 @@ use std::io::{self, BufReader, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{RecvTimeoutError, sync_channel};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -19,6 +19,8 @@ use crate::{Decision, Device, DeviceType, Direction, Incoming, Inner, State, Tra
 
 /// How long a transfer request waits for the user before it is declined.
 const DECISION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// Connections served at once.
+const MAX_CONNECTIONS: usize = 64;
 /// A session no file arrived for in this long no longer blocks new ones (the sender vanished).
 const SESSION_IDLE: Duration = Duration::from_secs(3 * 60);
 
@@ -84,15 +86,25 @@ pub(crate) fn start(inner: &Arc<Inner>) {
     thread::Builder::new()
         .name("share-accept".into())
         .spawn(move || {
+            let open = Arc::new(AtomicUsize::new(0));
             for conn in listener.incoming() {
                 if inner.stop.load(Ordering::Relaxed) {
                     break;
                 }
                 let Ok(tcp) = conn else { continue };
-                let (inner, tls) = (inner.clone(), tls.clone());
-                let _ = thread::Builder::new().name("share-conn".into()).spawn(move || {
+                // Bounded, so a misbehaving device on the network cannot pile up threads.
+                if open.load(Ordering::Relaxed) >= MAX_CONNECTIONS {
+                    continue;
+                }
+                open.fetch_add(1, Ordering::Relaxed);
+                let (inner, tls, held) = (inner.clone(), tls.clone(), open.clone());
+                let spawned = thread::Builder::new().name("share-conn".into()).spawn(move || {
                     let _ = serve(&inner, tcp, tls);
+                    held.fetch_sub(1, Ordering::Relaxed);
                 });
+                if spawned.is_err() {
+                    open.fetch_sub(1, Ordering::Relaxed);
+                }
             }
         })
         .ok();
@@ -239,9 +251,6 @@ fn prepare_upload<R: io::BufRead>(
             return Reply::Error(409, "Blocked by another session");
         }
     }
-    if inner.pending.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
-        return Reply::Error(409, "Blocked by another session");
-    }
     // A sender we have not seen yet becomes a known device too, so the user can answer back.
     if let Some(fp) = cert_fp {
         inner.found(Device {
@@ -278,7 +287,14 @@ fn prepare_upload<R: io::BufRead>(
         Decision::Accept
     } else {
         let (tx, rx) = sync_channel(1);
-        *inner.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some((id, peer, tx));
+        {
+            // One question at a time: checked and taken under the same lock.
+            let mut p = inner.pending.lock().unwrap_or_else(|e| e.into_inner());
+            if p.is_some() {
+                return Reply::Error(409, "Blocked by another session");
+            }
+            *p = Some((id, peer, tx));
+        }
         inner.snap().incoming = Some(incoming);
         inner.repaint();
         let deadline = Instant::now() + DECISION_TIMEOUT;
@@ -342,6 +358,32 @@ fn prepare_upload<R: io::BufRead>(
                 sfiles
                     .insert(f.id.clone(), SessionFile { dto: f, token, index, state: FileState::Pending, path: None });
             }
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let stale = {
+                let mut slot = inner.session.lock().unwrap_or_else(|e| e.into_inner());
+                // Another transfer may have been accepted meanwhile (Quick Save takes no question).
+                if slot.as_ref().is_some_and(Session::busy) {
+                    return Reply::Error(409, "Blocked by another session");
+                }
+                slot.replace(Session {
+                    id: session_id.clone(),
+                    transfer: id,
+                    sender: peer,
+                    files: sfiles,
+                    cancelled: cancelled.clone(),
+                    last_activity: Instant::now(),
+                })
+            };
+            // A session whose sender vanished ends as failed.
+            if let Some(old) = stale {
+                old.cancelled.store(true, Ordering::Relaxed);
+                inner.update_transfer(old.transfer, |t| {
+                    if !t.state.finished() {
+                        t.state = State::Failed("The sender stopped".into());
+                    }
+                });
+            }
+            inner.cancelled.lock().unwrap_or_else(|e| e.into_inner()).insert(id, cancelled);
             inner.snap().transfers.push(Transfer {
                 id,
                 direction: Direction::Receive,
@@ -351,16 +393,6 @@ fn prepare_upload<R: io::BufRead>(
                 started: Instant::now(),
                 finished: None,
                 message: None,
-            });
-            let cancelled = Arc::new(AtomicBool::new(false));
-            inner.cancelled.lock().unwrap_or_else(|e| e.into_inner()).insert(id, cancelled.clone());
-            *inner.session.lock().unwrap_or_else(|e| e.into_inner()) = Some(Session {
-                id: session_id.clone(),
-                transfer: id,
-                sender: peer,
-                files: sfiles,
-                cancelled,
-                last_activity: Instant::now(),
             });
             inner.repaint();
             let resp = PrepareUploadResponse { session_id, files: tokens };
@@ -470,6 +502,9 @@ fn save<R: io::BufRead>(inner: &Inner, body: &mut Body<'_, R>, slot: &Slot) -> i
         let n = body.read(&mut buf)?;
         if n == 0 {
             break;
+        }
+        if got + n as u64 > slot.size {
+            return Err(io::Error::other("more data than announced"));
         }
         file.write_all(&buf[..n])?;
         if let Some(h) = hash.as_mut() {
