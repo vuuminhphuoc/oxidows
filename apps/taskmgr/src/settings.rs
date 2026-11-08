@@ -7,13 +7,7 @@ use egui::{RichText, Ui};
 
 use crate::Status;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum Theme {
-    #[default]
-    System,
-    Light,
-    Dark,
-}
+pub use ui_common::Theme;
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Settings {
@@ -72,13 +66,7 @@ impl Settings {
                 "group_by_type" => s.group_by_type = v != "false",
                 "values_pct" => s.values_pct = v == "true",
                 "details_columns" => s.details_columns = v.to_string(),
-                "theme" => {
-                    s.theme = match v {
-                        "light" => Theme::Light,
-                        "dark" => Theme::Dark,
-                        _ => Theme::System,
-                    }
-                }
+                "theme" => s.theme = Theme::parse(v),
                 _ => {}
             }
         }
@@ -86,11 +74,7 @@ impl Settings {
     }
 
     pub fn to_text(&self) -> String {
-        let theme = match self.theme {
-            Theme::System => "system",
-            Theme::Light => "light",
-            Theme::Dark => "dark",
-        };
+        let theme = self.theme.key();
         format!(
             "default_tab={}\ninterval_ms={}\nalways_on_top={}\nhide_when_minimized={}\nminimize_on_use={}\ntheme={theme}\ngroup_by_type={}\nvalues_pct={}\ndetails_columns={}\n",
             self.default_tab,
@@ -117,11 +101,7 @@ impl Settings {
     }
 
     pub fn apply_theme(&self, ctx: &egui::Context) {
-        ctx.set_theme(match self.theme {
-            Theme::System => egui::ThemePreference::System,
-            Theme::Light => egui::ThemePreference::Light,
-            Theme::Dark => egui::ThemePreference::Dark,
-        });
+        ui_common::theme::apply(ctx, self.theme);
     }
 
     pub fn apply_on_top(&self, ctx: &egui::Context) {
@@ -133,8 +113,6 @@ impl Settings {
 /// Draws the page. Returns true when something changed (the caller saves and applies it).
 pub fn show(ui: &mut Ui, s: &mut Settings, tabs: &[&str], status: &Status, replaces: &mut Option<bool>) -> bool {
     let before = s.clone();
-    ui.heading("Settings");
-    ui.add_space(6.0);
     egui::Grid::new("settings").num_columns(2).spacing([24.0, 10.0]).show(ui, |ui| {
         ui.label("Default start page");
         egui::ComboBox::from_id_salt("default_tab").selected_text(s.default_tab.clone()).show_ui(ui, |ui| {
@@ -162,9 +140,9 @@ pub fn show(ui: &mut Ui, s: &mut Settings, tabs: &[&str], status: &Status, repla
 
         ui.label("App theme");
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut s.theme, Theme::System, "Use system setting");
-            ui.selectable_value(&mut s.theme, Theme::Light, "Light");
-            ui.selectable_value(&mut s.theme, Theme::Dark, "Dark");
+            for (t, label) in Theme::ALL {
+                ui.selectable_value(&mut s.theme, t, label);
+            }
         });
         ui.end_row();
 
