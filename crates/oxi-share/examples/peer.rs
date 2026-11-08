@@ -1,5 +1,5 @@
 //! A stand-in device for trying the sharing UI: announces itself, accepts everything into a temp
-//! folder, and, given paths, sends them to the first device it finds.
+//! folder, and, given paths, sends them to every device it finds.
 //!
 //! `cargo run -p oxi-share --example peer -- "Test phone" [file...]`
 
@@ -31,7 +31,8 @@ fn main() {
     }
     println!("received files go to {}", root.join("in").display());
     share.refresh();
-    let mut sent = files.is_empty();
+    // Fingerprints already sent to: each device found gets the files once.
+    let mut sent = std::collections::HashSet::new();
     let mut seen = String::new();
     for tick in 1u64.. {
         std::thread::sleep(Duration::from_secs(1));
@@ -50,10 +51,11 @@ fn main() {
             println!("devices found: {}\n{now}", s.devices.len());
             seen = now;
         }
-        if !sent && let Some(d) = s.devices.first() {
-            println!("sending to {} at {}", d.alias, d.addr());
-            share.send(d, files.clone());
-            sent = true;
+        for d in &s.devices {
+            if !files.is_empty() && sent.insert(d.fingerprint.clone()) {
+                println!("sending to {} at {}", d.alias, d.addr());
+                share.send(d, files.clone());
+            }
         }
         for t in &s.transfers {
             println!("{:?} {} {:?} {}/{}", t.direction, t.peer, t.state, t.done(), t.total());
