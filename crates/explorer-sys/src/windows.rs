@@ -463,16 +463,27 @@ pub fn clipboard_get_files() -> Option<(Vec<PathBuf>, bool)> {
         unsafe { DragQueryFileW(h, i, buf.as_mut_ptr(), buf.len() as u32) };
         files.push(PathBuf::from(from_wide(&buf)));
     }
-    let mut cut = false;
+    Some((files, read_cut()))
+}
+
+/// Whether the clipboard's Preferred DropEffect says "move" (a cut). The clipboard is open.
+fn read_cut() -> bool {
     let he = unsafe { GetClipboardData(drop_effect_format()) };
-    if !he.is_null() {
-        let p = unsafe { GlobalLock(he) }.cast::<u32>();
-        if !p.is_null() {
-            cut = unsafe { p.read_unaligned() } & DROPEFFECT_MOVE != 0;
-            unsafe { GlobalUnlock(he) };
-        }
+    if he.is_null() {
+        return false;
     }
-    Some((files, cut))
+    let p = unsafe { GlobalLock(he) }.cast::<u32>();
+    if p.is_null() {
+        return false;
+    }
+    let cut = unsafe { p.read_unaligned() } & DROPEFFECT_MOVE != 0;
+    unsafe { GlobalUnlock(he) };
+    cut
+}
+
+/// Whether what is on the clipboard (files or shell items) was cut rather than copied.
+pub(crate) fn clipboard_is_cut() -> bool {
+    open_clipboard().is_ok_and(|_g| read_cut())
 }
 
 const WAIT_OBJECT_0: u32 = 0;
@@ -536,18 +547,9 @@ pub fn shell_icon(path: &Path, is_dir: bool, per_file: bool) -> Option<IconImage
     let flags = SHGFI_ICON | SHGFI_SMALLICON | if per_file { SHGFI_ADDOVERLAYS } else { SHGFI_USEFILEATTRIBUTES };
     let ok = if path.starts_with(explorer_core::SHELL) {
         // Not a file-system path: ask by item ID list.
-        let p: Vec<u16> = explorer_core::shell_parsing(path).encode_utf16().chain(Some(0)).collect();
-        let mut pidl = null_mut();
-        let parsed = unsafe {
-            windows::Win32::UI::Shell::SHParseDisplayName(windows::core::PCWSTR(p.as_ptr()), None, &mut pidl, 0, None)
-        };
-        if parsed.is_err() || pidl.is_null() {
-            return None;
-        }
+        let pidl = crate::shell_ns::pidl(path).ok()?;
         let flags = SHGFI_ICON | SHGFI_SMALLICON | windows_sys::Win32::UI::Shell::SHGFI_PIDL;
-        let r = unsafe { SHGetFileInfoW(pidl as *const u16, 0, &mut info, size_of::<SHFILEINFOW>() as u32, flags) };
-        unsafe { windows::Win32::UI::Shell::ILFree(Some(pidl)) };
-        r
+        unsafe { SHGetFileInfoW(pidl.as_ptr() as *const u16, 0, &mut info, size_of::<SHFILEINFOW>() as u32, flags) }
     } else {
         unsafe { SHGetFileInfoW(w.as_ptr(), attrs, &mut info, size_of::<SHFILEINFOW>() as u32, flags) }
     };

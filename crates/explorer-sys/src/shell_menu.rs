@@ -11,8 +11,7 @@ use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
     CMF_CANRENAME, CMF_EXPLORE, CMF_EXTENDEDVERBS, CMF_NORMAL, CMIC_MASK_PTINVOKE, CMIC_MASK_SHIFT_DOWN,
     CMINVOKECOMMANDINFO, CMINVOKECOMMANDINFOEX, DefSubclassProc, GCS_VERBW, IContextMenu, IContextMenu2, IContextMenu3,
-    ILFree, IShellFolder, RemoveWindowSubclass, SHBindToParent, SHGetDesktopFolder, SHParseDisplayName,
-    SetWindowSubclass,
+    ILFree, IShellFolder, RemoveWindowSubclass, SHBindToParent, SHGetDesktopFolder, SetWindowSubclass,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreatePopupMenu, DestroyMenu, GetCursorPos, SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenuEx,
@@ -86,10 +85,8 @@ impl Drop for Pidls {
 fn parse(paths: &[PathBuf]) -> io::Result<Pidls> {
     let mut out = Pidls(Vec::with_capacity(paths.len()));
     for p in paths {
-        let w = wide(p);
-        let mut pidl = std::ptr::null_mut();
-        unsafe { SHParseDisplayName(PCWSTR(w.as_ptr()), None, &mut pidl, 0, None) }.map_err(to_io)?;
-        out.0.push(pidl);
+        // Phone items are found through their parent folder's ID list (see `shell_ns`).
+        out.0.push(crate::shell_ns::pidl(p)?.into_raw());
     }
     Ok(out)
 }

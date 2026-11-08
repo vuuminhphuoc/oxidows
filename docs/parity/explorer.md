@@ -112,7 +112,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Libraries, Gallery | ✅ | libraries read with IShellLibrary, folders merged; Gallery = Pictures library pictures and videos, newest first |
 | OneDrive status | ✅ | overlays on cloud files, plus a Status column (available when online / on this device / always available) |
 | Control Panel and other shell namespaces | ✅ | `::shell\<parsing name>` folders listed with IShellItem; shell:ControlPanelFolder in the address bar; items open with their default verb |
-| Phones (MTP) | ✅ | under This PC; browse, open, and copy/cut/paste/delete + right-click menu through the shell (MTP) |
+| Phones (MTP) | ✅ | under This PC; browse, open, thumbnails, preview, copy/cut/paste both ways and delete through the shell's copy engine (`IFileOperation`), right-click menu. Tested on an Honor Magic8 Pro |
 
 ## Behaviour
 

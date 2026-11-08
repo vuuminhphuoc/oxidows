@@ -14,7 +14,7 @@ use windows::Win32::UI::Shell::PropertiesSystem::{
     GPS_BESTEFFORT, IPropertyStore, PDFF_DEFAULT, PSFormatForDisplayAlloc,
 };
 use windows::Win32::UI::Shell::{IShellItem2, SHCreateItemFromParsingName};
-use windows::core::PCWSTR;
+use windows::core::{Interface, PCWSTR};
 
 fn key(p: Prop) -> Option<&'static PROPERTYKEY> {
     Some(match p {
@@ -33,12 +33,14 @@ fn key(p: Prop) -> Option<&'static PROPERTYKEY> {
 /// The display text of each of `props` for `path` (empty where the item has none).
 pub fn read_props(path: &Path, props: &[Prop]) -> Vec<String> {
     crate::windows::com_init();
-    let w: Vec<u16> = explorer_core::shell_parsing(path).encode_utf16().chain(Some(0)).collect();
-    let store: Option<IPropertyStore> = unsafe {
-        SHCreateItemFromParsingName::<_, _, IShellItem2>(PCWSTR(w.as_ptr()), None)
-            .and_then(|item| item.GetPropertyStore(GPS_BESTEFFORT))
-            .ok()
+    let item: Option<IShellItem2> = if path.starts_with(explorer_core::SHELL) {
+        // A phone's items: found through the parent folder (see `shell_ns`).
+        crate::shell_ns::item(path).ok().and_then(|i| i.cast().ok())
+    } else {
+        let w: Vec<u16> = path.to_string_lossy().encode_utf16().chain(Some(0)).collect();
+        unsafe { SHCreateItemFromParsingName(PCWSTR(w.as_ptr()), None) }.ok()
     };
+    let store: Option<IPropertyStore> = item.and_then(|i| unsafe { i.GetPropertyStore(GPS_BESTEFFORT) }.ok());
     let Some(store) = store else { return vec![String::new(); props.len()] };
     props
         .iter()

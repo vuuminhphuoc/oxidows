@@ -832,6 +832,8 @@ impl App {
                         self.entries.clear();
                     }
                     for e in &batch {
+                        // Chinese, Japanese or Korean names load a font that can draw them.
+                        ui_common::ensure_glyphs(&self.ctx, e.display());
                         if e.name.starts_with(explorer_core::SHELL)
                             && let Some(l) = &e.label
                         {
@@ -1058,6 +1060,7 @@ impl App {
                 && !self.shell_labels.contains_key(&p)
                 && let Some(n) = explorer_sys::shell_display_name(&p)
             {
+                ui_common::ensure_glyphs(&self.ctx, &n);
                 self.shell_labels.insert(p, n);
             }
         }
@@ -1071,9 +1074,8 @@ impl App {
     fn back(&mut self) {
         if let Some(p) = self.history.back(self.cur.clone()) {
             // Going back up to a parent selects the folder we were in.
-            let child = (parent_path(&self.cur).as_deref() == Some(p.as_path()))
-                .then(|| self.cur.file_name().map(|n| n.to_string_lossy().into_owned()))
-                .flatten();
+            let child =
+                (parent_path(&self.cur).as_deref() == Some(p.as_path())).then(|| self.name_in_parent(&p)).flatten();
             self.cur = p;
             self.entered_new_folder(child);
         }
@@ -1120,14 +1122,24 @@ impl App {
         child_path(&self.cur, name)
     }
 
-    fn up(&mut self) {
-        let Some(parent) = parent_path(&self.cur) else { return };
-        let child = match classify(&self.cur) {
+    /// The entry name the current folder has in `parent`'s listing, to select it after Up or
+    /// Back: its last component, its full path where the parent names items by path (This
+    /// PC, a phone's folders), the server name on the Network page.
+    fn name_in_parent(&self, parent: &Path) -> Option<String> {
+        match classify(&self.cur) {
             Place::Server(s) => Some(s),
+            _ if self.cur.starts_with(explorer_core::SHELL) || classify(parent).names_are_paths() => {
+                Some(self.cur.to_string_lossy().into_owned())
+            }
             _ => Path::new(self.cur.to_string_lossy().trim_end_matches('\\'))
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned()),
-        };
+        }
+    }
+
+    fn up(&mut self) {
+        let Some(parent) = parent_path(&self.cur) else { return };
+        let child = self.name_in_parent(&parent);
         let from = std::mem::replace(&mut self.cur, parent);
         self.history.visit(from);
         self.entered_new_folder(child);
@@ -1376,13 +1388,6 @@ impl App {
         matches!(classify(&self.cur), Place::Shell(_))
     }
 
-    fn shell_verb(&mut self, items: &[PathBuf], verb: &str) {
-        if let Err(e) = explorer_sys::shell_verb(self.hwnd, &self.cur, items, verb) {
-            self.status = Some(format!("Could not {verb}: {e}"));
-        }
-        self.refresh();
-    }
-
     fn copy_selection(&mut self, cut: bool) {
         if self.in_recycle_bin() {
             return;
@@ -1406,20 +1411,35 @@ impl App {
         });
     }
 
+    /// Runs a shell copy, move or delete (to or from a phone) off the UI thread; the shell
+    /// shows its own progress and confirmation dialogs.
+    fn run_shell_op(&mut self, desc: String, f: impl FnOnce(isize) -> std::io::Result<bool> + Send + 'static) {
+        self.ops_running += 1;
+        let (tx, ctx, hwnd) = (self.tx.clone(), self.ctx.clone(), self.hwnd);
+        thread::Builder::new()
+            .name("shell-op".into())
+            .spawn(move || {
+                let r = f(hwnd);
+                let _ = tx.send(Msg::OpDone(desc, r, None));
+                ctx.request_repaint();
+            })
+            .expect("spawn shell-op thread");
+    }
+
     fn paste_into(&mut self, dest: PathBuf) {
         if matches!(classify(&dest), Place::Shell(_)) {
-            // Into a phone folder: the shell copies over MTP.
-            let _ = explorer_sys::shell_verb(self.hwnd, &dest, &[], "paste");
-            return self.refresh();
+            // Into a phone folder: the shell's copy engine talks MTP (the folder's own Paste
+            // verb does nothing there).
+            return self.run_shell_op("Pasted".into(), move |hwnd| explorer_sys::shell_paste(hwnd, &dest));
         }
         if classify(&dest).is_page() {
             return;
         }
         let Some((files, cut)) = explorer_sys::clipboard_get_files() else {
-            // Not files on disk (copied from a phone, say): the shell's paste handles any
-            // data object Explorer itself could paste.
-            if cfg!(windows) && explorer_sys::shell_verb(self.hwnd, &dest, &[], "paste").is_ok() {
-                return self.refresh();
+            // Not files on disk (copied from a phone, say): the shell copies any data object
+            // Explorer itself could paste.
+            if cfg!(windows) {
+                return self.run_shell_op("Pasted".into(), move |hwnd| explorer_sys::shell_paste(hwnd, &dest));
             }
             self.status = Some("Nothing to paste".into());
             return;
@@ -1440,7 +1460,11 @@ impl App {
         }
         let paths = self.selected_paths();
         if self.in_shell_folder() {
-            return self.shell_verb(&paths, "delete");
+            if paths.is_empty() {
+                return;
+            }
+            let desc = format!("Deleted {} item(s)", paths.len());
+            return self.run_shell_op(desc, move |hwnd| explorer_sys::shell_delete(hwnd, &paths));
         }
         self.run_op(if permanently { FileOp::Delete } else { FileOp::Recycle }, paths, None);
     }
@@ -1941,9 +1965,11 @@ impl eframe::App for App {
         if let Some(t) = self.tabs.get_mut(self.active_tab) {
             t.cur.clone_from(&self.cur);
         }
+        // The folder's name as in the breadcrumbs: "This PC", a phone's "Internal storage",
+        // not the parsing name behind it.
         let title = match self.cur.file_name() {
-            Some(n) => n.to_string_lossy().into_owned(),
-            None => self.cur.to_string_lossy().into_owned(),
+            Some(n) if !classify(&self.cur).is_page() => n.to_string_lossy().into_owned(),
+            _ => self.tab_title(self.active_tab),
         };
         if title != self.title {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Title(format!("{title} - Explorer (Rust)")));

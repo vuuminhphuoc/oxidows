@@ -200,6 +200,30 @@ pub fn shell_verb(hwnd: isize, dir: &Path, items: &[PathBuf], verb: &str) -> io:
     }
 }
 
+/// Pastes the clipboard (files, or shell items such as a phone's photos) into `dest`, which
+/// may be a phone folder, through the shell's copy engine. Blocks; call off the UI thread.
+/// `Ok(false)`: cancelled, or nothing to paste.
+pub fn shell_paste(hwnd: isize, dest: &Path) -> io::Result<bool> {
+    #[cfg(windows)]
+    return shell_ns::paste(hwnd, dest);
+    #[cfg(not(windows))]
+    {
+        let _ = (hwnd, dest);
+        Err(io::Error::new(io::ErrorKind::Unsupported, "the shell namespace needs Windows"))
+    }
+}
+
+/// Deletes shell items (files on a phone), with the shell's confirmation. Blocks.
+pub fn shell_delete(hwnd: isize, items: &[PathBuf]) -> io::Result<bool> {
+    #[cfg(windows)]
+    return shell_ns::delete(hwnd, items);
+    #[cfg(not(windows))]
+    {
+        let _ = (hwnd, items);
+        Err(io::Error::new(io::ErrorKind::Unsupported, "the shell namespace needs Windows"))
+    }
+}
+
 /// One file or folder's entry; its `name` is the last path component.
 pub fn stat(path: &Path) -> Option<Entry> {
     imp::stat(path)
