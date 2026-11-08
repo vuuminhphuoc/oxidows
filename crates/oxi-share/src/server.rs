@@ -6,9 +6,9 @@ use std::fs::{self, File, FileTimes};
 use std::io::{self, BufReader, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{RecvTimeoutError, sync_channel};
-use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -332,8 +332,15 @@ fn prepare_upload<R: io::BufRead>(
             for (index, f) in files.into_iter().enumerate() {
                 let token = crate::random_token();
                 tokens.insert(f.id.clone(), token.clone());
-                tfiles.push(TransferFile { name: f.file_name.clone(), size: f.size, done: 0, state: State::Waiting, path: None });
-                sfiles.insert(f.id.clone(), SessionFile { dto: f, token, index, state: FileState::Pending, path: None });
+                tfiles.push(TransferFile {
+                    name: f.file_name.clone(),
+                    size: f.size,
+                    done: 0,
+                    state: State::Waiting,
+                    path: None,
+                });
+                sfiles
+                    .insert(f.id.clone(), SessionFile { dto: f, token, index, state: FileState::Pending, path: None });
             }
             inner.snap().transfers.push(Transfer {
                 id,
@@ -571,4 +578,3 @@ fn landing_page(inner: &Inner) -> String {
         a = esc(&alias)
     )
 }
-

@@ -416,7 +416,9 @@ pub fn request(
         Ok(_) => {}
         // Read-until-close: EOF is the end.
         Err(e) if e.kind() == io::ErrorKind::UnexpectedEof && kind == BodyKind::Length(MAX_JSON) => {}
-        Err(e) if matches!(e.kind(), io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted) && !body.is_empty() => {}
+        Err(e)
+            if matches!(e.kind(), io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted)
+                && !body.is_empty() => {}
         Err(e) => return Err(e),
     }
     Ok(Response { status, body, peer_cert })

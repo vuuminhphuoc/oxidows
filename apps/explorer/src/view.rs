@@ -181,6 +181,10 @@ pub fn toolbar(app: &mut App, ui: &mut Ui) {
                 app.refresh();
                 app.load_drives();
             }
+            if ui_common::tool_button(ui, Icon::Share, true, "Share with a nearby device (LocalSend)").clicked() {
+                app.nearby.queue = app.selected_paths();
+                app.nearby.open = true;
+            }
             ui_common::tool_menu(ui, Icon::More, "See more", |ui| {
                 if ui.button("New folder").clicked() {
                     app.begin_new_folder();
@@ -722,6 +726,12 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
             let network = PathBuf::from(explorer_core::NETWORK);
             if place(ui, Icon::Network, "Network", &network, &app.cur) {
                 go = Some(network);
+            }
+            if ui_common::nav_item(ui, Some(Icon::Share), "Nearby sharing", app.nearby.open)
+                .on_hover_text("Send and receive with phones (LocalSend)")
+                .clicked()
+            {
+                app.nearby.open = !app.nearby.open;
             }
             let bin = PathBuf::from(explorer_core::RECYCLE_BIN);
             if place(ui, Icon::RecycleBin, "Recycle Bin", &bin, &app.cur) {

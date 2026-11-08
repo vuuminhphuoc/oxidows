@@ -377,7 +377,9 @@ pub fn local_ipv4() -> Vec<(String, Ipv4Addr, u8)> {
         .into_iter()
         .filter(|i| i.is_oper_up())
         .filter_map(|i| match i.addr {
-            if_addrs::IfAddr::V4(a) if !a.ip.is_loopback() && !a.ip.is_link_local() => Some((i.name, a.ip, a.prefixlen)),
+            if_addrs::IfAddr::V4(a) if !a.ip.is_loopback() && !a.ip.is_link_local() => {
+                Some((i.name, a.ip, a.prefixlen))
+            }
             _ => None,
         })
         .collect();
@@ -433,4 +435,14 @@ pub(crate) fn random_token() -> String {
     let mut b = [0u8; 16];
     let _ = ring::rand::SystemRandom::new().fill(&mut b);
     identity::hex_upper(&b).to_ascii_lowercase()
+}
+
+/// Random lowercase letters and digits without look-alikes (no 0/o, 1/l/i), for passwords a
+/// person may have to type.
+pub fn random_password(len: usize) -> String {
+    use ring::rand::SecureRandom;
+    const SET: &[u8] = b"abcdefghjkmnpqrstuvwxyz23456789";
+    let mut b = vec![0u8; len];
+    let _ = ring::rand::SystemRandom::new().fill(&mut b);
+    b.iter().map(|x| SET[*x as usize % SET.len()] as char).collect()
 }

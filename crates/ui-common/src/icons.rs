@@ -51,6 +51,11 @@ icons! {
     Leaf = '\u{EC0A}', "🍃";
     Info = '\u{E946}', "ℹ";
     Warning = '\u{E7BA}', "⚠";
+    Share = '\u{E72D}', "📤";
+    Send = '\u{E724}', "➡";
+    Message = '\u{E8BD}', "✉";
+    Phone = '\u{E8EA}', "📱";
+    Wifi = '\u{E701}', "📶";
     // Places and files.
     Home = '\u{E80F}', "🏠";
     Gallery = '\u{E8B9}', "🖼";

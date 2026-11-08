@@ -4,6 +4,7 @@
 
 mod dnd;
 mod grid;
+mod nearby;
 mod pane;
 mod settings;
 mod undo;
@@ -272,6 +273,7 @@ struct App {
     pub tree: HashMap<PathBuf, Vec<String>>,
     tree_pending: HashSet<PathBuf>,
     pub active_tab: usize,
+    pub nearby: nearby::Nearby,
 }
 
 impl App {
@@ -356,6 +358,7 @@ impl App {
             tree: HashMap::new(),
             tree_pending: HashSet::new(),
             active_tab: 0,
+            nearby: nearby::Nearby::new(),
         };
         let s = app.persist.settings.clone();
         app.apply_settings(&s);
@@ -1986,6 +1989,7 @@ impl eframe::App for App {
         let content = ui_common::content_frame(ui.style());
         egui::CentralPanel::default().frame(content).show(ui, |ui| view::file_list(self, ui));
         view::dialog(self, ui);
+        nearby::show(self, ui);
         self.finish_drag(&ctx);
     }
 

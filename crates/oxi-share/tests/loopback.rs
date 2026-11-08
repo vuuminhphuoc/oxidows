@@ -140,7 +140,17 @@ fn official_app_style_requests() {
     });
     let mut s = http::connect(addr, Some(tls.clone()), Duration::from_secs(2)).unwrap();
     let body = serde_json::to_vec(&info).unwrap();
-    let r = http::request(&mut s, "POST", "x", "/api/localsend/v2/register", "application/json", &mut &body[..], body.len() as u64, &mut |_| true).unwrap();
+    let r = http::request(
+        &mut s,
+        "POST",
+        "x",
+        "/api/localsend/v2/register",
+        "application/json",
+        &mut &body[..],
+        body.len() as u64,
+        &mut |_| true,
+    )
+    .unwrap();
     assert_eq!(r.status, 200);
     let v: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
     assert_eq!(v["alias"], "erin");
@@ -160,7 +170,17 @@ fn official_app_style_requests() {
     });
     let body = serde_json::to_vec(&prep).unwrap();
     let mut s = http::connect(addr, Some(tls.clone()), Duration::from_secs(2)).unwrap();
-    let r = http::request(&mut s, "POST", "x", "/api/localsend/v2/prepare-upload", "application/json", &mut &body[..], body.len() as u64, &mut |_| true).unwrap();
+    let r = http::request(
+        &mut s,
+        "POST",
+        "x",
+        "/api/localsend/v2/prepare-upload",
+        "application/json",
+        &mut &body[..],
+        body.len() as u64,
+        &mut |_| true,
+    )
+    .unwrap();
     assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
     let v: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
     let sid = v["sessionId"].as_str().unwrap().to_string();
@@ -169,7 +189,17 @@ fn official_app_style_requests() {
 
     // A second sender is turned away while the session runs.
     let mut s = http::connect(addr, Some(tls.clone()), Duration::from_secs(2)).unwrap();
-    let r = http::request(&mut s, "POST", "x", "/api/localsend/v2/prepare-upload", "application/json", &mut &body[..], body.len() as u64, &mut |_| true).unwrap();
+    let r = http::request(
+        &mut s,
+        "POST",
+        "x",
+        "/api/localsend/v2/prepare-upload",
+        "application/json",
+        &mut &body[..],
+        body.len() as u64,
+        &mut |_| true,
+    )
+    .unwrap();
     assert_eq!(r.status, 409);
 
     // A wrong token is refused.
@@ -190,14 +220,19 @@ fn official_app_style_requests() {
         raw.extend(b"0\r\n\r\n");
         raw
     };
-    s.write_all(&chunked(&format!("/api/localsend/v2/upload?sessionId={sid}&fileId=f1&token={t1}"), &[b"hello", b" world"])).unwrap();
+    s.write_all(&chunked(
+        &format!("/api/localsend/v2/upload?sessionId={sid}&fileId=f1&token={t1}"),
+        &[b"hello", b" world"],
+    ))
+    .unwrap();
     let mut r = BufReader::new(&mut s);
     let h = http::read_head(&mut r).unwrap().unwrap();
     assert_eq!(h.first, "200");
     let mut body = http::Body::new(&mut r, h.body_kind().unwrap());
     body.read_all(1000).unwrap();
     let s = r.into_inner();
-    s.write_all(&chunked(&format!("/api/localsend/v2/upload?sessionId={sid}&fileId=f2&token={t2}"), &[b"bad"])).unwrap();
+    s.write_all(&chunked(&format!("/api/localsend/v2/upload?sessionId={sid}&fileId=f2&token={t2}"), &[b"bad"]))
+        .unwrap();
     let mut r = BufReader::new(s);
     let h = http::read_head(&mut r).unwrap().unwrap();
     assert_eq!(h.first, "200");
@@ -221,9 +256,23 @@ fn checksum_mismatch_is_rejected_and_removed() {
     });
     let body = serde_json::to_vec(&prep).unwrap();
     let mut s = http::connect(addr, Some(tls.clone()), Duration::from_secs(2)).unwrap();
-    let r = http::request(&mut s, "POST", "x", "/api/localsend/v2/prepare-upload", "", &mut &body[..], body.len() as u64, &mut |_| true).unwrap();
+    let r = http::request(
+        &mut s,
+        "POST",
+        "x",
+        "/api/localsend/v2/prepare-upload",
+        "",
+        &mut &body[..],
+        body.len() as u64,
+        &mut |_| true,
+    )
+    .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
-    let path = format!("/api/localsend/v2/upload?sessionId={}&fileId=f&token={}", v["sessionId"].as_str().unwrap(), v["files"]["f"].as_str().unwrap());
+    let path = format!(
+        "/api/localsend/v2/upload?sessionId={}&fileId=f&token={}",
+        v["sessionId"].as_str().unwrap(),
+        v["files"]["f"].as_str().unwrap()
+    );
     let mut s = http::connect(addr, Some(tls), Duration::from_secs(2)).unwrap();
     let r = http::request(&mut s, "POST", "x", &path, "", &mut &b"abc"[..], 3, &mut |_| true).unwrap();
     assert_eq!(r.status, 422);

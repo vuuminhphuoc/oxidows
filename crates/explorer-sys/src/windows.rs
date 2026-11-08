@@ -48,7 +48,7 @@ use windows_sys::Win32::UI::Shell::{
     ShellExecuteW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DestroyIcon, GetIconInfo, HWND_MESSAGE, ICONINFO, SW_SHOWNORMAL,
+    CreateWindowExW, DestroyIcon, GetIconInfo, HWND_MESSAGE, ICONINFO, SW_HIDE, SW_SHOWNORMAL,
 };
 use windows_sys::core::GUID;
 
@@ -294,6 +294,14 @@ fn shell_execute(verb: &str, file: &str, params: Option<&str>, dir: Option<&Path
         )
     };
     // ShellExecute returns a fake HINSTANCE: > 32 means success, otherwise an error code.
+    if r as usize > 32 { Ok(()) } else { Err(io::Error::from_raw_os_error(r as i32)) }
+}
+
+/// Runs a program without a window, e.g. `runas` for an elevated command.
+pub(crate) fn shell_execute_hidden(verb: &str, file: &str, params: &str) -> io::Result<()> {
+    com_init();
+    let (verb, file, params) = (wide(verb), wide(file), wide(params));
+    let r = unsafe { ShellExecuteW(null_mut(), verb.as_ptr(), file.as_ptr(), params.as_ptr(), null(), SW_HIDE) };
     if r as usize > 32 { Ok(()) } else { Err(io::Error::from_raw_os_error(r as i32)) }
 }
 

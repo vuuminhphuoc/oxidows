@@ -43,18 +43,16 @@ pub(crate) fn start(inner: &Arc<Inner>) -> Handle {
         Err(e) => {
             inner.snap().multicast_error = Some(e.to_string());
             // A socket that only sends still lets others hear us.
-            Arc::new(UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap_or_else(|_| {
-                UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("any UDP socket")
-            }))
+            Arc::new(
+                UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
+                    .unwrap_or_else(|_| UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("any UDP socket")),
+            )
         }
     };
     let h = Handle { sock: sock.clone(), port, joined: Mutex::new(HashSet::new()), scanning: AtomicBool::new(false) };
     join_new(&h);
     let inner2 = inner.clone();
-    thread::Builder::new()
-        .name("share-discovery".into())
-        .spawn(move || receive_loop(&inner2, &sock))
-        .ok();
+    thread::Builder::new().name("share-discovery".into()).spawn(move || receive_loop(&inner2, &sock)).ok();
     announce(inner);
     h
 }
@@ -178,7 +176,12 @@ fn probe_with(inner: &Inner, addr: SocketAddr, timeout: Duration) -> bool {
                 return true;
             }
             // Nothing listening: no point trying plain HTTP.
-            Err(e) if matches!(e.kind(), io::ErrorKind::ConnectionRefused | io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock) => {
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::ConnectionRefused | io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                ) =>
+            {
                 return false;
             }
             Err(_) => {}

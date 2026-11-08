@@ -46,6 +46,21 @@ pub struct Settings {
     pub compact: bool,
     /// Property-system columns shown in Details, in order.
     pub prop_cols: Vec<explorer_core::Prop>,
+    pub share: ShareSettings,
+}
+
+/// Nearby sharing (LocalSend protocol).
+#[derive(Clone, PartialEq, Debug, Default)]
+pub struct ShareSettings {
+    pub on: bool,
+    /// Name other devices see; empty = the computer name.
+    pub alias: String,
+    /// Where received files go; `None` = Downloads.
+    pub dir: Option<PathBuf>,
+    /// Accept without asking.
+    pub quick_save: bool,
+    /// Password of the Wi-Fi Direct network, made once.
+    pub hotspot_pass: String,
 }
 
 impl Default for Settings {
@@ -67,6 +82,7 @@ impl Default for Settings {
             item_checkboxes: false,
             compact: false,
             prop_cols: Vec::new(),
+            share: ShareSettings::default(),
         }
     }
 }
@@ -108,6 +124,11 @@ impl FolderView {
         let ascending = it.next()? != "desc";
         Some(Self { view, sort, ascending })
     }
+}
+
+/// %APPDATA%\\oxidows (or the XDG config folder).
+pub fn config_dir() -> Option<PathBuf> {
+    path().and_then(|p| p.parent().map(PathBuf::from))
 }
 
 fn path() -> Option<PathBuf> {
@@ -169,6 +190,11 @@ impl Settings {
                     }
                 }
                 "pin" if !v.is_empty() => s.pinned.push(PathBuf::from(v)),
+                "share" => s.share.on = flag(v),
+                "share_alias" => s.share.alias = v.to_string(),
+                "share_dir" if !v.is_empty() => s.share.dir = Some(PathBuf::from(v)),
+                "share_quick_save" => s.share.quick_save = flag(v),
+                "hotspot_pass" => s.share.hotspot_pass = v.to_string(),
                 "theme" => s.theme = Theme::parse(v),
                 _ => {}
             }
@@ -212,6 +238,15 @@ impl Settings {
         for p in &self.pinned {
             out.push_str(&format!("pin={}\n", p.display()));
         }
+        let sh = &self.share;
+        out.push_str(&format!(
+            "share={}\nshare_alias={}\nshare_dir={}\nshare_quick_save={}\nhotspot_pass={}\n",
+            sh.on,
+            sh.alias,
+            sh.dir.as_ref().map(|d| d.display().to_string()).unwrap_or_default(),
+            sh.quick_save,
+            sh.hotspot_pass
+        ));
         for (k, (n, v)) in &self.folders {
             out.push_str(&format!("folder:{k}={n},{}\n", v.to_text()));
         }
@@ -403,6 +438,7 @@ mod tests {
             item_checkboxes: false,
             compact: false,
             prop_cols: vec![explorer_core::Prop::Dimensions, explorer_core::Prop::Authors],
+            share: ShareSettings::default(),
         };
         s.remember_folder(
             r"c:\users\a\pictures".into(),
@@ -412,6 +448,13 @@ mod tests {
         s.item_checkboxes = true;
         s.compact = true;
         s.pinned = vec![PathBuf::from(r"D:\Projects"), PathBuf::from(r"\\nas\share")];
+        s.share = ShareSettings {
+            on: true,
+            alias: "Phước's PC".into(),
+            dir: Some(PathBuf::from(r"D:\Phone")),
+            quick_save: true,
+            hotspot_pass: "k3x9q2mz".into(),
+        };
         assert_eq!(Settings::parse(&s.to_text()), s);
         assert_eq!(Settings::parse("garbage\nwidth=abc\nview=nope"), Settings::default());
     }

@@ -108,7 +108,13 @@ pub(crate) fn start(inner: &Arc<Inner>, device: Device, payload: Payload) -> u64
     };
     let files = items
         .iter()
-        .map(|i| TransferFile { name: i.dto.file_name.clone(), size: i.dto.size, done: 0, state: State::Waiting, path: i.path.clone() })
+        .map(|i| TransferFile {
+            name: i.dto.file_name.clone(),
+            size: i.dto.size,
+            done: 0,
+            state: State::Waiting,
+            path: i.path.clone(),
+        })
         .collect();
     let cancel = Arc::new(AtomicBool::new(false));
     inner.cancelled.lock().unwrap_or_else(|e| e.into_inner()).insert(id, cancel.clone());
@@ -197,7 +203,16 @@ fn run(inner: &Arc<Inner>, device: &Device, id: u64, items: Vec<Item>, cancel: &
     let _ = watcher.join();
     if cancel.load(Ordering::Relaxed) {
         // Tell the receiver to close its dialog.
-        let _ = call(inner, device.addr(), device.protocol, expected, "/api/localsend/v2/cancel", b"", Duration::from_secs(3), Duration::from_secs(3));
+        let _ = call(
+            inner,
+            device.addr(),
+            device.protocol,
+            expected,
+            "/api/localsend/v2/cancel",
+            b"",
+            Duration::from_secs(3),
+            Duration::from_secs(3),
+        );
         return Ok(State::Cancelled);
     }
     let resp = resp?;
@@ -205,10 +220,12 @@ fn run(inner: &Arc<Inner>, device: &Device, id: u64, items: Vec<Item>, cancel: &
         200 => {}
         204 => {
             // Nothing to upload (a text message was read).
-            inner.update_transfer(id, |t| t.files.iter_mut().for_each(|f| {
-                f.done = f.size;
-                f.state = State::Done;
-            }));
+            inner.update_transfer(id, |t| {
+                t.files.iter_mut().for_each(|f| {
+                    f.done = f.size;
+                    f.state = State::Done;
+                })
+            });
             return Ok(State::Done);
         }
         401 => return Err(io::Error::other("The receiver asks for a PIN, which is not supported yet")),
@@ -271,7 +288,16 @@ fn run(inner: &Arc<Inner>, device: &Device, id: u64, items: Vec<Item>, cancel: &
     }
     if cancel.load(Ordering::Relaxed) {
         let path = format!("/api/localsend/v2/cancel?sessionId={}", http::percent_encode(&accepted.session_id));
-        let _ = call(inner, device.addr(), device.protocol, expected, &path, b"", Duration::from_secs(3), Duration::from_secs(3));
+        let _ = call(
+            inner,
+            device.addr(),
+            device.protocol,
+            expected,
+            &path,
+            b"",
+            Duration::from_secs(3),
+            Duration::from_secs(3),
+        );
         return Ok(State::Cancelled);
     }
     let failures = failures.lock().unwrap_or_else(|e| e.into_inner());
@@ -353,4 +379,3 @@ fn upload_one(
         c => Err(io::Error::other(format!("The receiver answered HTTP {c}"))),
     }
 }
-

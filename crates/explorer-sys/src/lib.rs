@@ -37,6 +37,8 @@ mod shell_ns;
 #[cfg(windows)]
 mod thumbs;
 #[cfg(windows)]
+mod wifi_direct;
+#[cfg(windows)]
 pub use preview::PreviewHost;
 
 /// Whether files with extension `ext` ("docx") have a registered preview handler.
@@ -67,6 +69,58 @@ pub fn zone_of(path: &Path) -> Option<u32> {
         let _ = path;
         None
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HotspotStatus {
+    Starting,
+    /// Phones can join now.
+    Started,
+    Stopped,
+    Failed(String),
+}
+
+/// A Wi-Fi Direct group this PC owns, which phones join as an ordinary Wi-Fi network. Stops when
+/// dropped.
+pub struct Hotspot {
+    #[cfg(windows)]
+    inner: wifi_direct::Hotspot,
+}
+
+impl Hotspot {
+    /// `ssid` up to 32 bytes; `passphrase` 8 to 63 characters.
+    pub fn start(ssid: &str, passphrase: &str) -> io::Result<Self> {
+        #[cfg(windows)]
+        return Ok(Self { inner: wifi_direct::Hotspot::start(ssid, passphrase)? });
+        #[cfg(not(windows))]
+        {
+            let _ = (ssid, passphrase);
+            Err(io::Error::new(io::ErrorKind::Unsupported, "Wi-Fi Direct needs Windows"))
+        }
+    }
+
+    pub fn status(&self) -> HotspotStatus {
+        #[cfg(windows)]
+        return self.inner.status();
+        #[cfg(not(windows))]
+        HotspotStatus::Stopped
+    }
+}
+
+/// Whether Windows Firewall has the inbound rule for nearby sharing.
+pub fn firewall_rule_exists() -> bool {
+    #[cfg(windows)]
+    return wifi_direct::firewall_rule_exists();
+    #[cfg(not(windows))]
+    true
+}
+
+/// Adds the inbound firewall rule for this exe on all network profiles (asks for admin rights).
+pub fn allow_in_firewall() -> io::Result<()> {
+    #[cfg(windows)]
+    return wifi_direct::allow_in_firewall();
+    #[cfg(not(windows))]
+    Ok(())
 }
 
 /// Off Windows there are no preview handlers; this stands in so the app needs no `cfg`.
