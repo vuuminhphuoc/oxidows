@@ -684,7 +684,7 @@ impl eframe::App for App {
             Tab::Processes => self.processes.show(ui, &snap),
             Tab::Performance => self.performance.show(ui, &snap),
             Tab::AppHistory => self.history.show(ui, self.elevated),
-            Tab::Startup => self.startup.show(ui),
+            Tab::Startup => self.startup.show(ui, &snap),
             Tab::Users => self.users.show(ui, &snap),
             Tab::Details => {
                 if self.details.show(ui, &snap) {

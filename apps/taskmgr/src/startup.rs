@@ -2,7 +2,9 @@
 
 use egui::{RichText, Ui};
 use egui_extras::{Column, TableBuilder};
-use taskmgr_core::StartupItem;
+use std::collections::HashMap;
+
+use taskmgr_core::{Snapshot, StartupItem, format_bytes, startup_impact};
 
 use crate::Status;
 
@@ -11,16 +13,49 @@ pub struct State {
     selected: Option<usize>,
     bios_ms: Option<u32>,
     status: Status,
+    /// CPU time (100 ns) and disk I/O bytes per startup exe (lower-case path), from the first
+    /// time a matching process that began soon after boot was seen; read again on Refresh.
+    measured: HashMap<String, (u64, u64)>,
+}
+
+/// Processes that started within this long after boot count as started by sign-in.
+const STARTUP_WINDOW_100NS: u64 = 5 * 60 * 10_000_000;
+
+fn now_filetime() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| (d.as_nanos() / 100) as u64 + 116_444_736_000_000_000)
 }
 
 impl State {
     pub fn new(status: Status) -> Self {
-        Self { items: None, selected: None, bios_ms: taskmgr_sys::last_bios_ms(), status }
+        Self { items: None, selected: None, bios_ms: taskmgr_sys::last_bios_ms(), status, measured: HashMap::new() }
     }
 
-    pub fn show(&mut self, ui: &mut Ui) {
+    /// Records the startup cost of processes that sign-in started. Windows measures the boot itself;
+    /// here the process's own totals stand in, so the earlier this runs after sign-in, the closer.
+    fn measure(&mut self, snap: &Snapshot) {
+        let boot = now_filetime().saturating_sub(snap.system.uptime.as_nanos() as u64 / 100);
+        for p in &snap.processes {
+            if p.info.path.is_empty() || p.start_time.saturating_sub(boot) > STARTUP_WINDOW_100NS {
+                continue;
+            }
+            let e = self.measured.entry(p.info.path.to_lowercase()).or_insert((0, 0));
+            e.0 = e.0.max(p.cpu_time);
+            e.1 = e.1.max(p.io_read_bytes + p.io_write_bytes);
+        }
+    }
+
+    pub fn show(&mut self, ui: &mut Ui, snap: &Snapshot) {
+        if self.measured.is_empty() || self.items.is_none() {
+            self.measure(snap);
+        }
         // Registry reads take well under a millisecond: load on first view, reload on demand.
         let items = self.items.get_or_insert_with(taskmgr_sys::startup_items);
+        let cost: Vec<Option<(u64, u64)>> = items
+            .iter()
+            .map(|it| self.measured.get(&taskmgr_sys::startup_exe(&it.command).to_lowercase()).copied())
+            .collect();
         let mut toggle = None;
         let mut reload = false;
         ui.horizontal(|ui| {
@@ -53,10 +88,20 @@ impl State {
             .column(Column::initial(200.0).clip(true))
             .column(Column::initial(160.0).clip(true))
             .column(Column::exact(80.0))
+            .columns(Column::exact(100.0), 3)
             .column(Column::initial(300.0).clip(true))
             .column(Column::remainder().clip(true))
             .header(20.0, |mut h| {
-                for t in ["Name", "Publisher", "Status", "Command", "Registered in"] {
+                for t in [
+                    "Name",
+                    "Publisher",
+                    "Status",
+                    "Startup impact",
+                    "CPU at startup",
+                    "Disk I/O at startup",
+                    "Command",
+                    "Registered in",
+                ] {
                     h.col(|ui| {
                         ui.label(RichText::new(t).strong());
                     });
@@ -75,6 +120,21 @@ impl State {
                     });
                     row.col(|ui| {
                         ui.label(if it.enabled { "Enabled" } else { "Disabled" });
+                    });
+                    let c = cost[i];
+                    row.col(|ui| {
+                        ui.label(match c {
+                            _ if !it.enabled => "None",
+                            Some((cpu, io)) => startup_impact(cpu, io),
+                            None => "Not measured",
+                        })
+                        .on_hover_text("From the app's own CPU and disk use since it started at sign-in");
+                    });
+                    row.col(|ui| {
+                        ui.label(c.map_or(String::new(), |(cpu, _)| format!("{} ms", cpu / 10_000)));
+                    });
+                    row.col(|ui| {
+                        ui.label(c.map_or(String::new(), |(_, io)| format_bytes(io as f64)));
                     });
                     row.col(|ui| {
                         ui.label(&it.command).on_hover_text(&it.command);
@@ -124,6 +184,7 @@ impl State {
         }
         if reload {
             self.items = None;
+            self.measured.clear();
         }
     }
 }
