@@ -4,6 +4,7 @@
 mod adapters;
 mod gpu;
 mod hw;
+mod icon;
 mod net;
 mod procinfo;
 mod services;
@@ -17,6 +18,7 @@ mod waitchain;
 pub use adapters::adapter_info;
 pub use gpu::gpu_temperature;
 pub use hw::{cpu_info, disk_info, disk_temperature, memory_info};
+pub use icon::exe_icon;
 pub use waitchain::{set_uac_virtualization, uac_virtualization, wait_chain};
 
 pub fn app_history() -> io::Result<taskmgr_core::AppHistory> {

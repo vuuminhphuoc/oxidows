@@ -35,6 +35,8 @@ as the feature.
 | End task | done | button, Delete key, right-click |
 | Groups: Apps / Background processes / Windows processes | done | collapsible, can be turned off |
 | Friendly names (file description) | done | hover shows the image name |
+| Program icon left of each name | done | shell small icon of the exe, read on a background thread and cached by path; generic program icon when there is no path (System, Registry) |
+| Machine totals above CPU, Memory, Disk, Network, GPU headers | done | Network total = all adapters' throughput over their link speed, shown even when per-process network is off |
 | Expand an app to its child processes | done | children fold into the app row; windows are not listed |
 | Network column | done | ETW Microsoft-Windows-Kernel-Network; needs administrator (Task Manager uses a system service) |
 | GPU engine column | done | busiest engine per process, from PDH `GPU Engine(*)` |
@@ -103,7 +105,8 @@ as the feature.
 | --- | --- | --- |
 | Signed-in sessions with status, CPU, memory, disk, process count | done | |
 | Network per user | done | needs administrator, like the Network column |
-| Expand a user to their processes | done | |
+| Expand a user to their processes | done | with program icons |
+| Totals above CPU, Memory, Disk, Network headers | done | |
 | Disconnect, Sign off | done | asks first |
 
 ## Details
@@ -112,6 +115,7 @@ as the feature.
 | --- | --- | --- |
 | Name, PID, user, session, CPU, memory, threads, handles, priority, path, command line | done | |
 | Choose columns | done | 34 columns, saved between runs |
+| Program icon left of the name | done | same cache as Processes |
 | Same right-click actions as Processes | done | end, tree, efficiency, priority, affinity, dump, search |
 | Go to service(s) | done | svchost.exe rows |
 | UAC virtualization (column and toggle), Analyze wait chain | done | Wait Chain Traversal; offers to end the blocking process |

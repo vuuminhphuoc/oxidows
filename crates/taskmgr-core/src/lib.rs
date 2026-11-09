@@ -528,6 +528,37 @@ pub struct SystemRates {
     pub handle_count: u64,
 }
 
+/// The machine-wide figures Task Manager prints above its CPU, Memory, Disk, Network and GPU
+/// columns, in percent.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ColumnTotals {
+    pub cpu: f32,
+    pub memory: f32,
+    pub disk: f32,
+    pub network: f32,
+    pub gpu: f32,
+}
+
+impl ColumnTotals {
+    pub fn of(s: &SystemRates) -> Self {
+        let link: f64 = s.adapters.iter().map(|a| a.link_bps as f64).sum();
+        let moved: f64 = s.adapters.iter().map(|a| a.rx_bps + a.tx_bps).sum();
+        let pct = |v: f64| (v as f32).clamp(0.0, 100.0);
+        Self {
+            cpu: pct(f64::from(s.cpu_pct)),
+            memory: if s.mem_total == 0 { 0.0 } else { pct(s.mem_used as f64 * 100.0 / s.mem_total as f64) },
+            disk: pct(f64::from(s.disk_active_pct.unwrap_or(0.0))),
+            network: if link <= 0.0 { 0.0 } else { pct(moved * 8.0 * 100.0 / link) },
+            gpu: pct(f64::from(s.gpu_pct.unwrap_or(0.0))),
+        }
+    }
+
+    /// "37%", as the header shows it.
+    pub fn label(v: f32) -> String {
+        format!("{:.0}%", v)
+    }
+}
+
 /// Everything the UI needs for one frame. Sent from the sampler thread as an `Arc`.
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
@@ -1193,6 +1224,29 @@ pub fn format_uptime(d: Duration) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn column_totals() {
+        let s = SystemRates {
+            cpu_pct: 12.4,
+            mem_used: 3,
+            mem_total: 8,
+            disk_active_pct: Some(140.0),
+            gpu_pct: None,
+            adapters: vec![
+                AdapterRates { rx_bps: 1_000_000.0, tx_bps: 250_000.0, link_bps: 100_000_000, ..Default::default() },
+                AdapterRates { link_bps: 0, ..Default::default() },
+            ],
+            ..Default::default()
+        };
+        let t = ColumnTotals::of(&s);
+        assert_eq!(ColumnTotals::label(t.cpu), "12%");
+        assert_eq!(ColumnTotals::label(t.memory), "38%");
+        assert_eq!(t.disk, 100.0);
+        assert_eq!(t.network, 10.0);
+        assert_eq!(t.gpu, 0.0);
+        assert_eq!(ColumnTotals::of(&SystemRates::default()), ColumnTotals::default());
+    }
     use super::*;
 
     #[test]
