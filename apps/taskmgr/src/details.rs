@@ -395,10 +395,23 @@ impl State {
             self.picking = true;
         }
         let can_end = self.selected.is_some();
-        if ui_common::command_button(ui, ui_common::Icon::Close, "End task", can_end, "").clicked()
-            && let Some((pid, name)) = self.selected.take()
-        {
-            end_task(&self.status, &snap.processes, pid, &name);
+        if ui_common::command_button(ui, ui_common::Icon::Close, "End task", can_end, "").clicked() {
+            self.end_selected(&snap.processes);
+        }
+    }
+
+    pub fn end_selected(&mut self, rows: &[ProcessRow]) {
+        if let Some((pid, name)) = self.selected.take() {
+            if taskmgr_core::is_critical_process(&name) {
+                self.status.open(crate::Dialog::Confirm {
+                    text: format!(
+                        "Do you want to end the system process {name}?\n\nEnding this process will cause Windows to become unusable or shut down, causing you to lose any unsaved data."
+                    ),
+                    action: crate::ConfirmAction::CriticalEndTask { pid, name },
+                });
+            } else {
+                end_task(&self.status, rows, pid, &name);
+            }
         }
     }
 
@@ -408,6 +421,12 @@ impl State {
         let before = self.columns.clone();
         self.column_picker(ui.ctx());
 
+        if self.selected.is_some()
+            && ui.input(|i| i.key_pressed(egui::Key::Delete))
+            && ui.ctx().memory(|m| m.focused().is_none())
+        {
+            self.end_selected(rows);
+        }
         let f = self.filter.trim().to_lowercase();
         let mut view: Vec<&ProcessRow> = rows
             .iter()
@@ -422,6 +441,12 @@ impl State {
         let sort = self.sort;
         view.sort_by(|a, b| sort.apply(sort.key.cmp(a, b)).then(a.pid.cmp(&b.pid)));
 
+        let cursor = self.selected.as_ref().and_then(|(pid, _)| view.iter().position(|p| p.pid == *pid));
+        if let Some(new_i) = crate::keys::list_keys(ui, view.len(), cursor, |k| view[k].name.clone()) {
+            let p = view[new_i];
+            self.selected = Some((p.pid, p.name.clone()));
+            self.scroll_to = Some(p.pid);
+        }
         let net_on = snap.system.per_process_net;
         let cols = self.columns.clone();
         let row_h = 20.0;

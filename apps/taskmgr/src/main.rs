@@ -7,6 +7,7 @@ mod fps;
 mod graph;
 mod history;
 mod icons;
+mod keys;
 mod performance;
 mod processes;
 mod services;
@@ -177,6 +178,9 @@ pub enum Dialog {
 pub enum ConfirmAction {
     SignOff { session: u32, user: String },
     Disconnect { session: u32, user: String },
+    EndTree { pid: u32, name: String },
+    CriticalEndTask { pid: u32, name: String },
+    EfficiencyMode { pid: u32, name: String },
 }
 
 /// Shared by every tab and by background actions: the status line, an open dialog, and a
@@ -420,6 +424,7 @@ impl App {
                 icons.clone(),
                 settings.group_by_type,
                 settings.values_pct,
+                processes::parse_columns(&settings.processes_columns),
                 SortBy::parse(&settings.sort_processes, taskmgr_core::SortKey::from_key),
             ),
             performance: performance::State::with_cpu_view(settings.cpu_logical, settings.cpu_kernel),
@@ -567,8 +572,20 @@ impl App {
             Some(Dialog::Confirm { text, action }) => {
                 egui::Window::new("Task Manager").collapsible(false).resizable(false).show(ctx, |ui| {
                     ui.label(text.as_str());
+                    ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if ui.button("Yes").clicked() {
+                        let confirm_label = match action {
+                            ConfirmAction::SignOff { .. } => "Yes",
+                            ConfirmAction::Disconnect { .. } => "Yes",
+                            ConfirmAction::EndTree { .. } => "End process tree",
+                            ConfirmAction::CriticalEndTask { .. } => "Shut down",
+                            ConfirmAction::EfficiencyMode { .. } => "Turn on Efficiency mode",
+                        };
+                        let cancel_label = match action {
+                            ConfirmAction::SignOff { .. } | ConfirmAction::Disconnect { .. } => "No",
+                            _ => "Cancel",
+                        };
+                        if ui.button(confirm_label).clicked() {
                             let msg = match action {
                                 ConfirmAction::SignOff { session, user } => match taskmgr_sys::logoff_session(*session)
                                 {
@@ -581,11 +598,27 @@ impl App {
                                         Err(e) => format!("Could not disconnect {user}: {e}"),
                                     }
                                 }
+                                ConfirmAction::EndTree { pid, name } => {
+                                    processes::end_tree(&self.status, &self.snapshot.processes, *pid, name);
+                                    String::new()
+                                }
+                                ConfirmAction::CriticalEndTask { pid, name } => {
+                                    processes::end_task(&self.status, &self.snapshot.processes, *pid, name);
+                                    String::new()
+                                }
+                                ConfirmAction::EfficiencyMode { pid, name } => {
+                                    match taskmgr_sys::set_efficiency_mode(*pid, true) {
+                                        Ok(()) => format!("Efficiency mode on for {name}"),
+                                        Err(e) => format!("Could not change efficiency mode of {name}: {e}"),
+                                    }
+                                }
                             };
-                            self.status.set(msg);
+                            if !msg.is_empty() {
+                                self.status.set(msg);
+                            }
                             close = true;
                         }
-                        if ui.button("No").clicked() {
+                        if ui.button(cancel_label).clicked() {
                             close = true;
                         }
                     });
@@ -930,7 +963,10 @@ impl eframe::App for App {
         egui::CentralPanel::default().frame(content).show(ui, |ui| match self.tab {
             Tab::Processes => {
                 self.processes.filter = self.search.clone();
-                self.processes.show(ui, &snap);
+                if self.processes.show(ui, &snap) {
+                    self.settings.processes_columns = processes::columns_text(&self.processes.columns);
+                    self.save_settings();
+                }
             }
             Tab::Performance => {
                 self.performance.show(ui, &snap);

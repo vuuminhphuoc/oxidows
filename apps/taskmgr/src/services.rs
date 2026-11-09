@@ -145,9 +145,15 @@ impl State {
             .collect();
         let sort = self.sort;
         view.sort_by(|a, b| sort.apply(sort.key.cmp(a, b)).then_with(|| cmp_text(&a.name, &b.name)));
+        let cursor = self.selected.as_ref().and_then(|name| view.iter().position(|s| &s.name == name));
+        let mut scroll_to = None;
+        if let Some(new_i) = crate::keys::list_keys(ui, view.len(), cursor, |k| view[k].name.clone()) {
+            self.selected = Some(view[new_i].name.clone());
+            scroll_to = Some(new_i);
+        }
         let mut action = None;
         let mut clicked = None;
-        TableBuilder::new(ui)
+        let mut table = TableBuilder::new(ui)
             .resizable(true)
             .sense(egui::Sense::click())
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
@@ -155,7 +161,11 @@ impl State {
             .column(Column::exact(70.0))
             .column(Column::remainder().clip(true))
             .column(Column::exact(90.0))
-            .column(Column::initial(170.0).clip(true))
+            .column(Column::initial(170.0).clip(true));
+        if let Some(i) = scroll_to {
+            table = table.scroll_to_row(i, Some(egui::Align::Center));
+        }
+        table
             .header(SORT_HEADER_HEIGHT, |mut h| {
                 for c in Col::ALL {
                     h.col(|ui| {
