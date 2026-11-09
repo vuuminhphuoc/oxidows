@@ -133,6 +133,10 @@ const IOCTL_DISK_GET_DRIVE_GEOMETRY_EX: u32 = 0x0007_00A0;
 const STORAGE_DEVICE_PROPERTY: u32 = 0;
 const STORAGE_SEEK_PENALTY_PROPERTY: u32 = 7;
 const STORAGE_TEMPERATURE_PROPERTY: u32 = 52;
+const STORAGE_PROTOCOL_SPECIFIC_PROPERTY: u32 = 50;
+const PROTOCOL_TYPE_NVME: u32 = 3;
+const NVME_DATA_TYPE_LOG_PAGE: u32 = 2;
+const NVME_LOG_PAGE_HEALTH_INFO: u32 = 2;
 
 fn ioctl(h: *mut core::ffi::c_void, code: u32, input: &[u8], out: &mut [u8]) -> Option<usize> {
     let mut got = 0u32;
@@ -159,31 +163,71 @@ fn query(property: u32) -> [u8; 12] {
 }
 
 /// Current temperature of physical disk `number` in °C, where the drive reports one (most NVMe
-/// and many SATA SSDs). Read on demand; it takes a single IOCTL.
+/// and many SATA drives). Read on demand; it takes one or two IOCTLs.
 pub fn disk_temperature(number: u32) -> Option<f32> {
     let path: Vec<u16> = format!(r"\\.\PhysicalDrive{number}").encode_utf16().chain(Some(0)).collect();
-    // SAFETY: zero access rights: only a property query is sent.
+    // SAFETY: zero access rights: only property queries are sent.
     let h = unsafe {
         CreateFileW(path.as_ptr(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, null_mut(), OPEN_EXISTING, 0, null_mut())
     };
     if h == INVALID_HANDLE_VALUE {
         return None;
     }
-    // STORAGE_TEMPERATURE_DATA_DESCRIPTOR: a 24-byte header with InfoCount at 12, then 16-byte
-    // STORAGE_TEMPERATURE_INFO entries whose Temperature (i16, °C) sits at offset 2. Entry 0 is the
-    // drive's composite temperature.
-    let mut buf = [0u8; 256];
-    let n = ioctl(h, IOCTL_STORAGE_QUERY_PROPERTY, &query(STORAGE_TEMPERATURE_PROPERTY), &mut buf);
+    // Some NVMe drivers fail the generic temperature property (ERROR_IO_DEVICE) but return the
+    // NVMe health log, which carries the same composite temperature.
+    let t = storage_temperature(h).or_else(|| nvme_temperature(h));
     // SAFETY: handle opened above.
     unsafe { CloseHandle(h) };
-    let n = n?;
+    t
+}
+
+/// StorageDeviceTemperatureProperty: a 24-byte STORAGE_TEMPERATURE_DATA_DESCRIPTOR header with
+/// InfoCount at 12, then 16-byte STORAGE_TEMPERATURE_INFO entries whose Temperature (i16, °C)
+/// sits at offset 2. Entry 0 is the drive's composite temperature.
+fn storage_temperature(h: *mut core::ffi::c_void) -> Option<f32> {
+    let mut buf = [0u8; 256];
+    let n = ioctl(h, IOCTL_STORAGE_QUERY_PROPERTY, &query(STORAGE_TEMPERATURE_PROPERTY), &mut buf)?;
     let count = u16::from_le_bytes([buf[12], buf[13]]);
     if count == 0 || n < 24 + 16 {
         return None;
     }
-    let t = i16::from_le_bytes([buf[26], buf[27]]);
-    // Drives without a sensor report 0 or nonsense.
-    (t > 0 && t < 150).then_some(t as f32)
+    plausible(i16::from_le_bytes([buf[26], buf[27]]) as f32)
+}
+
+/// The NVMe SMART / health information log (page 2), read through
+/// StorageDeviceProtocolSpecificProperty: the query is followed by a 40-byte
+/// STORAGE_PROTOCOL_SPECIFIC_DATA and room for the 512-byte log, which comes back at the same
+/// place (offset 8 + 40). Its bytes 1-2 are the composite temperature in kelvin.
+fn nvme_temperature(h: *mut core::ffi::c_void) -> Option<f32> {
+    const HEADER: usize = 8;
+    const SPECIFIC: usize = 40;
+    const LOG: usize = 512;
+    let mut buf = vec![0u8; HEADER + SPECIFIC + LOG];
+    let mut put = |at: usize, v: u32| buf[at..at + 4].copy_from_slice(&v.to_le_bytes());
+    put(0, STORAGE_PROTOCOL_SPECIFIC_PROPERTY);
+    put(HEADER, PROTOCOL_TYPE_NVME);
+    put(HEADER + 4, NVME_DATA_TYPE_LOG_PAGE);
+    put(HEADER + 8, NVME_LOG_PAGE_HEALTH_INFO);
+    put(HEADER + 16, SPECIFIC as u32); // ProtocolDataOffset, from the start of the specific data
+    put(HEADER + 20, LOG as u32); // ProtocolDataLength
+    let input = buf.clone();
+    let n = ioctl(h, IOCTL_STORAGE_QUERY_PROPERTY, &input, &mut buf)?;
+    let u32_at = |o: usize| u32::from_le_bytes([buf[o], buf[o + 1], buf[o + 2], buf[o + 3]]) as usize;
+    let (offset, len) = (u32_at(HEADER + 16), u32_at(HEADER + 20));
+    let log = HEADER + offset;
+    if len < 3 || n < log + 3 || buf.len() < log + 3 {
+        return None;
+    }
+    let kelvin = u16::from_le_bytes([buf[log + 1], buf[log + 2]]);
+    if kelvin == 0 {
+        return None;
+    }
+    plausible(kelvin as f32 - 273.0)
+}
+
+/// Drives without a sensor report 0 or nonsense.
+fn plausible(t: f32) -> Option<f32> {
+    (t > 0.0 && t < 150.0).then_some(t)
 }
 
 /// Facts about physical disk `number` (as in PDH's "0 C:"). Opening the disk needs no rights.
