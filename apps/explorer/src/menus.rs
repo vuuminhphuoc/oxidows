@@ -20,6 +20,14 @@ pub struct ItemInfo {
     pub shell: bool,
 }
 
+impl ItemInfo {
+    pub fn new(app: &App, e: &explorer_core::Entry, pos: usize, shell: bool) -> Self {
+        let path = app.child(&e.name);
+        let pinned = e.is_dir && app.is_pinned(&path);
+        Self { pos, is_dir: e.is_dir, ext: e.extension(), pinned, shell, path }
+    }
+}
+
 /// Context menu for a file or folder item.
 pub fn item(ui: &mut Ui, info: &ItemInfo, action: &mut Option<Action>) {
     // (1) Icon row for primary commands: Cut, Copy, Rename, Share, Delete

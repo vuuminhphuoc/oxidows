@@ -120,20 +120,25 @@ pub fn tab_bar(app: &mut App, ui: &mut Ui) {
                     close = Some(i);
                 }
                 r.context_menu(|ui| {
-                    if ui_common::MenuItem::new("New tab").shortcut("Ctrl+T").ui(ui).clicked() {
+                    if ui_common::MenuItem::new("New tab").icon(Icon::Add).shortcut("Ctrl+T").ui(ui).clicked() {
                         tab_choice = Some(TabAction::New);
                         ui.close();
                     }
-                    if ui_common::MenuItem::new("Duplicate tab").ui(ui).clicked() {
+                    if ui_common::MenuItem::new("Duplicate tab").icon(Icon::Copy).ui(ui).clicked() {
                         tab_choice = Some(TabAction::Duplicate(i));
                         ui.close();
                     }
-                    if ui_common::MenuItem::new("Move tab to new window").enabled(app.tabs.len() > 1).ui(ui).clicked() {
+                    if ui_common::MenuItem::new("Move tab to new window")
+                        .icon(Icon::NewWindow)
+                        .enabled(app.tabs.len() > 1)
+                        .ui(ui)
+                        .clicked()
+                    {
                         tab_choice = Some(TabAction::MoveToNewWindow(i));
                         ui.close();
                     }
                     ui.separator();
-                    if ui_common::MenuItem::new("Close tab").shortcut("Ctrl+W").ui(ui).clicked() {
+                    if ui_common::MenuItem::new("Close tab").icon(Icon::Close).shortcut("Ctrl+W").ui(ui).clicked() {
                         tab_choice = Some(TabAction::Close(i));
                         ui.close();
                     }
@@ -1481,16 +1486,11 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                         resp.context_menu(|ui| crate::menus::recycle_bin_item(ui, &mut action));
                         return;
                     }
-                    let target = app.child(&e.name);
-                    let info = crate::menus::ItemInfo {
-                        pos,
-                        path: target.clone(),
-                        is_dir: e.is_dir,
-                        ext: e.extension(),
-                        pinned: app.is_pinned(&target),
-                        shell: shell_menus,
-                    };
-                    resp.context_menu(|ui| crate::menus::item(ui, &info, &mut action));
+                    // Built only while the menu is open, not for every row every frame.
+                    resp.context_menu(|ui| {
+                        let info = crate::menus::ItemInfo::new(app, e, pos, shell_menus);
+                        crate::menus::item(ui, &info, &mut action);
+                    });
                 });
             });
         details_band(app, ui, band_start, &drawn, &rows_map);

@@ -506,16 +506,10 @@ pub fn show(
                 if in_bin {
                     resp.context_menu(|ui| crate::menus::recycle_bin_item(ui, action));
                 } else {
-                    let path = app.child(&e.name);
-                    let info = crate::menus::ItemInfo {
-                        pos,
-                        path: path.clone(),
-                        is_dir: e.is_dir,
-                        ext: e.extension(),
-                        pinned: app.is_pinned(&path),
-                        shell: shell_menus,
-                    };
-                    resp.context_menu(|ui| crate::menus::item(ui, &info, action));
+                    resp.context_menu(|ui| {
+                        let info = crate::menus::ItemInfo::new(app, e, pos, shell_menus);
+                        crate::menus::item(ui, &info, action);
+                    });
                 }
             }
         }

@@ -2176,7 +2176,8 @@ impl App {
             // Copy/cut/paste arrive as events, not key presses, in egui.
             for ev in &i.events {
                 match ev {
-                    egui::Event::Copy => events.push("copy"),
+                    // egui also reports Ctrl+Shift+C as Copy; that one copies paths only.
+                    egui::Event::Copy if !events.contains(&"copypath") => events.push("copy"),
                     egui::Event::Cut => events.push("cut"),
                     // On Windows Ctrl+V is read directly (see `ctrl_v_down`), so ignore egui's
                     // text paste there to avoid pasting twice.
