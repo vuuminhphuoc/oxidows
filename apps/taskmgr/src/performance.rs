@@ -34,9 +34,10 @@ pub struct State {
     selected: Res,
     /// Only the resource list, without tabs or details (double-click to leave).
     pub summary: bool,
-    per_core: bool,
-    /// Draw kernel-mode time over the CPU graphs.
-    kernel: bool,
+    /// One graph per logical processor (saved as `cpu_logical`).
+    pub per_core: bool,
+    /// Draw kernel-mode time over the CPU graphs (saved as `cpu_kernel`).
+    pub kernel: bool,
     cpu: CpuInfo,
     /// Addresses of the shown adapter, re-read every few seconds.
     adapter: Option<(String, Instant, AdapterInfo)>,
@@ -49,6 +50,11 @@ pub struct State {
 }
 
 impl State {
+    /// Starts with the CPU page's "Logical processors" / "Show kernel times" checkboxes as saved.
+    pub fn with_cpu_view(per_core: bool, kernel: bool) -> Self {
+        Self { per_core, kernel, ..Self::default() }
+    }
+
     fn temp(&mut self, key: String, read: impl FnOnce() -> Option<f32>) -> Option<f32> {
         match self.temps.get(&key) {
             Some((at, t)) if at.elapsed() < Duration::from_secs(2) => *t,

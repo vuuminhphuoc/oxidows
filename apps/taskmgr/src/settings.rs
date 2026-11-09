@@ -33,6 +33,10 @@ pub struct Settings {
     pub sort_users: String,
     pub sort_details: String,
     pub sort_services: String,
+    /// Performance > CPU: one graph per logical processor, and kernel times drawn over the graphs.
+    /// Task Manager remembers both checkboxes.
+    pub cpu_logical: bool,
+    pub cpu_kernel: bool,
 }
 
 impl Default for Settings {
@@ -53,6 +57,8 @@ impl Default for Settings {
             sort_users: String::new(),
             sort_details: String::new(),
             sort_services: String::new(),
+            cpu_logical: false,
+            cpu_kernel: false,
         }
     }
 }
@@ -87,6 +93,8 @@ impl Settings {
                 "sort_details" => s.sort_details = v.to_string(),
                 "sort_services" => s.sort_services = v.to_string(),
                 "theme" => s.theme = Theme::parse(v),
+                "cpu_logical" => s.cpu_logical = v == "true",
+                "cpu_kernel" => s.cpu_kernel = v == "true",
                 _ => {}
             }
         }
@@ -106,6 +114,7 @@ impl Settings {
             self.values_pct,
             self.details_columns
         );
+        t.push_str(&format!("cpu_logical={}\ncpu_kernel={}\n", self.cpu_logical, self.cpu_kernel));
         for (k, v) in [
             ("sort_processes", &self.sort_processes),
             ("sort_history", &self.sort_history),
@@ -243,6 +252,8 @@ mod tests {
             sort_users: "cpu:desc".into(),
             sort_details: "pid:asc".into(),
             sort_services: "status:desc".into(),
+            cpu_logical: true,
+            cpu_kernel: true,
         };
         assert_eq!(Settings::parse(&s.to_text()), s);
         assert_eq!(Settings::parse("junk\ninterval_ms=abc"), Settings::default());

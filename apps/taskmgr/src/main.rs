@@ -380,7 +380,7 @@ impl App {
                 settings.values_pct,
                 SortBy::parse(&settings.sort_processes, taskmgr_core::SortKey::from_key),
             ),
-            performance: performance::State::default(),
+            performance: performance::State::with_cpu_view(settings.cpu_logical, settings.cpu_kernel),
             history: history::State::new(
                 cc.egui_ctx.clone(),
                 SortBy::parse(&settings.sort_history, history::Sort::from_key),
@@ -763,7 +763,15 @@ impl eframe::App for App {
         let sorts = self.sorts();
         egui::CentralPanel::default().frame(content).show(ui, |ui| match self.tab {
             Tab::Processes => self.processes.show(ui, &snap),
-            Tab::Performance => self.performance.show(ui, &snap),
+            Tab::Performance => {
+                self.performance.show(ui, &snap);
+                let p = &self.performance;
+                if (p.per_core, p.kernel) != (self.settings.cpu_logical, self.settings.cpu_kernel) {
+                    self.settings.cpu_logical = p.per_core;
+                    self.settings.cpu_kernel = p.kernel;
+                    self.save_settings();
+                }
+            }
             Tab::AppHistory => self.history.show(ui, self.elevated),
             Tab::Startup => self.startup.show(ui, &snap),
             Tab::Users => self.users.show(ui, &snap),
@@ -789,6 +797,9 @@ impl eframe::App for App {
                         INTERVAL_MS.store(s.interval_ms, Ordering::Relaxed);
                         self.processes.set_group(s.group_by_type);
                         self.processes.percent = s.values_pct;
+                        // "Reset" also clears the Performance checkboxes.
+                        self.performance.per_core = s.cpu_logical;
+                        self.performance.kernel = s.cpu_kernel;
                         self.save_settings();
                     }
                     // As in Windows 11's Task Manager, About closes the Settings page.

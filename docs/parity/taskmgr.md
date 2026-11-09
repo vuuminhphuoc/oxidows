@@ -54,10 +54,10 @@ as the feature.
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| CPU graph 60 s, per-logical-processor view | done | |
+| CPU graph 60 s, per-logical-processor view | done | choice saved in taskmgr.ini (`cpu_logical`) |
 | CPU utilization, speed, processes, threads, handles, up time | done | |
 | CPU name, base speed, sockets, cores, logical processors, L1/L2/L3 cache, virtualization | done | |
-| Kernel times overlay | done | checkbox on the CPU page, also per processor |
+| Kernel times overlay | done | checkbox on the CPU page, also per processor; saved (`cpu_kernel`) |
 | Memory graph, in use, available, committed | done | |
 | Memory cached, paged / non-paged pool, composition bar, hardware reserved | done | `GetPerformanceInfo` |
 | Memory speed, slots, form factor | done | SMBIOS type 17 |
