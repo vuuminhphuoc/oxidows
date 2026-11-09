@@ -6,11 +6,13 @@ use std::collections::{HashMap, HashSet};
 use egui::{Color32, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 use taskmgr_core::{
-    ProcGroup, ProcessRow, Snapshot, SortKey, display_name, format_bits_per_sec, format_bytes, group_of, sorted_view,
+    ColumnTotals, ProcGroup, ProcessRow, Snapshot, SortKey, display_name, format_bits_per_sec, format_bytes, group_of,
+    sorted_view,
 };
 use taskmgr_sys::PriorityClass;
-use ui_common::{SORT_HEADER_HEIGHT, SortBy, sort_header};
+use ui_common::{SORT_HEADER_TOTAL_HEIGHT, SortBy, sort_header_total};
 
+use crate::icons::Icons;
 use crate::{Dialog, Status};
 
 pub struct State {
@@ -26,6 +28,7 @@ pub struct State {
     pub percent: bool,
     windir: String,
     status: Status,
+    icons: Icons,
 }
 
 enum Line {
@@ -267,7 +270,7 @@ fn heat(ui: &Ui, fraction: f32) -> Color32 {
 }
 
 impl State {
-    pub fn new(status: Status, group: bool, percent: bool, sort: Option<SortBy<SortKey>>) -> Self {
+    pub fn new(status: Status, icons: Icons, group: bool, percent: bool, sort: Option<SortBy<SortKey>>) -> Self {
         Self {
             percent,
             filter: String::new(),
@@ -278,6 +281,7 @@ impl State {
             expanded: HashSet::new(),
             windir: std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into()),
             status,
+            icons,
         }
     }
 
@@ -354,6 +358,7 @@ impl State {
         let link_bps: f64 = sys.adapters.iter().map(|a| a.link_bps as f64).sum();
         let net_pct = |bps: f64| if link_bps <= 0.0 { 0.0 } else { bps * 8.0 * 100.0 / link_bps };
         let percent = self.percent;
+        let totals = ColumnTotals::of(sys);
         let row_h = 22.0;
 
         let mut clicked_sort = None;
@@ -374,7 +379,7 @@ impl State {
             .column(Column::exact(60.0))
             .columns(Column::exact(96.0), 2)
             .column(Column::initial(150.0).clip(true))
-            .header(SORT_HEADER_HEIGHT, |mut h| {
+            .header(SORT_HEADER_TOTAL_HEIGHT, |mut h| {
                 for (key, title) in [
                     (SortKey::Name, "Name"),
                     (SortKey::Status, "Status"),
@@ -388,8 +393,18 @@ impl State {
                     (SortKey::PowerTrend, "Power usage trend"),
                     (SortKey::Publisher, "Publisher"),
                 ] {
+                    // Task Manager prints the machine's total above these columns.
+                    let total = match key {
+                        SortKey::Cpu => Some(totals.cpu),
+                        SortKey::Memory => Some(totals.memory),
+                        SortKey::Disk => Some(totals.disk),
+                        SortKey::Network => Some(totals.network),
+                        SortKey::Gpu => Some(totals.gpu),
+                        _ => None,
+                    }
+                    .map(ColumnTotals::label);
                     h.col(|ui| {
-                        if sort_header(ui, title, self.sort.arrow(key)).clicked() {
+                        if sort_header_total(ui, title, total.as_deref(), self.sort.arrow(key)).clicked() {
                             clicked_sort = Some(key);
                         }
                     });
@@ -430,13 +445,16 @@ impl State {
                                 if ui.small_button(if open { "v" } else { ">" }).clicked() {
                                     toggle_app = Some(p.pid);
                                 }
+                                self.icons.show(ui, p);
                                 ui.label(format!("{} ({})", display_name(p), n + 1)).on_hover_text(&p.name);
                             }
                             Some(_) => {
                                 ui.add_space(18.0);
+                                self.icons.show(ui, p);
                                 ui.label(display_name(p)).on_hover_text(&p.name);
                             }
                             None => {
+                                self.icons.show(ui, p);
                                 ui.label(display_name(p)).on_hover_text(&p.name);
                             }
                         }

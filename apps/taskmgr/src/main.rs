@@ -5,6 +5,7 @@
 mod details;
 mod graph;
 mod history;
+mod icons;
 mod performance;
 mod processes;
 mod services;
@@ -232,6 +233,8 @@ struct App {
     services: services::State,
     startup: startup::State,
     users: users::State,
+    /// Program icons, shared by Processes, Details and Users.
+    icons: icons::Icons,
     settings: settings::Settings,
     /// The About section at the bottom of Settings, with "Check for updates".
     updater: ui_common::Updater,
@@ -377,6 +380,7 @@ impl App {
         let (tx, rx) = channel();
         spawn_sampler(cc.egui_ctx.clone(), tx);
         let status = Status::default();
+        let icons = icons::Icons::new(&cc.egui_ctx);
         Self {
             rx,
             snapshot: Arc::default(),
@@ -385,17 +389,19 @@ impl App {
             elevated: taskmgr_sys::is_elevated(),
             processes: processes::State::new(
                 status.clone(),
+                icons.clone(),
                 settings.group_by_type,
                 settings.values_pct,
                 SortBy::parse(&settings.sort_processes, taskmgr_core::SortKey::from_key),
             ),
-            performance: performance::State::default(),
+            performance: performance::State::with_cpu_view(settings.cpu_logical, settings.cpu_kernel),
             history: history::State::new(
                 cc.egui_ctx.clone(),
                 SortBy::parse(&settings.sort_history, history::Sort::from_key),
             ),
             details: details::State::new(
                 status.clone(),
+                icons.clone(),
                 details::parse_columns(&settings.details_columns),
                 SortBy::parse(&settings.sort_details, details::Col::from_key),
             ),
@@ -405,7 +411,12 @@ impl App {
                 SortBy::parse(&settings.sort_services, services::Col::from_key),
             ),
             startup: startup::State::new(status.clone(), SortBy::parse(&settings.sort_startup, startup::Col::from_key)),
-            users: users::State::new(status.clone(), SortBy::parse(&settings.sort_users, users::Col::from_key)),
+            users: users::State::new(
+                status.clone(),
+                icons.clone(),
+                SortBy::parse(&settings.sort_users, users::Col::from_key),
+            ),
+            icons,
             settings,
             updater: ui_common::Updater::new(ui_common::AppInfo {
                 name: "Task Manager",
@@ -688,6 +699,7 @@ impl eframe::App for App {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.drain();
+        self.icons.poll(ui.ctx());
         // Started by the run-as-administrator task: take the foreground once the window shows
         // (the start that handed over allowed it).
         if ui.ctx().cumulative_pass_nr() >= 2 && FOCUS_ON_START.swap(false, Ordering::Relaxed) {
@@ -711,11 +723,14 @@ impl eframe::App for App {
             self.frames += 1;
             self.frame_cpu += frame.info().cpu_usage.unwrap_or(0.0);
             if self.frames_since.elapsed() >= Duration::from_secs(5) {
+                let (icons_ready, icons_asked) = self.icons.counts();
                 eprintln!(
-                    "ui: {} frames in {:.1} s, {:.1} ms app time each",
+                    "ui: {} frames in {:.1} s, {:.1} ms app time each; icons {icons_ready} of {icons_asked} loaded; \
+                     per-process network {}",
                     self.frames,
                     self.frames_since.elapsed().as_secs_f64(),
-                    self.frame_cpu * 1000.0 / self.frames as f32
+                    self.frame_cpu * 1000.0 / self.frames as f32,
+                    if self.snapshot.system.per_process_net { "on" } else { "off" },
                 );
                 (self.frames, self.frame_cpu, self.frames_since) = (0, 0.0, Instant::now());
             }
@@ -777,7 +792,15 @@ impl eframe::App for App {
         let sorts = self.sorts();
         egui::CentralPanel::default().frame(content).show(ui, |ui| match self.tab {
             Tab::Processes => self.processes.show(ui, &snap),
-            Tab::Performance => self.performance.show(ui, &snap),
+            Tab::Performance => {
+                self.performance.show(ui, &snap);
+                let p = &self.performance;
+                if (p.per_core, p.kernel) != (self.settings.cpu_logical, self.settings.cpu_kernel) {
+                    self.settings.cpu_logical = p.per_core;
+                    self.settings.cpu_kernel = p.kernel;
+                    self.save_settings();
+                }
+            }
             Tab::AppHistory => self.history.show(ui, self.elevated),
             Tab::Startup => self.startup.show(ui, &snap),
             Tab::Users => self.users.show(ui, &snap),
@@ -803,6 +826,9 @@ impl eframe::App for App {
                         INTERVAL_MS.store(s.interval_ms, Ordering::Relaxed);
                         self.processes.set_group(s.group_by_type);
                         self.processes.percent = s.values_pct;
+                        // "Reset" also clears the Performance checkboxes.
+                        self.performance.per_core = s.cpu_logical;
+                        self.performance.kernel = s.cpu_kernel;
                         self.save_settings();
                     }
                     // As in Windows 11's Task Manager, About closes the Settings page.

@@ -119,6 +119,29 @@ pub mod tray {
 
 /// App history from Windows' resource usage database (SRUM). Needs administrator; takes seconds
 /// (it reads a shadow copy), so call it off the UI thread.
+/// A small icon as straight-alpha RGBA pixels, top row first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IconImage {
+    pub width: usize,
+    pub height: usize,
+    pub rgba: Vec<u8>,
+}
+
+/// The program icon shown next to a process (the shell's small icon of its exe). An empty
+/// `path` gives the generic program icon. None off Windows. Slow (reads the file): call it
+/// off the UI thread.
+pub fn exe_icon(path: &str) -> Option<IconImage> {
+    #[cfg(windows)]
+    {
+        imp::exe_icon(path)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        None
+    }
+}
+
 pub fn app_history() -> io::Result<taskmgr_core::AppHistory> {
     imp::app_history()
 }

@@ -9,6 +9,7 @@ use taskmgr_core::{ProcessRow, Snapshot, format_bits_per_sec, format_bytes, prio
 use ui_common::{SORT_HEADER_HEIGHT, SortBy, sort_header};
 
 use crate::Status;
+use crate::icons::Icons;
 use crate::processes::{NET_HINT, end_task, process_menu};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -270,10 +271,13 @@ impl Col {
         }
     }
 
-    fn cell(self, ui: &mut Ui, p: &ProcessRow, net_on: bool) {
+    fn cell(self, ui: &mut Ui, p: &ProcessRow, net_on: bool, icons: &Icons) {
         let dash = |s: &str| if s.is_empty() { "-".to_string() } else { s.to_string() };
         let text = match self {
-            Col::Name => p.name.clone(),
+            Col::Name => {
+                icons.show(ui, p);
+                p.name.clone()
+            }
             Col::Pid => p.pid.to_string(),
             Col::Status => (if p.suspended {
                 "Suspended"
@@ -359,18 +363,20 @@ pub struct State {
     selected: Option<(u32, String)>,
     scroll_to: Option<u32>,
     status: Status,
+    icons: Icons,
     pub columns: Vec<Col>,
     picking: bool,
 }
 
 impl State {
-    pub fn new(status: Status, columns: Vec<Col>, sort: Option<SortBy<Col>>) -> Self {
+    pub fn new(status: Status, icons: Icons, columns: Vec<Col>, sort: Option<SortBy<Col>>) -> Self {
         Self {
             filter: String::new(),
             sort: sort.unwrap_or(SortBy::new(Col::Name, false)),
             selected: None,
             scroll_to: None,
             status,
+            icons,
             columns,
             picking: false,
         }
@@ -464,7 +470,7 @@ impl State {
                     let p = view[row.index()];
                     row.set_selected(self.selected.as_ref().is_some_and(|(pid, _)| *pid == p.pid));
                     for &c in &cols {
-                        row.col(|ui| c.cell(ui, p, net_on));
+                        row.col(|ui| c.cell(ui, p, net_on, &self.icons));
                     }
                     let resp = row.response();
                     if resp.clicked() {

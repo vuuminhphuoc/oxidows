@@ -5,9 +5,12 @@ use std::collections::HashSet;
 
 use egui::{RichText, Ui};
 use egui_extras::{Column, TableBuilder};
-use taskmgr_core::{ProcessRow, Snapshot, UserUsage, display_name, format_bits_per_sec, format_bytes, users_view};
-use ui_common::{SORT_HEADER_HEIGHT, SortBy, cmp_text, sort_header};
+use taskmgr_core::{
+    ColumnTotals, ProcessRow, Snapshot, UserUsage, display_name, format_bits_per_sec, format_bytes, users_view,
+};
+use ui_common::{SORT_HEADER_TOTAL_HEIGHT, SortBy, cmp_text, sort_header_total};
 
+use crate::icons::Icons;
 use crate::{ConfirmAction, Dialog, Status};
 
 /// The columns, in order; any of them sorts the users, and the processes under an expanded user
@@ -109,6 +112,7 @@ pub struct State {
     selected: Option<u32>,
     pub sort: SortBy<Col>,
     status: Status,
+    icons: Icons,
 }
 
 enum Line {
@@ -117,8 +121,14 @@ enum Line {
 }
 
 impl State {
-    pub fn new(status: Status, sort: Option<SortBy<Col>>) -> Self {
-        Self { expanded: HashSet::new(), selected: None, sort: sort.unwrap_or(SortBy::new(Col::User, false)), status }
+    pub fn new(status: Status, icons: Icons, sort: Option<SortBy<Col>>) -> Self {
+        Self {
+            expanded: HashSet::new(),
+            selected: None,
+            sort: sort.unwrap_or(SortBy::new(Col::User, false)),
+            status,
+            icons,
+        }
     }
 
     pub fn show(&mut self, ui: &mut Ui, snap: &Snapshot) {
@@ -180,6 +190,7 @@ impl State {
         }
         let mem_total = snap.system.mem_total.max(1) as f64;
         let net_on = snap.system.per_process_net;
+        let totals = ColumnTotals::of(&snap.system);
         let mut toggle = None;
         let mut clicked = None;
         TableBuilder::new(ui)
@@ -195,10 +206,18 @@ impl State {
             .column(Column::exact(130.0))
             .column(Column::exact(90.0))
             .column(Column::remainder())
-            .header(SORT_HEADER_HEIGHT, |mut h| {
+            .header(SORT_HEADER_TOTAL_HEIGHT, |mut h| {
                 for c in Col::ALL {
+                    let total = match c {
+                        Col::Cpu => Some(totals.cpu),
+                        Col::Memory => Some(totals.memory),
+                        Col::Disk => Some(totals.disk),
+                        Col::Network => Some(totals.network),
+                        _ => None,
+                    }
+                    .map(ColumnTotals::label);
                     h.col(|ui| {
-                        if sort_header(ui, c.title(), self.sort.arrow(c)).clicked() {
+                        if sort_header_total(ui, c.title(), total.as_deref(), self.sort.arrow(c)).clicked() {
                             clicked = Some(c);
                         }
                     });
@@ -247,6 +266,7 @@ impl State {
                         let p = &snap.processes[i];
                         row.col(|ui| {
                             ui.add_space(18.0);
+                            self.icons.show(ui, p);
                             ui.label(display_name(p));
                         });
                         row.col(|ui| {
