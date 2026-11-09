@@ -8,6 +8,7 @@ mod net;
 mod procinfo;
 mod services;
 mod sessions;
+mod single;
 mod srum;
 mod startup;
 pub mod tray;
@@ -27,6 +28,7 @@ pub use procinfo::{
 };
 pub use services::{list_services, service_control};
 pub use sessions::{disconnect_session, list_sessions, logoff_session};
+pub use single::claim as single_instance;
 
 /// Firmware ("BIOS") time of the last boot in milliseconds, as Startup apps shows it.
 pub fn last_bios_ms() -> Option<u32> {

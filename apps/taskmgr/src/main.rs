@@ -761,6 +761,11 @@ fn main() -> eframe::Result {
         );
         std::process::exit(code);
     }
+    // One Task Manager at a time, like Windows': a second start brings the open window forward.
+    let restarted = std::env::args().any(|a| a == "--restarted");
+    if !taskmgr_sys::single_instance(restarted) {
+        return Ok(());
+    }
     // OpenGL where there is a GPU driver, wgpu (WARP) otherwise; see `ui_common::choose_renderer`.
     let (renderer, auto) = ui_common::choose_renderer();
     let r = run(renderer);
