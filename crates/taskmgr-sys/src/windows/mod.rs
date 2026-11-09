@@ -3,6 +3,7 @@
 
 mod adapters;
 mod admin_task;
+pub mod fps;
 mod gpu;
 mod hw;
 mod icon;
@@ -338,6 +339,7 @@ fn all_threads_suspended(bytes: &[u8], offset: usize, p: &SystemProcessInformati
 /// Stops background tracing started by the collector.
 pub fn shutdown() {
     net::stop();
+    fps::stop();
     tray::remove();
 }
 

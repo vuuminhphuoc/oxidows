@@ -117,6 +117,69 @@ pub mod tray {
     }
 }
 
+/// Frames per second of the apps drawing with DirectX (Windows only; needs administrator).
+pub mod fps {
+    pub use taskmgr_core::fps::{FpsStatus, RawFps};
+
+    /// Starts recording present calls the first time; afterwards returns how that went.
+    pub fn start() -> FpsStatus {
+        #[cfg(windows)]
+        {
+            super::windows::fps::start()
+        }
+        #[cfg(not(windows))]
+        {
+            if fake() { FpsStatus::Running } else { FpsStatus::Unavailable }
+        }
+    }
+
+    /// Recent present times per process. Empty until [`start`] has returned `Running`.
+    pub fn read() -> Vec<RawFps> {
+        #[cfg(windows)]
+        {
+            super::windows::fps::read()
+        }
+        #[cfg(not(windows))]
+        {
+            if fake() { fake_frames() } else { Vec::new() }
+        }
+    }
+
+    /// OXI_TASKMGR_FAKE_FPS=1 (off Windows): made-up frames for the parent process (about 144
+    /// FPS with a stutter) and this one, so the page can be laid out and screenshotted.
+    #[cfg(not(windows))]
+    fn fake() -> bool {
+        std::env::var_os("OXI_TASKMGR_FAKE_FPS").is_some()
+    }
+
+    #[cfg(not(windows))]
+    fn fake_frames() -> Vec<RawFps> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
+        let frames = |fps: f64, wobble: f64| -> Vec<f64> {
+            let mut t = now - taskmgr_core::fps::WINDOW_SECS;
+            let mut out = Vec::new();
+            let mut i = 0u32;
+            while t < now {
+                out.push(t);
+                i += 1;
+                let jitter = (f64::from(i) * 0.7 + now).sin() * wobble;
+                t += (1.0 + jitter) / fps + if i % 300 == 0 { 0.03 } else { 0.0 };
+            }
+            out
+        };
+        vec![
+            RawFps {
+                pid: std::os::unix::process::parent_id(),
+                api: Default::default(),
+                times: frames(144.0, 0.15),
+                now,
+            },
+            RawFps { pid: std::process::id(), api: Default::default(), times: frames(2.0, 0.0), now },
+        ]
+    }
+}
+
 /// App history from Windows' resource usage database (SRUM). Needs administrator; takes seconds
 /// (it reads a shadow copy), so call it off the UI thread.
 /// A small icon as straight-alpha RGBA pixels, top row first.

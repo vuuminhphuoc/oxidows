@@ -28,6 +28,8 @@ enum Res {
     Adapter(usize),
     /// Index into `gpus`; `usize::MAX` = the combined figure when GPUs cannot be told apart.
     Gpu(usize),
+    /// Frames per second of the app drawing the most (not in Windows' Task Manager).
+    Fps,
 }
 
 pub struct State {
@@ -47,6 +49,7 @@ pub struct State {
     memory: Option<MemoryInfo>,
     /// Temperatures by "disk N" / GPU LUID, re-read every two seconds.
     temps: std::collections::HashMap<String, (Instant, Option<f32>)>,
+    fps: crate::fps::State,
 }
 
 impl State {
@@ -81,6 +84,7 @@ impl Default for State {
             _ if v.starts_with("disk") => Res::Disk(n("disk")),
             _ if v.starts_with("net") => Res::Adapter(n("net")),
             _ if v.starts_with("gpu") => Res::Gpu(n("gpu")),
+            "fps" => Res::Fps,
             _ => Res::Cpu,
         };
         Self {
@@ -93,6 +97,7 @@ impl Default for State {
             disk_info: Default::default(),
             memory: None,
             temps: Default::default(),
+            fps: Default::default(),
         }
     }
 }
@@ -277,6 +282,8 @@ impl State {
                 });
             }
         }
+        let (value, ring, max) = self.fps.entry(snap);
+        entries.push(Entry { res: Res::Fps, title: "FPS".into(), value, ring, max, color: crate::fps::COLOR });
         if !entries.iter().any(|e| e.res == self.selected) {
             self.selected = Res::Cpu;
         }
@@ -307,6 +314,7 @@ impl State {
             let big = Vec2::new(w, (avail_h - 290.0).max(140.0));
             let summary = match self.selected {
                 Res::Cpu => self.cpu_view(ui, snap, w, big),
+                Res::Fps => self.fps.view(ui, snap, big),
                 Res::Memory => {
                     let m = self
                         .memory
@@ -655,7 +663,7 @@ fn bits_per_sec(v: f32) -> String {
     format_bits_per_sec(v as f64)
 }
 
-fn header(ui: &mut Ui, title: &str, right: &str) {
+pub fn header(ui: &mut Ui, title: &str, right: &str) {
     ui.horizontal(|ui| {
         ui.heading(title);
         if !right.is_empty() {
@@ -694,7 +702,7 @@ fn composition(ui: &mut Ui, snap: &Snapshot) {
 }
 
 /// Figures grid; returns them as text for Copy.
-fn stats(ui: &mut Ui, items: &[(&str, String)]) -> String {
+pub fn stats(ui: &mut Ui, items: &[(&str, String)]) -> String {
     ui.add_space(8.0);
     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
     egui::Grid::new("stats").min_col_width(120.0).spacing([24.0, 6.0]).show(ui, |ui| {
