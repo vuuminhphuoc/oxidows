@@ -36,6 +36,15 @@ static INTERVAL_MS: AtomicU64 = AtomicU64::new(1000);
 /// The sampler reads services / sessions only while their tab is open.
 static WANT_SERVICES: AtomicBool = AtomicBool::new(false);
 static WANT_SESSIONS: AtomicBool = AtomicBool::new(false);
+/// Started by the run-as-administrator task: the window must take the foreground itself.
+static FOCUS_ON_START: AtomicBool = AtomicBool::new(false);
+/// The command line of the start that handed over to the task (it can't pass one on).
+static HANDED_ARGS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+/// This start's command line, after the program name: the one handed over, if any.
+fn launch_args() -> Vec<String> {
+    HANDED_ARGS.get().cloned().unwrap_or_else(|| std::env::args().skip(1).collect())
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Tab {
@@ -98,7 +107,7 @@ impl Tab {
         std::env::var("OXI_TASKMGR_TAB")
             .ok()
             .and_then(|v| Tab::find(&v))
-            .or_else(|| tab_from_args(std::env::args().skip(1)))
+            .or_else(|| tab_from_args(launch_args()))
             .or_else(|| Tab::find(default_tab))
             .unwrap_or(Tab::Processes)
     }
@@ -679,6 +688,11 @@ impl eframe::App for App {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.drain();
+        // Started by the run-as-administrator task: take the foreground once the window shows
+        // (the start that handed over allowed it).
+        if ui.ctx().cumulative_pass_nr() >= 2 && FOCUS_ON_START.swap(false, Ordering::Relaxed) {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
         if !self.tray
             && let Ok(h) = raw_window_handle::HasWindowHandle::window_handle(frame)
         {
@@ -828,10 +842,36 @@ fn main() -> eframe::Result {
         );
         std::process::exit(code);
     }
+    // Helpers the Settings page runs elevated to add or remove the run-as-administrator task.
+    if let Some(on) = std::env::args().skip(1).find_map(|a| match a.as_str() {
+        "--admin-task-on" => Some(true),
+        "--admin-task-off" => Some(false),
+        _ => None,
+    }) {
+        std::process::exit(match taskmgr_sys::set_admin_task(on) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        });
+    }
     // One Task Manager at a time, like Windows': a second start brings the open window forward.
     let restarted = std::env::args().any(|a| a == "--restarted");
-    if !taskmgr_sys::single_instance(restarted) {
+    let from_task = std::env::args().any(|a| a == "--from-task");
+    if !taskmgr_sys::single_instance(restarted || from_task) {
         return Ok(());
+    }
+    if from_task {
+        take_handed_args();
+        FOCUS_ON_START.store(true, Ordering::Relaxed);
+    } else if !restarted && !taskmgr_sys::is_elevated() {
+        start_as_admin_if_set();
+    }
+    if std::env::args().any(|a| a == "--fix-admin-task") && taskmgr_sys::is_elevated() {
+        // The task was missing (removed, or this exe moved) and the UAC prompt stood in for it:
+        // put it back, so the next start needs no prompt again.
+        thread::spawn(|| taskmgr_sys::set_admin_task(true));
     }
     // OpenGL where there is a GPU driver, wgpu (WARP) otherwise; see `ui_common::choose_renderer`.
     let (renderer, auto) = ui_common::choose_renderer();
@@ -846,6 +886,51 @@ fn main() -> eframe::Result {
         }
     }
     r
+}
+
+/// Settings > Run as administrator: hands this start over to an elevated instance (which waits
+/// for this one to exit) and exits. Goes on, not elevated, if that is off or was refused.
+fn start_as_admin_if_set() {
+    let mode = settings::Settings::load().run_as_admin;
+    if mode == settings::AdminMode::Off {
+        return;
+    }
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if mode == settings::AdminMode::Task {
+        let handoff = settings::handoff_path();
+        if let Some(p) = &handoff {
+            let _ = std::fs::write(p, args.join("\n"));
+        }
+        if taskmgr_sys::run_admin_task().is_ok() {
+            std::process::exit(0);
+        }
+        if let Some(p) = &handoff {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+    let quoted = args.iter().map(|a| if a.contains(' ') { format!("\"{a}\"") } else { a.clone() });
+    let mut params = vec!["--restarted".to_string()];
+    if mode == settings::AdminMode::Task {
+        params.push("--fix-admin-task".into());
+    }
+    params.extend(quoted);
+    if taskmgr_sys::start_elevated(&params.join(" ")).is_ok() {
+        std::process::exit(0);
+    }
+}
+
+/// Reads (and removes) the command line [`start_as_admin_if_set`] left for the task's instance.
+/// Only a fresh one: an old file is from a start whose task never ran.
+fn take_handed_args() {
+    let Some(p) = settings::handoff_path() else { return };
+    let fresh = std::fs::metadata(&p)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age < Duration::from_secs(30));
+    let text = if fresh { std::fs::read_to_string(&p).unwrap_or_default() } else { String::new() };
+    let _ = std::fs::remove_file(&p);
+    let _ = HANDED_ARGS.set(text.lines().filter(|l| !l.is_empty()).map(str::to_string).collect());
 }
 
 fn run(renderer: ui_common::Renderer) -> eframe::Result {

@@ -3,11 +3,61 @@
 
 use std::path::PathBuf;
 
-use egui::Ui;
+use std::sync::{Arc, Mutex};
+
+use egui::{RichText, Ui};
 
 use crate::Status;
 
 pub use ui_common::Theme;
+
+/// Settings > Run as administrator: how Task Manager starts when it is not elevated already.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum AdminMode {
+    /// As Windows' own: elevated only through "Run as administrator".
+    #[default]
+    Off,
+    /// Starts itself again through the UAC prompt every time.
+    Ask,
+    /// Starts itself again through a scheduled task that has the user's full token: no prompt.
+    Task,
+}
+
+impl AdminMode {
+    pub const ALL: [AdminMode; 3] = [AdminMode::Off, AdminMode::Ask, AdminMode::Task];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            AdminMode::Off => "off",
+            AdminMode::Ask => "ask",
+            AdminMode::Task => "task",
+        }
+    }
+
+    pub fn parse(v: &str) -> Self {
+        Self::ALL.into_iter().find(|m| m.key() == v).unwrap_or_default()
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AdminMode::Off => "Only when asked",
+            AdminMode::Ask => "Always, with a UAC prompt",
+            AdminMode::Task => "Always, without a prompt",
+        }
+    }
+
+    fn hint(self) -> &'static str {
+        match self {
+            AdminMode::Off => "Use \"Run as administrator\" at the top of the window when you need it",
+            AdminMode::Ask => "Every start asks for administrator rights through UAC",
+            AdminMode::Task => {
+                "A scheduled task (Task Scheduler > oxidows) starts Task Manager with your full rights, so no \
+                 prompt appears. Setting it up asks once. Any program running as you can then start this exe \
+                 as administrator too."
+            }
+        }
+    }
+}
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Settings {
@@ -20,6 +70,7 @@ pub struct Settings {
     /// Minimize after "Switch to".
     pub minimize_on_use: bool,
     pub theme: Theme,
+    pub run_as_admin: AdminMode,
     pub group_by_type: bool,
     /// Memory, Disk and Network on the Processes page as percentages.
     pub values_pct: bool,
@@ -44,6 +95,7 @@ impl Default for Settings {
             hide_when_minimized: false,
             minimize_on_use: false,
             theme: Theme::System,
+            run_as_admin: AdminMode::Off,
             group_by_type: true,
             values_pct: false,
             details_columns: crate::details::columns_text(&crate::details::Col::DEFAULT),
@@ -55,6 +107,12 @@ impl Default for Settings {
             sort_services: String::new(),
         }
     }
+}
+
+/// Where a start that hands over to the elevated task leaves its command line (the task can't
+/// pass one on): `/startup` from Settings > Apps > Startup, for example.
+pub fn handoff_path() -> Option<PathBuf> {
+    Some(path()?.with_file_name("taskmgr-launch.txt"))
 }
 
 fn path() -> Option<PathBuf> {
@@ -87,6 +145,7 @@ impl Settings {
                 "sort_details" => s.sort_details = v.to_string(),
                 "sort_services" => s.sort_services = v.to_string(),
                 "theme" => s.theme = Theme::parse(v),
+                "run_as_admin" => s.run_as_admin = AdminMode::parse(v),
                 _ => {}
             }
         }
@@ -113,6 +172,7 @@ impl Settings {
             ("sort_users", &self.sort_users),
             ("sort_details", &self.sort_details),
             ("sort_services", &self.sort_services),
+            ("run_as_admin", &self.run_as_admin.key().to_string()),
         ] {
             if !v.is_empty() {
                 t.push_str(&format!("{k}={v}\n"));
@@ -203,6 +263,12 @@ pub fn show(
         });
         ui.end_row();
 
+        ui.label("Run as administrator");
+        if let Some(msg) = admin_mode(ui, s) {
+            status.set(msg);
+        }
+        ui.end_row();
+
         ui.label("Default app");
         if let Some(msg) = default_app.show(
             ui,
@@ -216,9 +282,76 @@ pub fn show(
     });
     ui.add_space(12.0);
     if ui.button("Reset to defaults").clicked() {
-        *s = Settings::default();
+        // Like the default app, this one changes Windows (a scheduled task): it stays as it is.
+        *s = Settings { run_as_admin: s.run_as_admin, ..Settings::default() };
     }
     *s != before
+}
+
+/// A change of [`AdminMode`] that is adding or removing the task (it may be waiting on the UAC
+/// prompt, so it runs on its own thread): the mode asked for, and the result once it is done.
+type AdminChange = Arc<Mutex<(AdminMode, Option<std::io::Result<()>>)>>;
+
+/// The "Run as administrator" choice. Going to or from [`AdminMode::Task`] adds or removes the
+/// task first, and the setting only changes when that worked. Returns a status line, if any.
+fn admin_mode(ui: &mut Ui, s: &mut Settings) -> Option<String> {
+    let id = egui::Id::new("admin_mode_change");
+    let mut status = None;
+    let running = ui.data(|d| d.get_temp::<AdminChange>(id));
+    if let Some(change) = &running {
+        let done = change.lock().ok().and_then(|mut c| c.1.take().map(|r| (c.0, r)));
+        if let Some((mode, r)) = done {
+            ui.data_mut(|d| d.remove::<AdminChange>(id));
+            match r {
+                Ok(()) => {
+                    s.run_as_admin = mode;
+                    status = Some(format!("Run as administrator: {}", mode.label().to_lowercase()));
+                }
+                Err(e) => status = Some(format!("Could not change how Task Manager starts: {e}")),
+            }
+        } else {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(150));
+        }
+    }
+    let busy = ui.data(|d| d.get_temp::<AdminChange>(id)).is_some();
+    ui.vertical(|ui| {
+        ui.horizontal(|ui| {
+            let mut want = s.run_as_admin;
+            ui.add_enabled_ui(cfg!(windows) && !busy, |ui| {
+                egui::ComboBox::from_id_salt("run_as_admin").selected_text(want.label()).show_ui(ui, |ui| {
+                    for m in AdminMode::ALL {
+                        ui.selectable_value(&mut want, m, m.label()).on_hover_text(m.hint());
+                    }
+                });
+            });
+            if busy {
+                ui.spinner();
+                ui.label(
+                    RichText::new("Waiting for the administrator prompt…")
+                        .color(ui_common::Palette::of(ui).text_secondary),
+                );
+            }
+            if want != s.run_as_admin {
+                if (want == AdminMode::Task) == (s.run_as_admin == AdminMode::Task) {
+                    s.run_as_admin = want; // no task to add or remove
+                } else {
+                    let change: AdminChange = Arc::new(Mutex::new((want, None)));
+                    let c = change.clone();
+                    let ctx = ui.ctx().clone();
+                    std::thread::spawn(move || {
+                        let r = taskmgr_sys::set_admin_task_as_admin(want == AdminMode::Task);
+                        if let Ok(mut c) = c.lock() {
+                            c.1 = Some(r);
+                        }
+                        ctx.request_repaint();
+                    });
+                    ui.data_mut(|d| d.insert_temp(id, change));
+                }
+            }
+        });
+        ui.label(RichText::new(s.run_as_admin.hint()).color(ui_common::Palette::of(ui).text_secondary));
+    });
+    status
 }
 
 #[cfg(test)]
@@ -234,6 +367,7 @@ mod tests {
             hide_when_minimized: true,
             minimize_on_use: true,
             theme: Theme::Dark,
+            run_as_admin: AdminMode::Task,
             group_by_type: false,
             values_pct: true,
             details_columns: "name,pid,cmdline".into(),

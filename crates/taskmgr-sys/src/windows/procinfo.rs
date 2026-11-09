@@ -219,12 +219,17 @@ pub fn is_elevated() -> bool {
 
 /// Starts this exe again through the UAC prompt. The caller exits on success.
 pub fn restart_elevated() -> io::Result<()> {
+    // `--restarted`: the new instance waits for this one to exit (one Task Manager at a time).
+    start_elevated("--restarted")
+}
+
+/// Starts this exe with `params` through the UAC prompt, without waiting for it.
+pub fn start_elevated(params: &str) -> io::Result<()> {
     let exe = std::env::current_exe()?;
     let exe: Vec<u16> = exe.as_os_str().encode_wide_nul();
     let verb: Vec<u16> = "runas\0".encode_utf16().collect();
+    let params: Vec<u16> = params.encode_utf16().chain(Some(0)).collect();
     // SAFETY: NUL-terminated wide strings.
-    // `--restarted`: the new instance waits for this one to exit (one Task Manager at a time).
-    let params: Vec<u16> = "--restarted\0".encode_utf16().collect();
     let r = unsafe { ShellExecuteW(null_mut(), verb.as_ptr(), exe.as_ptr(), params.as_ptr(), null(), SW_SHOWNORMAL) };
     // Values above 32 mean success.
     if r as usize > 32 { Ok(()) } else { Err(io::Error::other("the administrator prompt was cancelled or failed")) }
