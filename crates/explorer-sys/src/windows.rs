@@ -32,7 +32,8 @@ use windows_sys::Win32::System::Com::{
     COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoTaskMemFree,
 };
 use windows_sys::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
+    CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
+    RegisterClipboardFormatW, SetClipboardData,
 };
 use windows_sys::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
 use windows_sys::Win32::System::Ole::CF_HDROP;
@@ -490,6 +491,14 @@ fn read_cut() -> bool {
 }
 
 /// Whether what is on the clipboard (files or shell items) was cut rather than copied.
+pub fn clipboard_has_data() -> bool {
+    let idlist = wide("Shell IDList Array");
+    let shell = unsafe { RegisterClipboardFormatW(idlist.as_ptr()) };
+    unsafe {
+        IsClipboardFormatAvailable(CF_HDROP as u32) != 0 || (shell != 0 && IsClipboardFormatAvailable(shell) != 0)
+    }
+}
+
 pub(crate) fn clipboard_is_cut() -> bool {
     open_clipboard().is_ok_and(|_g| read_cut())
 }

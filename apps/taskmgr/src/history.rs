@@ -110,6 +110,8 @@ pub struct State {
     pub sort: SortBy<Sort>,
     baseline: Option<Baseline>,
     message: Option<String>,
+    /// The app row clicked last (hover and selection, as on the other pages).
+    selected: Option<String>,
 }
 
 impl State {
@@ -119,6 +121,7 @@ impl State {
             ctx,
             filter: String::new(),
             sort: sort.unwrap_or(SortBy::new(Sort::Cpu, true)),
+            selected: None,
             baseline: Baseline::load(),
             message: None,
         }
@@ -224,9 +227,10 @@ impl State {
                 ui.add_space(4.0);
                 let apps = self.view(&h.apps);
                 let mut clicked = None;
+                let mut pick = None;
                 TableBuilder::new(ui)
-                    .striped(true)
                     .resizable(true)
+                    .sense(egui::Sense::click())
                     .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                     .column(Column::remainder().at_least(220.0).clip(true))
                     .columns(Column::exact(110.0), 5)
@@ -249,6 +253,7 @@ impl State {
                     .body(|body| {
                         body.rows(22.0, apps.len(), |mut row| {
                             let a = &apps[row.index()];
+                            row.set_selected(self.selected.as_deref() == Some(a.name.as_str()));
                             row.col(|ui| {
                                 ui.label(&a.name);
                             });
@@ -267,8 +272,14 @@ impl State {
                             row.col(|ui| {
                                 ui.label(format_bytes(a.bytes_received as f64));
                             });
+                            if row.response().clicked() {
+                                pick = Some(a.name.clone());
+                            }
                         });
                     });
+                if pick.is_some() {
+                    self.selected = pick;
+                }
                 if let Some(k) = clicked {
                     self.sort.click(k, k != Sort::Name);
                 }

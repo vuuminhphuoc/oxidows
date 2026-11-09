@@ -437,7 +437,6 @@ impl State {
             table = table.scroll_to_row(i, Some(egui::Align::Center));
         }
         table = table
-            .striped(true)
             .resizable(true)
             .sense(egui::Sense::click())
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center));

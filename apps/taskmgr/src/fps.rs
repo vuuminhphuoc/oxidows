@@ -134,7 +134,7 @@ impl State {
             ui.add_space(10.0);
             ui.label(RichText::new("Apps drawing frames (click one to follow it)").small().weak());
             let current = app.map(|a| a.pid);
-            egui::Grid::new("fps-apps").striped(true).spacing([24.0, 4.0]).show(ui, |ui| {
+            egui::Grid::new("fps-apps").spacing([24.0, 4.0]).show(ui, |ui| {
                 if ui
                     .selectable_label(self.pinned.is_none(), "Automatic")
                     .on_hover_text("Follow the windowed app drawing the most frames")

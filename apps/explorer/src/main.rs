@@ -251,6 +251,12 @@ struct App {
     scroll_to: Option<usize>,
     /// Select this name once it shows up (new folder, folder we came up from).
     pending_select: Option<String>,
+    /// Start renaming `pending_select` once it is selected (a new file from New ▸).
+    pending_rename: bool,
+    /// File types for the command bar's New menu, read when it first opens.
+    pub new_items: Option<Vec<explorer_sys::NewItem>>,
+    /// Whether the clipboard holds something to paste, and when that was last checked.
+    paste_ready: (bool, Option<Instant>),
     type_ahead: (String, Instant),
 
     address_edit: Option<String>,
@@ -359,6 +365,9 @@ impl App {
             anchor: None,
             scroll_to: None,
             pending_select: None,
+            pending_rename: false,
+            new_items: None,
+            paste_ready: (false, None),
             type_ahead: (String::new(), Instant::now()),
             address_edit: None,
             focus_search: false,
@@ -1535,6 +1544,9 @@ impl App {
             self.pending_select = None;
             self.select_only(pos);
             self.scroll_to = Some(pos);
+            if std::mem::take(&mut self.pending_rename) {
+                self.begin_rename();
+            }
         }
         // Keep the cursor on the same item after a re-sort or refresh.
         self.cursor =
@@ -1576,7 +1588,7 @@ impl App {
     }
 
     /// Selected paths in view order.
-    fn selected_paths(&self) -> Vec<PathBuf> {
+    pub fn selected_paths(&self) -> Vec<PathBuf> {
         self.view
             .iter()
             .map(|&i| &self.entries[i])
@@ -1585,7 +1597,7 @@ impl App {
             .collect()
     }
 
-    fn selected_entries(&self) -> Vec<Entry> {
+    pub fn selected_entries(&self) -> Vec<Entry> {
         self.view.iter().map(|&i| &self.entries[i]).filter(|e| self.selected.contains(&e.name)).cloned().collect()
     }
 
@@ -1596,7 +1608,7 @@ impl App {
         matches!(classify(&self.cur), Place::Shell(_))
     }
 
-    fn copy_selection(&mut self, cut: bool) {
+    pub fn copy_selection(&mut self, cut: bool) {
         if self.in_recycle_bin() {
             return;
         }
@@ -1634,7 +1646,7 @@ impl App {
             .expect("spawn shell-op thread");
     }
 
-    fn paste_into(&mut self, dest: PathBuf) {
+    pub fn paste_into(&mut self, dest: PathBuf) {
         if matches!(classify(&dest), Place::Shell(_)) {
             // Into a phone folder: the shell's copy engine talks MTP (the folder's own Paste
             // verb does nothing there).
@@ -1662,7 +1674,7 @@ impl App {
         self.run_op(if cut { FileOp::Move } else { FileOp::Copy }, files, Some(dest));
     }
 
-    fn delete_selection(&mut self, permanently: bool) {
+    pub fn delete_selection(&mut self, permanently: bool) {
         if self.in_recycle_bin() {
             return self.purge_selection();
         }
@@ -1760,6 +1772,32 @@ impl App {
             Err(e) => format!("Could not disconnect {letter}: {e}"),
         });
         self.load_drives();
+    }
+
+    /// New ▸ <type>: creates "New <type>.<ext>" here and starts renaming it, as Explorer does.
+    pub fn create_new_item(&mut self, item: &explorer_sys::NewItem) {
+        if self.in_virtual_place() {
+            return;
+        }
+        match explorer_sys::create_new(&self.cur, item) {
+            Ok(path) => {
+                self.selected.clear();
+                self.pending_select = path.file_name().map(|n| n.to_string_lossy().into_owned());
+                self.pending_rename = true;
+                self.refresh();
+            }
+            Err(e) => self.status = Some(format!("Could not create {}: {e}", item.name)),
+        }
+    }
+
+    /// Paste is offered when the clipboard has files or shell items. Checked at most twice a
+    /// second.
+    pub fn can_paste(&mut self) -> bool {
+        let fresh = self.paste_ready.1.is_some_and(|t| t.elapsed() < Duration::from_millis(500));
+        if !fresh {
+            self.paste_ready = (explorer_sys::clipboard_has_data(), Some(Instant::now()));
+        }
+        self.paste_ready.0
     }
 
     pub fn begin_new_folder(&mut self) {
@@ -1909,7 +1947,7 @@ impl App {
         }
     }
 
-    fn set_sort(&mut self, key: SortKey) {
+    pub fn set_sort(&mut self, key: SortKey) {
         if self.sort == key {
             self.ascending = !self.ascending;
         } else {
@@ -2211,6 +2249,7 @@ impl eframe::App for App {
         self.drop_target = None;
         view::tab_bar(self, ui);
         view::toolbar(self, ui);
+        view::command_bar(self, ui);
         view::status_bar(self, ui);
         view::sidebar(self, ui);
         pane::show(self, ui);

@@ -26,6 +26,15 @@ as the feature.
 | Keyboard: Delete = End task, Ctrl+Tab / Ctrl+Shift+Tab between pages | done | |
 | Sort every table by any column: click a header, click again to reverse, chevron above the sorted column | done | Processes, App history, Startup apps, Users, Details, Services; each page's sort is saved between runs |
 
+## Hover and look
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| No zebra stripes; hover fill on every table (App history included) | done | |
+| Arrow pointer over column headers (no hand) | done | |
+| Title-bar search box, per-page command bar, no status bar | todo | |
+| Keyboard focus ring on table rows, hover and page-indicator animations | todo | |
+
 ## Processes
 
 | Feature | Status | Notes |

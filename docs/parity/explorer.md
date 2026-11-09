@@ -34,6 +34,33 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Network page: computers on the LAN | ✅ | NetBIOS browse list plus the shell Network folder (Function Discovery: WSD computers) |
 | Network media devices (DLNA), WSD printers | ✅ | listed from the shell Network folder; opened and browsed through the shell |
 
+## Window layout (Windows 11 look)
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| Command bar: New ▾, Cut, Copy, Paste, Rename, Share, Delete, Sort ▾, View ▾, See more, Details | ✅ | buttons turn off when they don't apply; Recycle Bin shows Empty / Restore the selected items instead of New |
+| New ▾: Folder, Shortcut and the file types Windows registers (ShellNew) | 🟡 | Folder works; the registered types land with the ShellNew reader |
+| Sort ▾: Name, Date modified, Type, Size, More, Ascending / Descending, Group by | ✅ | works in every view, not only Details |
+| Status bar: item and selection counts, Details / Large icons switches on the right | ✅ | |
+| Back / Forward right-click lists recent locations | ✅ | |
+| Address bar fits long paths (hidden segments in the “…” menu) | ✅ | |
+| Sort chevron above the column title, plain header text | ✅ | shared with Task Manager |
+| Tabs in the title bar, Mica background | ❌ | own row under the system title bar |
+| Windows 11 context menu with “Show more options” | ❌ | the classic shell menu opens directly |
+| Rename in place (not in a dialog) | ❌ | |
+| Header filter drop-downs, More… column chooser | ❌ | |
+
+## Hover and tooltips
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| Toolbar and command-bar buttons: no frame until hovered, tooltip with the shortcut | ✅ | |
+| Breadcrumb segments and arrows light up separately | ✅ | |
+| Navigation pane: hover fill; expand chevrons only while the pointer is over the pane | ✅ | |
+| Item tip when the pointer rests on a file (type, size, date modified) or folder (date created) | ✅ | |
+| No zebra stripes in lists; hover fill shows | ✅ | |
+| Drag hover opens a folder in the tree / switches tab | ❌ | |
+
 ## Views and columns
 
 | Feature | Status | Notes |
@@ -49,7 +76,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Thumbnails for images and videos | ✅ | the shell's thumbnail cache (`IShellItemImageFactory`), Large icons view |
 | System file icons | ✅ | `SHGetFileInfoW`, cached per extension |
 | Overlay icons (shortcut arrow, OneDrive status) | ✅ | shell overlays on links, junctions, cloud files; desktop.ini folder icons |
-| Show/hide hidden items | ✅ | |
+| Show/hide hidden items | ✅ | View ▸ Show |
 | Show/hide file name extensions | ✅ | … menu |
 | Show protected OS files | ✅ | separate checkbox; hidden+system items stay out unless it is on |
 | Compact mode | ✅ | … menu ▸ Compact view: tighter rows and tiles |

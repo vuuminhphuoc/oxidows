@@ -72,6 +72,13 @@ icons! {
     Theme = '\u{E790}', "🎨";
     Show = '\u{E7B3}', "👁";
     DisconnectDrive = '\u{E8CD}', "⏏";
+    Cut = '\u{E8C6}', "✂";
+    Copy = '\u{E8C8}', "⧉";
+    Rename = '\u{E8AC}', "✎";
+    Sort = '\u{E8CB}', "⇅";
+    View = '\u{E8A9}', "▦";
+    Filter = '\u{E71C}', "⏷";
+    OpenPane = '\u{E8A0}', "◨";
     // Places and files.
     Home = '\u{E80F}', "🏠";
     Gallery = '\u{E8B9}', "🖼";
