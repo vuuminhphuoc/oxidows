@@ -185,6 +185,34 @@ pub fn libraries() -> Vec<(String, Vec<PathBuf>)> {
         .collect()
 }
 
+/// Who opens folders for this user (see [`folder_handler`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FolderHandler {
+    /// File Explorer.
+    BuiltIn,
+    /// oxi-explorer, at this path.
+    Ours(String),
+    /// Another program, by its exe (or its verb's name when it has no command).
+    Other(String),
+}
+
+/// The program of a shell `command` value: `"C:\x\a.exe" "%1"` -> `C:\x\a.exe`.
+pub fn command_exe(command: &str) -> String {
+    let c = command.trim();
+    match c.strip_prefix('"') {
+        Some(rest) => rest.split('"').next().unwrap_or_default().to_string(),
+        None => c.split_whitespace().next().unwrap_or_default().to_string(),
+    }
+}
+
+/// Who opens folders now. Off Windows: always `BuiltIn`.
+pub fn folder_handler() -> FolderHandler {
+    #[cfg(windows)]
+    return default_handler::handler();
+    #[cfg(not(windows))]
+    FolderHandler::BuiltIn
+}
+
 /// Whether folders (and Win+E) open in oxi-explorer for this user.
 pub fn is_default_file_manager() -> bool {
     #[cfg(windows)]
@@ -686,6 +714,13 @@ pub fn thumbnail(path: &Path, size: u32) -> Option<IconImage> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn command_exe() {
+        assert_eq!(super::command_exe(r#""C:\Tools\oxi-explorer.exe" "%1""#), r"C:\Tools\oxi-explorer.exe");
+        assert_eq!(super::command_exe(r#"C:\Files\files.exe -select "%1""#), r"C:\Files\files.exe");
+        assert_eq!(super::command_exe(""), "");
+    }
+
     #[test]
     fn bin_info_v2() {
         let path: Vec<u16> = "C:\\Users\\a\\x.txt".encode_utf16().chain(Some(0)).collect();

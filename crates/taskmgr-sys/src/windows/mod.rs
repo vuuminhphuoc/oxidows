@@ -8,6 +8,7 @@ mod net;
 mod procinfo;
 mod services;
 mod sessions;
+mod single;
 mod srum;
 mod startup;
 pub mod tray;
@@ -23,10 +24,11 @@ pub fn app_history() -> io::Result<taskmgr_core::AppHistory> {
 }
 pub use procinfo::{
     affinity, create_dump, efficiency_mode, file_properties, is_elevated, is_running, open_url, restart_elevated,
-    run_new_task, set_affinity, set_efficiency_mode, set_priority, static_info, switch_to,
+    run_new_task, run_self_elevated, set_affinity, set_efficiency_mode, set_priority, static_info, switch_to,
 };
 pub use services::{list_services, service_control};
 pub use sessions::{disconnect_session, list_sessions, logoff_session};
+pub use single::claim as single_instance;
 
 /// Firmware ("BIOS") time of the last boot in milliseconds, as Startup apps shows it.
 pub fn last_bios_ms() -> Option<u32> {

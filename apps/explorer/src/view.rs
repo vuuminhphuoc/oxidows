@@ -272,21 +272,9 @@ pub fn toolbar(app: &mut App, ui: &mut Ui) {
                     app.new_window();
                     ui.close();
                 }
-                if cfg!(windows) {
-                    let mut on = explorer_sys::is_default_file_manager();
-                    let r = ui
-                        .checkbox(&mut on, "Open folders and Win+E here")
-                        .on_hover_text("For your account only. Untick to go back to the built-in File Explorer.");
-                    if r.clicked() {
-                        let exe = std::env::current_exe().ok();
-                        let res = explorer_sys::set_default_file_manager(if on { exe.as_deref() } else { None });
-                        app.status = Some(match res {
-                            Ok(()) if on => "Folders and Win+E now open in oxi-explorer".into(),
-                            Ok(()) => "Folders open in File Explorer again".into(),
-                            Err(e) => format!("Could not change the default file manager: {e}"),
-                        });
-                        ui.close();
-                    }
+                if ui.button("Options").on_hover_text("Default file manager (Win+E, opening folders)").clicked() {
+                    app.options_open = true;
+                    ui.close();
                 }
                 ui.separator();
                 ui.label("View:");

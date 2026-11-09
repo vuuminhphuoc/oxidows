@@ -87,8 +87,42 @@ impl Tab {
         std::env::var("OXI_TASKMGR_TAB")
             .ok()
             .and_then(|v| Tab::find(&v))
+            .or_else(|| tab_from_args(std::env::args().skip(1)))
             .or_else(|| Tab::find(default_tab))
             .unwrap_or(Tab::Processes)
+    }
+}
+
+/// The page Windows asks for. Started in place of taskmgr.exe (IFEO), we get its command line:
+/// `oxi-taskmgr.exe C:\Windows\system32\taskmgr.exe /0 /startup` from Settings > Apps >
+/// Startup, for example.
+fn tab_from_args(args: impl IntoIterator<Item = String>) -> Option<Tab> {
+    args.into_iter().find_map(|a| match a.to_ascii_lowercase().as_str() {
+        "/startup" | "-startup" => Some(Tab::Startup),
+        _ => None,
+    })
+}
+
+/// Default-app section texts (Settings > Default app).
+pub const DEFAULT_APP: ui_common::default_app::Texts = ui_common::default_app::Texts {
+    what: "Ctrl+Shift+Esc",
+    builtin: "Windows Task Manager",
+    covers: "Covers Ctrl+Shift+Esc, Ctrl+Alt+Del > Task Manager, the taskbar's right-click menu, and every \
+             program that starts taskmgr.exe.",
+    needs_admin: true,
+    exe: "oxi-taskmgr.exe",
+    now_default: "Ctrl+Shift+Esc now opens oxidows",
+    now_builtin: "Ctrl+Shift+Esc opens Windows Task Manager again",
+    failed: "Could not change the default Task Manager",
+};
+
+pub fn taskmgr_handler() -> ui_common::default_app::Handler {
+    use ui_common::default_app::Handler;
+    match taskmgr_sys::taskmgr_handler() {
+        taskmgr_sys::TaskmgrHandler::BuiltIn => Handler::BuiltIn,
+        taskmgr_sys::TaskmgrHandler::ThisExe => Handler::ThisApp,
+        taskmgr_sys::TaskmgrHandler::OtherCopy(p) => Handler::OtherCopy(p),
+        taskmgr_sys::TaskmgrHandler::OtherTool(p) => Handler::Other(p),
     }
 }
 
@@ -182,7 +216,7 @@ struct App {
     /// The About section at the bottom of Settings, with "Check for updates".
     updater: ui_common::Updater,
     /// Whether Ctrl+Shift+Esc opens this exe; None where that cannot be changed.
-    replaces_taskmgr: Option<bool>,
+    default_app: ui_common::default_app::DefaultApp,
     tray: bool,
     /// Navigation pane expanded (icons and labels) or collapsed to icons.
     nav_open: bool,
@@ -342,7 +376,7 @@ impl App {
                 asset: "oxi-taskmgr.exe",
                 version: env!("CARGO_PKG_VERSION"),
             }),
-            replaces_taskmgr: cfg!(windows).then(taskmgr_sys::replaces_taskmgr),
+            default_app: ui_common::default_app::DefaultApp::new(cfg!(windows).then(taskmgr_handler)),
             tray: false,
             nav_open: true,
             status,
@@ -704,7 +738,7 @@ impl eframe::App for App {
                 egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
                     let tabs: Vec<&str> = Tab::ALL.iter().filter(|t| **t != Tab::Settings).map(|t| t.label()).collect();
                     let before = self.settings.clone();
-                    if settings::show(ui, &mut self.settings, &tabs, &self.status, &mut self.replaces_taskmgr) {
+                    if settings::show(ui, &mut self.settings, &tabs, &self.status, &mut self.default_app) {
                         let s = &self.settings;
                         if s.theme != before.theme {
                             s.apply_theme(ui.ctx());
@@ -732,6 +766,23 @@ impl eframe::App for App {
 fn main() -> eframe::Result {
     // After an in-app update: wait for the replaced exe to exit, clear its leftovers.
     ui_common::update::startup();
+    // `--set-default` / `--restore-default`: change Ctrl+Shift+Esc without opening the window
+    // (the settings page runs this elevated, and it is the way back if the window won't open).
+    if let Some((cmd, quiet)) = ui_common::default_app::command_from_args(std::env::args().skip(1)) {
+        let code = ui_common::default_app::run_command(
+            "Task Manager (oxidows)",
+            cmd,
+            quiet,
+            taskmgr_sys::set_replaces_taskmgr_as_admin,
+            &DEFAULT_APP,
+        );
+        std::process::exit(code);
+    }
+    // One Task Manager at a time, like Windows': a second start brings the open window forward.
+    let restarted = std::env::args().any(|a| a == "--restarted");
+    if !taskmgr_sys::single_instance(restarted) {
+        return Ok(());
+    }
     // OpenGL where there is a GPU driver, wgpu (WARP) otherwise; see `ui_common::choose_renderer`.
     let (renderer, auto) = ui_common::choose_renderer();
     let r = run(renderer);
@@ -774,4 +825,16 @@ fn run(renderer: ui_common::Renderer) -> eframe::Result {
         options.wgpu_options.surface.present_mode = mode;
     }
     eframe::run_native("oxi-taskmgr", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn page_from_taskmgr_command_line() {
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(tab_from_args(args(&[r"C:\Windows\system32\taskmgr.exe", "/0", "/startup"])), Some(Tab::Startup));
+        assert_eq!(tab_from_args(args(&[r"C:\Windows\system32\taskmgr.exe"])), None);
+    }
 }

@@ -282,17 +282,47 @@ pub fn set_startup_enabled(item: &StartupItem, enabled: bool) -> io::Result<()> 
 
 // ---- Replace the built-in Task Manager (Ctrl+Shift+Esc) ----
 
-use windows_sys::Win32::System::Registry::{REG_SZ, RegDeleteValueW};
+use windows_sys::Win32::System::Registry::{REG_SZ, RegDeleteKeyExW, RegDeleteValueW};
 
+const IFEO_ROOT: &str = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options";
 const IFEO: &str = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\taskmgr.exe";
+/// Where the `Debugger` this user had before (e.g. Process Explorer's) waits to be put back.
+const PREVIOUS: &str = "oxidows.PreviousDebugger";
+/// The `Debugger` we wrote, to know it is ours on undo even if the exe was renamed.
+const OURS: &str = "oxidows.Debugger";
+
+fn value(k: &Key, name: &str) -> Option<String> {
+    values(k).into_iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, v)| v)
+}
 
 /// The `Debugger` value Windows runs instead of taskmgr.exe, if any.
 pub fn taskmgr_replacement() -> Option<String> {
     let k = open(HKEY_LOCAL_MACHINE, IFEO, KEY_READ)?;
-    values(&k).into_iter().find(|(n, _)| n.eq_ignore_ascii_case("Debugger")).map(|(_, v)| v)
+    value(&k, "Debugger").filter(|v| !v.trim().is_empty())
 }
 
-/// Points taskmgr.exe (and so Ctrl+Shift+Esc) at `exe`, or restores the original. Needs admin.
+fn set_sz(k: &Key, name: &str, data: &str) -> u32 {
+    let (name, data) = (wide(name), wide(data));
+    // SAFETY: REG_SZ data including its NUL, length in bytes.
+    unsafe { RegSetValueExW(k.0, name.as_ptr(), 0, REG_SZ, data.as_ptr().cast(), (data.len() * 2) as u32) }
+}
+
+fn delete_value(k: &Key, name: &str) -> u32 {
+    let name = wide(name);
+    // SAFETY: valid key and name.
+    match unsafe { RegDeleteValueW(k.0, name.as_ptr()) } {
+        2 => ERROR_SUCCESS, // ERROR_FILE_NOT_FOUND: not there
+        r => r,
+    }
+}
+
+use crate::is_oxidows_debugger as is_oxidows;
+
+/// Points taskmgr.exe (and so Ctrl+Shift+Esc) at `exe`, or undoes that. Needs admin.
+///
+/// A replacement that was there before (Process Explorer, System Informer) is kept aside and
+/// put back on undo; with none, undo removes the value, and the key too when nothing else is
+/// in it, leaving the registry as Windows had it.
 pub fn set_taskmgr_replacement(exe: Option<&str>) -> io::Result<()> {
     let path = wide(IFEO);
     let mut k = null_mut();
@@ -304,7 +334,7 @@ pub fn set_taskmgr_replacement(exe: Option<&str>) -> io::Result<()> {
             0,
             null(),
             REG_OPTION_NON_VOLATILE,
-            KEY_SET_VALUE | KEY_WOW64_64KEY,
+            KEY_SET_VALUE | KEY_READ | KEY_WOW64_64KEY,
             null(),
             &mut k,
             null_mut(),
@@ -314,18 +344,43 @@ pub fn set_taskmgr_replacement(exe: Option<&str>) -> io::Result<()> {
         return Err(io::Error::from_raw_os_error(r as i32));
     }
     let k = Key(k);
-    let name = wide("Debugger");
+    let current = value(&k, "Debugger").filter(|v| !v.trim().is_empty());
+    let written = value(&k, OURS);
+    let ours = |v: &str| is_oxidows(v) || written.as_deref() == Some(v);
     let r = match exe {
         Some(exe) => {
-            let data = wide(&format!("\"{exe}\""));
-            // SAFETY: REG_SZ data including its NUL, length in bytes.
-            unsafe { RegSetValueExW(k.0, name.as_ptr(), 0, REG_SZ, data.as_ptr().cast(), (data.len() * 2) as u32) }
+            let new = format!("\"{exe}\"");
+            let mut r = ERROR_SUCCESS;
+            if let Some(old) = current.filter(|v| !ours(v)) {
+                r = set_sz(&k, PREVIOUS, &old);
+            }
+            for (name, data) in [("Debugger", &new), (OURS, &new)] {
+                if r == ERROR_SUCCESS {
+                    r = set_sz(&k, name, data);
+                }
+            }
+            r
         }
-        // SAFETY: valid key and name.
-        None => match unsafe { RegDeleteValueW(k.0, name.as_ptr()) } {
-            2 => ERROR_SUCCESS, // ERROR_FILE_NOT_FOUND: already restored
-            r => r,
-        },
+        None => {
+            let r = match value(&k, PREVIOUS).filter(|v| !v.trim().is_empty()) {
+                // Only take out what is ours: another tool may have taken over since.
+                _ if current.as_deref().is_some_and(|v| !ours(v)) => ERROR_SUCCESS,
+                Some(old) => set_sz(&k, "Debugger", &old),
+                None => delete_value(&k, "Debugger"),
+            };
+            [PREVIOUS, OURS].into_iter().fold(r, |r, name| if r == ERROR_SUCCESS { delete_value(&k, name) } else { r })
+        }
     };
-    if r != ERROR_SUCCESS { Err(io::Error::from_raw_os_error(r as i32)) } else { Ok(()) }
+    if r != ERROR_SUCCESS {
+        return Err(io::Error::from_raw_os_error(r as i32));
+    }
+    if exe.is_none() && values(&k).is_empty() && subkeys(&k).is_empty() {
+        drop(k);
+        let name = wide("taskmgr.exe");
+        if let Some(parent) = open(HKEY_LOCAL_MACHINE, IFEO_ROOT, KEY_READ) {
+            // SAFETY: valid parent key and NUL-terminated subkey name. Best effort.
+            unsafe { RegDeleteKeyExW(parent.0, name.as_ptr(), KEY_WOW64_64KEY, 0) };
+        }
+    }
+    Ok(())
 }
