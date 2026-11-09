@@ -102,6 +102,7 @@ fn sorted(items: &[StartupItem], cost: &[Option<(u64, u64)>], sort: SortBy<Col>)
 }
 
 pub struct State {
+    pub(crate) filter: String,
     items: Option<Vec<StartupItem>>,
     pub sort: SortBy<Col>,
     selected: Option<usize>,
@@ -124,12 +125,51 @@ fn now_filetime() -> u64 {
 impl State {
     pub fn new(status: Status, sort: Option<SortBy<Col>>) -> Self {
         Self {
+            filter: String::new(),
             items: None,
             sort: sort.unwrap_or(SortBy::new(Col::Name, false)),
             selected: None,
             bios_ms: taskmgr_sys::last_bios_ms(),
             status,
             measured: HashMap::new(),
+        }
+    }
+
+    pub fn reload(&mut self) {
+        self.items = None;
+        self.measured.clear();
+    }
+
+    pub fn set_selected_enabled(&mut self, on: bool) {
+        let Some(i) = self.selected else { return };
+        let Some(items) = self.items.as_ref() else { return };
+        let Some(it) = items.get(i) else { return };
+        match taskmgr_sys::set_startup_enabled(it, on) {
+            Ok(()) => {
+                self.status.set(format!("{} {}", if on { "Enabled" } else { "Disabled" }, it.name));
+                self.reload();
+            }
+            Err(e) if !it.per_user => {
+                self.status.set(format!("{}: needs administrator ({e})", it.name));
+            }
+            Err(e) => self.status.set(format!("Could not change {}: {e}", it.name)),
+        }
+    }
+
+    pub fn commands(&mut self, ui: &mut Ui, snap: &Snapshot) {
+        if self.measured.is_empty() || self.items.is_none() {
+            self.measure(snap);
+        }
+        let items = self.items.get_or_insert_with(taskmgr_sys::startup_items);
+        let sel = self.selected.and_then(|i| items.get(i));
+        let can_enable = sel.is_some_and(|s| !s.enabled);
+        let can_disable = sel.is_some_and(|s| s.enabled);
+
+        if ui_common::command_button(ui, ui_common::Icon::Close, "Disable", can_disable, "").clicked() {
+            self.set_selected_enabled(false);
+        }
+        if ui_common::command_button(ui, ui_common::Icon::CheckMark, "Enable", can_enable, "").clicked() {
+            self.set_selected_enabled(true);
         }
     }
 
@@ -158,20 +198,18 @@ impl State {
             .map(|it| self.measured.get(&taskmgr_sys::startup_exe(&it.command).to_lowercase()).copied())
             .collect();
         let view = sorted(items, &cost, self.sort);
+        let f = self.filter.trim().to_lowercase();
+        let view: Vec<usize> = view
+            .into_iter()
+            .filter(|&i| {
+                let it = &items[i];
+                f.is_empty() || it.name.to_lowercase().contains(&f) || it.publisher.to_lowercase().contains(&f)
+            })
+            .collect();
         let mut toggle = None;
         let mut reload = false;
         let mut clicked = None;
         ui.horizontal(|ui| {
-            let sel = self.selected.and_then(|i| items.get(i));
-            if ui.add_enabled(sel.is_some_and(|s| !s.enabled), egui::Button::new("Enable")).clicked() {
-                toggle = self.selected.map(|i| (i, true));
-            }
-            if ui.add_enabled(sel.is_some_and(|s| s.enabled), egui::Button::new("Disable")).clicked() {
-                toggle = self.selected.map(|i| (i, false));
-            }
-            if ui.button("Refresh").clicked() {
-                reload = true;
-            }
             ui.label(RichText::new(format!("{} startup apps", items.len())).weak());
             if let Some(ms) = self.bios_ms {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

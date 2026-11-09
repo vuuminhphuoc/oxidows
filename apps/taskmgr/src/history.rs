@@ -106,7 +106,7 @@ fn now_ole() -> f64 {
 pub struct State {
     load: Arc<Mutex<Load>>,
     ctx: egui::Context,
-    filter: String,
+    pub(crate) filter: String,
     pub sort: SortBy<Sort>,
     baseline: Option<Baseline>,
     message: Option<String>,
@@ -127,7 +127,7 @@ impl State {
         }
     }
 
-    fn start(&self) {
+    pub fn start(&self) {
         if let Ok(mut l) = self.load.lock() {
             *l = Load::Loading;
         }
@@ -173,6 +173,49 @@ impl State {
         });
     }
 
+    pub fn delete_history(&mut self) {
+        let apps = if let Ok(guard) = self.load.lock() {
+            if let Load::Done(h) = &*guard { Some(h.apps.clone()) } else { None }
+        } else {
+            None
+        };
+        if let Some(apps) = apps {
+            let b = Baseline {
+                at: now_ole(),
+                apps: apps
+                    .iter()
+                    .map(|a| (a.name.clone(), (a.cpu_cycles, a.bytes_sent, a.bytes_received, a.metered_bytes)))
+                    .collect(),
+            };
+            let saved = baseline_path().map(|p| {
+                if let Some(parent) = p.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                std::fs::write(p, b.to_text())
+            });
+            self.message = Some(match saved {
+                Some(Ok(())) => "Usage history cleared. Counting starts now.".into(),
+                Some(Err(e)) => format!("Could not save: {e}"),
+                None => "No settings folder".into(),
+            });
+            self.baseline = Some(b);
+        }
+    }
+
+    pub fn commands(&mut self, ui: &mut Ui) {
+        if ui_common::command_button(
+            ui,
+            ui_common::Icon::Delete,
+            "Delete usage history",
+            true,
+            "Start counting from now",
+        )
+        .clicked()
+        {
+            self.delete_history();
+        }
+    }
+
     pub fn show(&mut self, ui: &mut Ui, elevated: bool) {
         if !elevated {
             ui.add_space(8.0);
@@ -187,7 +230,6 @@ impl State {
         let guard = self.load.lock();
         let Ok(load) = guard.as_deref() else { return };
         let mut refresh = false;
-        let mut delete = None;
         match load {
             Load::Idle | Load::Loading => {
                 ui.horizontal(|ui| {
@@ -212,18 +254,10 @@ impl State {
                         }
                         None => "No usage recorded yet.".to_string(),
                     });
-                    refresh = ui.button("Refresh").clicked();
-                    if ui.button("Delete usage history").on_hover_text("Start counting from now").clicked() {
-                        delete = Some(h.apps.clone());
-                    }
                 });
                 if let Some(m) = &self.message {
                     ui.label(RichText::new(m).weak());
                 }
-                ui.horizontal(|ui| {
-                    ui.label("Search:");
-                    ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("app name").desired_width(220.0));
-                });
                 ui.add_space(4.0);
                 let apps = self.view(&h.apps);
                 let mut clicked = None;
@@ -286,25 +320,6 @@ impl State {
             }
         }
         drop(guard);
-        if let Some(apps) = delete {
-            let b = Baseline {
-                at: now_ole(),
-                apps: apps
-                    .iter()
-                    .map(|a| (a.name.clone(), (a.cpu_cycles, a.bytes_sent, a.bytes_received, a.metered_bytes)))
-                    .collect(),
-            };
-            let saved = baseline_path().map(|p| {
-                p.parent().map(std::fs::create_dir_all);
-                std::fs::write(p, b.to_text())
-            });
-            self.message = Some(match saved {
-                Some(Ok(())) => "Usage history cleared. Counting starts now.".into(),
-                Some(Err(e)) => format!("Could not save: {e}"),
-                None => "No settings folder".into(),
-            });
-            self.baseline = Some(b);
-        }
         if refresh {
             self.start();
         }

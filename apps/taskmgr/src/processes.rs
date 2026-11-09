@@ -16,11 +16,11 @@ use crate::icons::Icons;
 use crate::{Dialog, Status};
 
 pub struct State {
-    filter: String,
+    pub(crate) filter: String,
     pub sort: SortBy<SortKey>,
     /// Selected (pid, name): the name guards against ending a reused PID.
-    selected: Option<(u32, String)>,
-    group: bool,
+    pub(crate) selected: Option<(u32, String)>,
+    pub(crate) group: bool,
     collapsed: [bool; 3],
     /// Apps whose child processes are shown.
     expanded: HashSet<u32>,
@@ -287,15 +287,6 @@ impl State {
 
     pub fn show(&mut self, ui: &mut Ui, snap: &Snapshot) {
         let rows = &snap.processes;
-        ui.horizontal(|ui| {
-            ui.label("Search:");
-            ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("name or PID").desired_width(220.0));
-            let can_end = self.selected.is_some();
-            if ui.add_enabled(can_end, egui::Button::new("End task")).clicked() {
-                self.end_selected(rows);
-            }
-            ui.checkbox(&mut self.group, "Group by type");
-        });
         if self.selected.is_some() && ui.input(|i| i.key_pressed(egui::Key::Delete)) {
             self.end_selected(rows);
         }
@@ -541,11 +532,31 @@ impl State {
         }
     }
 
+    pub fn commands(&mut self, ui: &mut Ui, snap: &Snapshot) {
+        ui_common::command_menu(ui, ui_common::Icon::View, "View", "", |ui| {
+            ui_common::menu_check(ui, None, "Group by type", &mut self.group);
+        });
+        ui_common::command_separator(ui);
+        let can_action = self.selected.is_some();
+        if ui_common::command_button(ui, ui_common::Icon::Leaf, "Efficiency mode", can_action, "").clicked()
+            && let Some((pid, name)) = &self.selected
+        {
+            let eco = !taskmgr_sys::efficiency_mode(*pid).unwrap_or(false);
+            self.status.set(match taskmgr_sys::set_efficiency_mode(*pid, eco) {
+                Ok(()) => format!("Efficiency mode {} for {}", if eco { "on" } else { "off" }, name),
+                Err(e) => format!("Could not change efficiency mode of {}: {e}", name),
+            });
+        }
+        if ui_common::command_button(ui, ui_common::Icon::Close, "End task", can_action, "").clicked() {
+            self.end_selected(&snap.processes);
+        }
+    }
+
     pub fn set_group(&mut self, on: bool) {
         self.group = on;
     }
 
-    fn end_selected(&mut self, rows: &[ProcessRow]) {
+    pub fn end_selected(&mut self, rows: &[ProcessRow]) {
         if let Some((pid, name)) = self.selected.take() {
             end_task(&self.status, rows, pid, &name);
         }

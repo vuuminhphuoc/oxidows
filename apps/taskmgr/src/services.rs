@@ -58,7 +58,7 @@ impl Col {
 }
 
 pub struct State {
-    filter: String,
+    pub(crate) filter: String,
     selected: Option<String>,
     pub sort: SortBy<Col>,
     status: Status,
@@ -71,9 +71,36 @@ impl State {
     }
 
     /// "Go to service(s)": show the services hosted by `pid`.
-    pub fn show_pid(&mut self, pid: u32) {
-        self.filter = pid.to_string();
+    pub fn show_pid(&mut self, _pid: u32) {
         self.selected = None;
+    }
+
+    pub fn commands(&mut self, ui: &mut Ui, snap: &Snapshot) {
+        if ui_common::command_button(ui, ui_common::Icon::Services, "Open Services", true, "").clicked()
+            && let Err(e) = taskmgr_sys::open_services_console()
+        {
+            self.status.set(format!("Could not open Services: {e}"));
+        }
+        ui_common::command_separator(ui);
+        let services = snap.services.as_deref();
+        let sel = self.selected.as_ref().and_then(|n| services?.iter().find(|s| &s.name == n));
+        let stopped = sel.is_some_and(|s| s.state == ServiceState::Stopped);
+        let running = sel.is_some_and(|s| s.state == ServiceState::Running);
+        if ui_common::command_button(ui, ui_common::Icon::Refresh, "Restart", running, "").clicked()
+            && let Some(s) = sel
+        {
+            self.run(s.name.clone(), ServiceAction::Restart);
+        }
+        if ui_common::command_button(ui, ui_common::Icon::Stop, "Stop", running, "").clicked()
+            && let Some(s) = sel
+        {
+            self.run(s.name.clone(), ServiceAction::Stop);
+        }
+        if ui_common::command_button(ui, ui_common::Icon::Play, "Start", stopped, "").clicked()
+            && let Some(s) = sel
+        {
+            self.run(s.name.clone(), ServiceAction::Start);
+        }
     }
 
     fn run(&self, name: String, action: ServiceAction) {
@@ -100,34 +127,7 @@ impl State {
             ui.label("Reading services...");
             return;
         };
-        let sel = self.selected.as_ref().and_then(|n| services.iter().find(|s| &s.name == n));
         ui.horizontal(|ui| {
-            ui.label("Search:");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.filter).hint_text("name, description or PID").desired_width(240.0),
-            );
-            let stopped = sel.is_some_and(|s| s.state == ServiceState::Stopped);
-            let running = sel.is_some_and(|s| s.state == ServiceState::Running);
-            if ui.add_enabled(stopped, egui::Button::new("Start")).clicked()
-                && let Some(s) = sel
-            {
-                self.run(s.name.clone(), ServiceAction::Start);
-            }
-            if ui.add_enabled(running, egui::Button::new("Stop")).clicked()
-                && let Some(s) = sel
-            {
-                self.run(s.name.clone(), ServiceAction::Stop);
-            }
-            if ui.add_enabled(running, egui::Button::new("Restart")).clicked()
-                && let Some(s) = sel
-            {
-                self.run(s.name.clone(), ServiceAction::Restart);
-            }
-            if ui.button("Open Services").clicked()
-                && let Err(e) = taskmgr_sys::open_services_console()
-            {
-                self.status.set(format!("Could not open Services: {e}"));
-            }
             ui.label(RichText::new(format!("{} services", services.len())).weak());
         });
         ui.add_space(4.0);

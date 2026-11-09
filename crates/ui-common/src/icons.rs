@@ -79,6 +79,8 @@ icons! {
     View = '\u{E8A9}', "▦";
     Filter = '\u{E71C}', "⏷";
     OpenPane = '\u{E8A0}', "◨";
+    Play = '\u{E768}', "▶";
+    Stop = '\u{E71A}', "■";
     // Places and files.
     Home = '\u{E80F}', "🏠";
     Gallery = '\u{E8B9}', "🖼";
