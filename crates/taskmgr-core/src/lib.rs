@@ -1232,6 +1232,12 @@ pub fn sorted_view(rows: &[ProcessRow], filter: &str, key: SortKey, descending: 
             filter.is_empty() || pid_filter == Some(rows[i].pid) || rows[i].name.to_lowercase().contains(&filter)
         })
         .collect();
+    // Only the Type column needs the Windows folder; this runs every frame.
+    let windir = if key == SortKey::Type {
+        std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into())
+    } else {
+        String::new()
+    };
     idx.sort_by(|&a, &b| {
         let (a, b) = (&rows[a], &rows[b]);
         let ord = match key {
@@ -1247,7 +1253,7 @@ pub fn sorted_view(rows: &[ProcessRow], filter: &str, key: SortKey, descending: 
             SortKey::Threads => a.threads.cmp(&b.threads),
             SortKey::Power => a.power.total_cmp(&b.power),
             SortKey::PowerTrend => a.power_trend.total_cmp(&b.power_trend),
-            SortKey::Type => cmp_text(type_label(a, r"C:\Windows"), type_label(b, r"C:\Windows")),
+            SortKey::Type => cmp_text(type_label(a, &windir), type_label(b, &windir)),
             SortKey::ProcessName => cmp_text(&a.name, &b.name),
             SortKey::CommandLine => cmp_text(&a.info.command_line, &b.info.command_line),
             SortKey::GpuEngine => cmp_text(&a.gpu_engine, &b.gpu_engine),

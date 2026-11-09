@@ -37,7 +37,9 @@ pub fn list_keys_pure(
                 return None;
             }
             let prefix_lower = prefix.to_lowercase();
-            let start = cursor.map_or(0, |c| (c + 1) % n);
+            // One letter steps to the next match; more letters refine the current one, as Windows lists do.
+            let next = prefix.chars().nth(1).is_none();
+            let start = cursor.map_or(0, |c| if next { (c + 1) % n } else { c.min(n - 1) });
             for step in 0..n {
                 let i = (start + step) % n;
                 if names(i).to_lowercase().starts_with(&prefix_lower) {
@@ -188,6 +190,8 @@ mod tests {
         assert_eq!(list_keys_pure(list.len(), Some(1), ListNav::Prefix("c"), names), Some(2));
         // Multi-character prefix "ch" jumps to Chrome
         assert_eq!(list_keys_pure(list.len(), Some(0), ListNav::Prefix("ch"), names), Some(1));
+        // Typing on from Chrome keeps it while it still matches
+        assert_eq!(list_keys_pure(list.len(), Some(1), ListNav::Prefix("chr"), names), Some(1));
         // Multi-character prefix "ed" jumps to Edge
         assert_eq!(list_keys_pure(list.len(), Some(0), ListNav::Prefix("ed"), names), Some(3));
         // Non-matching prefix returns None

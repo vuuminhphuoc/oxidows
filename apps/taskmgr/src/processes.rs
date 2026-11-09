@@ -137,14 +137,17 @@ impl PCol {
     }
 }
 
+/// Missing setting = Windows' default set; "name" alone = every optional column hidden.
 pub fn parse_columns(v: &str) -> Vec<PCol> {
-    let mut cols: Vec<PCol> = v.split(',').filter_map(PCol::from_key).collect();
-    cols.dedup();
-    if cols.is_empty() { PCol::DEFAULT.to_vec() } else { cols }
+    if v.trim().is_empty() {
+        return PCol::DEFAULT.to_vec();
+    }
+    PCol::ALL.into_iter().filter(|c| v.split(',').any(|k| PCol::from_key(k.trim()) == Some(*c))).collect()
 }
 
+/// Name is always shown, so it leads the list and keeps an empty choice distinct from "not set".
 pub fn columns_text(cols: &[PCol]) -> String {
-    cols.iter().map(|c| c.key()).collect::<Vec<_>>().join(",")
+    std::iter::once("name").chain(cols.iter().map(|c| c.key())).collect::<Vec<_>>().join(",")
 }
 
 pub struct State {
@@ -220,6 +223,11 @@ pub fn end_task(status: &Status, rows: &[ProcessRow], pid: u32, name: &str) {
 
 /// Ends a process and everything it started (children first), like "End process tree".
 pub fn end_tree(status: &Status, rows: &[ProcessRow], pid: u32, name: &str) {
+    // The confirmation can stay open a while; the PID may be gone or reused by then.
+    if !rows.iter().any(|r| r.pid == pid && r.name == name) {
+        status.set(format!("{name} ({pid}) has already exited"));
+        return;
+    }
     let mut order = vec![pid];
     let mut i = 0;
     while i < order.len() {
@@ -860,7 +868,9 @@ mod tests {
         let parsed = parse_columns(&text);
         assert_eq!(parsed, PCol::DEFAULT.to_vec());
         assert_eq!(parse_columns(""), PCol::DEFAULT.to_vec());
-        assert_eq!(parse_columns("invalid,junk"), PCol::DEFAULT.to_vec());
+        assert_eq!(parse_columns("invalid,junk"), Vec::<PCol>::new());
+        assert_eq!(parse_columns(&columns_text(&[])), Vec::<PCol>::new());
+        assert_eq!(parse_columns("cpu,type,cpu"), vec![PCol::Type, PCol::Cpu]);
         assert_eq!(parse_columns("type,process_name,cpu"), vec![PCol::Type, PCol::ProcessName, PCol::Cpu]);
     }
 }
