@@ -641,3 +641,62 @@ fn shell_new_items_and_create() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn everything_search_if_running() {
+    let _g = guard("everything_search_if_running");
+    let cancel = AtomicBool::new(false);
+    let probe = explorer_sys::everything_search(
+        Path::new(r"C:\"),
+        &["nonexistent_probe_file_oxi".into()],
+        &cancel,
+        &mut |_| {},
+    );
+    if matches!(probe, Err(e) if e.kind() == std::io::ErrorKind::NotFound) {
+        return; // CI has no Everything
+    }
+
+    assert!(explorer_sys::everything_can_scope(Path::new(r"C:\")));
+
+    let temp = std::env::temp_dir();
+    let unique_name = format!(
+        "oxi-ev-test-{}-{}.txt",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos())
+    );
+    let file_path = temp.join(&unique_name);
+    let content = b"hello everything search test data";
+    fs::write(&file_path, content).expect("write temp file");
+
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(file_path.clone());
+
+    let start = Instant::now();
+    let mut found_entry: Option<Entry> = None;
+    while start.elapsed() < Duration::from_secs(5) {
+        let mut results = Vec::new();
+        let res = explorer_sys::everything_search(&temp, std::slice::from_ref(&unique_name), &cancel, &mut |e| {
+            results.push(e);
+        });
+        if res.is_ok() && !results.is_empty() {
+            found_entry = results.into_iter().find(|e| {
+                Path::new(&e.name).file_name().is_some_and(|f| f.to_string_lossy().eq_ignore_ascii_case(&unique_name))
+            });
+            if found_entry.is_some() {
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    let entry = found_entry.expect("Everything did not find temp file within 5 s");
+    assert_eq!(Path::new(&entry.name).canonicalize().ok(), file_path.canonicalize().ok().or(Some(file_path)));
+    assert_eq!(entry.size, content.len() as u64);
+    // Read from disk after Everything answered (it doesn't index these by default).
+    assert!(entry.created > 0 && !entry.hidden);
+}

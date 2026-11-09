@@ -72,7 +72,7 @@ const DROPEFFECT_MOVE: u32 = 2;
 /// 100 ns intervals between 1601-01-01 and 1970-01-01.
 const FILETIME_UNIX_EPOCH: i64 = 116_444_736_000_000_000;
 
-fn wide(s: impl AsRef<std::ffi::OsStr>) -> Vec<u16> {
+pub(crate) fn wide(s: impl AsRef<std::ffi::OsStr>) -> Vec<u16> {
     s.as_ref().encode_wide().chain(Some(0)).collect()
 }
 
@@ -82,7 +82,7 @@ fn from_wide(buf: &[u16]) -> OsString {
 }
 
 /// Paths past MAX_PATH need the `\\?\` prefix for the ANSI-era API limits to go away.
-fn long_path(p: &Path) -> PathBuf {
+pub(crate) fn long_path(p: &Path) -> PathBuf {
     let s = p.as_os_str();
     if s.len() < 240 || s.to_string_lossy().starts_with(r"\\?\") {
         return p.to_path_buf();
@@ -115,9 +115,17 @@ pub(crate) fn com_init() {
     });
 }
 
+pub(crate) fn entry_flags(a: u32) -> (bool, bool, bool) {
+    let hidden = a & FILE_ATTRIBUTE_HIDDEN != 0;
+    let system = a & FILE_ATTRIBUTE_SYSTEM != 0 && hidden;
+    let link = a & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+    (hidden, system, link)
+}
+
 fn entry_from(fd: &WIN32_FIND_DATAW) -> Entry {
     let a = fd.dwFileAttributes;
     let is_dir = a & FILE_ATTRIBUTE_DIRECTORY != 0;
+    let (hidden, system, link) = entry_flags(a);
     Entry {
         name: from_wide(&fd.cFileName).to_string_lossy().into_owned(),
         is_dir,
@@ -125,9 +133,9 @@ fn entry_from(fd: &WIN32_FIND_DATAW) -> Entry {
         modified: filetime_to_unix(fd.ftLastWriteTime),
         created: filetime_to_unix(fd.ftCreationTime),
         attrs: a,
-        hidden: a & FILE_ATTRIBUTE_HIDDEN != 0,
-        system: a & FILE_ATTRIBUTE_SYSTEM != 0 && a & FILE_ATTRIBUTE_HIDDEN != 0,
-        link: a & FILE_ATTRIBUTE_REPARSE_POINT != 0,
+        hidden,
+        system,
+        link,
         label: None,
         note: None,
     }

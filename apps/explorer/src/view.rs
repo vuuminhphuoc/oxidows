@@ -1062,7 +1062,11 @@ pub fn status_bar(app: &mut App, ui: &mut Ui) {
             } else if let Some(t) = app.list_time.filter(|_| std::env::var_os("OXI_EXPLORER_TIMING").is_some()) {
                 // Listing time, for measuring only (Explorer shows nothing like it).
                 ui.separator();
-                ui.label(RichText::new(format!("read in {:.1} ms", t.as_secs_f64() * 1000.0)).weak());
+                let text = match app.search_backend {
+                    Some(b) => format!("{b} in {:.1} ms", t.as_secs_f64() * 1000.0),
+                    None => format!("read in {:.1} ms", t.as_secs_f64() * 1000.0),
+                };
+                ui.label(RichText::new(text).weak());
             }
             if app.ops_running > 0 {
                 ui.separator();

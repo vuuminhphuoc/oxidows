@@ -28,6 +28,7 @@ enum Msg {
     Batch(u64, Vec<Entry>),
     /// Finished listing: error text and whether signing in could fix it.
     Done(u64, Result<(), (String, bool)>, Duration),
+    SearchBackend(&'static str),
     /// A sign-in to a share finished.
     Connected(PathBuf, std::io::Result<()>),
     Drives(Vec<Drive>),
@@ -217,6 +218,7 @@ struct App {
     replace_on_next_batch: bool,
     list_error: Option<String>,
     list_time: Option<Duration>,
+    pub search_backend: Option<&'static str>,
 
     view: Vec<usize>,
     view_key: Option<ViewKey>,
@@ -341,6 +343,7 @@ impl App {
             replace_on_next_batch: false,
             list_error: None,
             list_time: None,
+            search_backend: None,
             view: Vec::new(),
             view_key: None,
             filter: String::new(),
@@ -436,10 +439,15 @@ impl App {
     /// Searches `cur` and everything below it. Results keep their path relative to `cur` as
     /// the name ("sub\\file.txt"), so opening, copying and deleting them works unchanged.
     ///
-    /// On Windows the query goes to the shell first, exactly as Explorer's search box sends it:
-    /// Windows Search answers from its index (contents and properties included) or crawls.
-    /// Without it, the folder tree is walked here and the query's Advanced Query Syntax subset
-    /// (`kind:`, `date:`, `size:`, `ext:`, `content:`, wildcards) is applied to each item.
+    /// Searches are answered by the first backend that can handle them:
+    /// 1. Everything (voidtools), for name-only queries on local NTFS/ReFS when it runs: it keeps every
+    ///    file name in memory, so a whole drive answers in well under a second. No hits fall through to 2,
+    ///    since Everything may exclude the folder.
+    /// 2. Windows Search, exactly as Explorer's search box sends the query: the index answers (contents and
+    ///    properties included) where the folder is indexed, the shell crawls it otherwise.
+    /// 3. Without the shell: a walk on up to 8 threads applying the query's AQS subset (`kind:`, `date:`,
+    ///    `size:`, `ext:`, `content:`, wildcards) to each item.
+    ///
     /// Links/junctions are not followed (no loops).
     pub fn start_deep_search(&mut self, query: String) {
         self.cancel.store(true, Ordering::Relaxed);
@@ -452,6 +460,7 @@ impl App {
         self.selected.clear();
         self.version += 1;
         self.deep_search = Some(query.clone());
+        self.search_backend = None;
         let (root, generation, cancel, tx, ctx) =
             (self.cur.clone(), self.generation, self.cancel.clone(), self.tx.clone(), self.ctx.clone());
         let offset = self.utc_offset;
@@ -461,22 +470,55 @@ impl App {
                 let t = Instant::now();
                 let mut out =
                     SearchOut { found: Vec::new(), last_send: Instant::now(), tx: &tx, ctx: &ctx, generation };
-                let shell = explorer_sys::shell_search(&root, &query, &cancel, &mut |p| {
-                    if let Ok(rel) = p.strip_prefix(&root)
-                        && !rel.as_os_str().is_empty()
-                        && let Some(mut e) = explorer_sys::stat(&p)
-                    {
-                        e.name = rel.to_string_lossy().into_owned();
-                        out.push(e);
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs() as i64);
+                let today = (now + offset).div_euclid(86_400);
+                let q = explorer_core::Query::parse(&query, today);
+
+                let mut backend = "Everything";
+                let mut ev_done = false;
+                if q.name_only()
+                    && !q.words.iter().any(|w| w.contains(['"', '|', '<', '>', '!', ':', '\\']))
+                    && explorer_sys::everything_can_scope(&root)
+                {
+                    let mut hits = 0usize;
+                    let ev_res = explorer_sys::everything_search(&root, &q.words, &cancel, &mut |mut e| {
+                        if let Ok(rel) = Path::new(&e.name).strip_prefix(&root)
+                            && !rel.as_os_str().is_empty()
+                        {
+                            e.name = rel.to_string_lossy().into_owned();
+                            out.push(e);
+                            hits += 1;
+                        }
+                    });
+                    if ev_res.is_ok() && hits > 0 {
+                        ev_done = true;
                     }
-                });
-                if shell.is_err() && !cancel.load(Ordering::Relaxed) {
-                    walk_search(&root, &query, offset, &cancel, &mut out);
                 }
+
+                if !ev_done && !cancel.load(Ordering::Relaxed) {
+                    backend = "Windows Search";
+                    let shell = explorer_sys::shell_search(&root, &query, &cancel, &mut |p| {
+                        if let Ok(rel) = p.strip_prefix(&root)
+                            && !rel.as_os_str().is_empty()
+                            && let Some(mut e) = explorer_sys::stat(&p)
+                        {
+                            e.name = rel.to_string_lossy().into_owned();
+                            out.push(e);
+                        }
+                    });
+                    if shell.is_err() && !cancel.load(Ordering::Relaxed) {
+                        backend = "walk";
+                        walk_search(&root, &query, offset, &cancel, &mut out);
+                    }
+                }
+
                 if cancel.load(Ordering::Relaxed) {
                     return;
                 }
                 out.flush();
+                let _ = tx.send(Msg::SearchBackend(backend));
                 let _ = tx.send(Msg::Done(generation, Ok(()), t.elapsed()));
                 ctx.request_repaint();
             })
@@ -491,6 +533,7 @@ impl App {
 
     fn start_listing(&mut self, keep_old: bool) {
         self.deep_search = None;
+        self.search_backend = None;
         self.cancel.store(true, Ordering::Relaxed);
         self.cancel = Arc::new(AtomicBool::new(false));
         self.generation += 1;
@@ -962,6 +1005,7 @@ impl App {
                         }
                     }
                 }
+                Msg::SearchBackend(b) => self.search_backend = Some(b),
                 Msg::Batch(..) | Msg::Done(..) => {}
                 Msg::Connected(root, r) => match r {
                     Ok(()) => {
@@ -2431,45 +2475,50 @@ impl SearchOut<'_> {
 /// Files bigger than this aren't read for `content:`.
 const CONTENT_LIMIT: u64 = 32 << 20;
 
-/// The search without Windows Search: walks `root` breadth first. Unreadable folders (access
+/// The search without Everything or Windows Search: walks `root` using `walk_parallel`. Unreadable folders (access
 /// denied) are skipped, as Explorer does.
 fn walk_search(root: &Path, query: &str, offset: i64, cancel: &AtomicBool, out: &mut SearchOut) {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
     let q = explorer_core::Query::parse(query, (now + offset).div_euclid(86_400));
-    let contains = |path: &Path, needle: &str| {
-        std::fs::metadata(path).is_ok_and(|m| m.len() <= CONTENT_LIMIT)
-            && std::fs::read(path)
-                .ok()
-                .and_then(|b| explorer_core::decode_text(&b))
-                .is_some_and(|t| t.to_lowercase().contains(needle))
-    };
-    let mut queue = std::collections::VecDeque::from([PathBuf::new()]);
-    while let Some(rel) = queue.pop_front() {
-        if cancel.load(Ordering::Relaxed) {
-            return;
-        }
-        let mut hits = Vec::new();
-        let _ = explorer_sys::list_dir(&root.join(&rel), cancel, &mut |batch| {
-            for e in batch {
-                let rel_name = rel.join(&e.name);
-                if e.is_dir && !e.link {
-                    queue.push_back(rel_name.clone());
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 8);
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            let contains = |path: &Path, needle: &str| {
+                std::fs::metadata(path).is_ok_and(|m| m.len() <= CONTENT_LIMIT)
+                    && std::fs::read(path)
+                        .ok()
+                        .and_then(|b| explorer_core::decode_text(&b))
+                        .is_some_and(|t| t.to_lowercase().contains(needle))
+            };
+            explorer_sys::walk_parallel(root, threads, cancel, &|rel_dir, entries| {
+                for mut e in entries {
+                    if cancel.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    if q.matches(&e, offset) {
+                        let rel_name = rel_dir.join(&e.name);
+                        if let Some(needle) = &q.content
+                            && !contains(&root.join(&rel_name), needle)
+                        {
+                            continue;
+                        }
+                        e.name = rel_name.to_string_lossy().into_owned();
+                        let _ = tx.send(e);
+                    }
                 }
-                if q.matches(&e, offset) {
-                    hits.push((rel_name, e));
-                }
-            }
+            });
+            drop(tx);
         });
-        for (rel_name, mut e) in hits {
-            if let Some(needle) = &q.content
-                && !contains(&root.join(&rel_name), needle)
-            {
-                continue;
-            }
-            e.name = rel_name.to_string_lossy().into_owned();
+
+        while let Ok(e) = rx.recv() {
             out.push(e);
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
         }
-    }
+    });
 }
 
 fn recent_files(max: usize) -> Vec<Entry> {

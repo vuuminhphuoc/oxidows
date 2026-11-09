@@ -22,8 +22,13 @@ use windows as imp;
 
 #[cfg(windows)]
 mod default_handler;
+#[cfg(any(windows, test))]
+pub mod everything;
 #[cfg(windows)]
 mod libraries;
+
+mod walk;
+pub use walk::walk_parallel;
 #[cfg(windows)]
 mod preview;
 #[cfg(windows)]
@@ -369,6 +374,54 @@ pub fn shell_search(root: &Path, query: &str, cancel: &AtomicBool, found: &mut d
     {
         let _ = (root, query, cancel, found);
         Err(io::Error::new(io::ErrorKind::Unsupported, "shell search needs Windows"))
+    }
+}
+
+/// Name search through a running Everything (voidtools), which keeps every NTFS file name in memory: results in
+/// milliseconds for a whole drive. `Err` when Everything isn't running or still indexing; then use shell_search.
+///
+/// Only `FULL_PATH_AND_NAME | SIZE | DATE_MODIFIED` are requested from Everything. Requesting `DATE_CREATED` or
+/// `ATTRIBUTES` causes Everything 1.4 to read metadata from disk for every result rather than answering solely from
+/// its in-memory database, which would turn millisecond searches into multi-second disk crawls.
+pub fn everything_search(
+    root: &Path,
+    words: &[String],
+    cancel: &AtomicBool,
+    found: &mut dyn FnMut(Entry),
+) -> io::Result<()> {
+    #[cfg(windows)]
+    return everything::search(root, words, cancel, found);
+    #[cfg(not(windows))]
+    {
+        let _ = (root, words, cancel, found);
+        Err(io::Error::new(io::ErrorKind::Unsupported, "Everything needs Windows"))
+    }
+}
+
+/// Like [`everything_search`], but returns the duration until the WM_COPYDATA reply arrived from Everything.
+pub fn everything_search_timed(
+    root: &Path,
+    words: &[String],
+    cancel: &AtomicBool,
+    found: &mut dyn FnMut(Entry),
+) -> io::Result<std::time::Duration> {
+    #[cfg(windows)]
+    return everything::search_timed(root, words, cancel, found);
+    #[cfg(not(windows))]
+    {
+        let _ = (root, words, cancel, found);
+        Err(io::Error::new(io::ErrorKind::Unsupported, "Everything needs Windows"))
+    }
+}
+
+/// Whether Everything indexes `root` by default (local fixed NTFS or ReFS volume).
+pub fn everything_can_scope(root: &Path) -> bool {
+    #[cfg(windows)]
+    return everything::everything_can_scope(root);
+    #[cfg(not(windows))]
+    {
+        let _ = root;
+        false
     }
 }
 
