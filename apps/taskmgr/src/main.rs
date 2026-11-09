@@ -3,6 +3,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod details;
+mod fps;
 mod graph;
 mod history;
 mod performance;
@@ -206,6 +207,7 @@ fn spawn_sampler(ctx: egui::Context, tx: Sender<Result<Arc<Snapshot>, String>>) 
                 }
             };
             let mut sampler = Sampler::new();
+            let mut fps = taskmgr_core::FpsTracker::default();
             let mut first = true;
             let timing = std::env::var_os("OXI_TASKMGR_TIMING").is_some();
             let (mut n, mut spent, mut since) = (0u32, Duration::ZERO, Instant::now());
@@ -226,6 +228,10 @@ fn spawn_sampler(ctx: egui::Context, tx: Sender<Result<Arc<Snapshot>, String>>) 
                         let mut snap = sampler.update(raw);
                         snap.services = extra.services.map(Arc::new);
                         snap.sessions = extra.sessions.map(Arc::new);
+                        if fps::WANT.load(Ordering::Relaxed) {
+                            let status = taskmgr_sys::fps::start();
+                            snap.fps = Arc::new(fps.update(status, &taskmgr_sys::fps::read(), &snap.processes));
+                        }
                         Arc::new(snap)
                     })
                     .map_err(|e| e.to_string());
@@ -255,6 +261,14 @@ fn spawn_sampler(ctx: egui::Context, tx: Sender<Result<Arc<Snapshot>, String>>) 
                                 })
                                 .collect();
                             eprintln!("gpus: [{}]", gpus.join(", "));
+                            let drawing: Vec<String> = s
+                                .fps
+                                .apps
+                                .iter()
+                                .take(5)
+                                .map(|a| format!("{} {:.0} fps ({})", a.name, a.stats.fps, a.api.label()))
+                                .collect();
+                            eprintln!("fps: {:?}, apps: [{}]", s.fps.status, drawing.join(", "));
                             if let Some(a) = s.system.adapters.first() {
                                 eprintln!("adapter {}: {:?}", a.name, taskmgr_sys::adapter_info(&a.name));
                             }

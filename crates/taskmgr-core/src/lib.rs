@@ -11,6 +11,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+pub mod fps;
+pub use fps::{Fps, FpsApi, FpsApp, FpsStatus, FpsTracker, RawFps};
+
 /// Points kept for every Performance graph (one per sample: 60 s at the default 1 s interval).
 pub const HISTORY_LEN: usize = 60;
 
@@ -537,6 +540,8 @@ pub struct Snapshot {
     /// Filled only while a tab that needs it is open (see [`Extras`]).
     pub services: Option<Arc<Vec<Service>>>,
     pub sessions: Option<Arc<Vec<Session>>>,
+    /// Frames per second of the apps drawing with DirectX (filled by the app's sampler thread).
+    pub fps: Arc<Fps>,
 }
 
 /// Which optional lists the sampler should read this tick.
@@ -1006,7 +1011,14 @@ impl Sampler {
             self.history.push(&system);
         }
         self.prev = Some((raw.at, raw.system));
-        Snapshot { processes, system, history: self.history.clone(), services: None, sessions: None }
+        Snapshot {
+            processes,
+            system,
+            history: self.history.clone(),
+            services: None,
+            sessions: None,
+            fps: Arc::default(),
+        }
     }
 }
 

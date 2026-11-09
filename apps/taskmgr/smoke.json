@@ -35,6 +35,13 @@
       }
     },
     {
+      "name": "performance-fps",
+      "env": {
+        "OXI_TASKMGR_TAB": "performance",
+        "OXI_TASKMGR_RES": "fps"
+      }
+    },
+    {
       "name": "performance-summary",
       "env": {
         "OXI_TASKMGR_TAB": "performance",

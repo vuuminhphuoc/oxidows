@@ -2,6 +2,7 @@
 //! PDH for disk and GPU rates.
 
 mod adapters;
+pub mod fps;
 mod gpu;
 mod hw;
 mod net;
@@ -331,6 +332,7 @@ fn all_threads_suspended(bytes: &[u8], offset: usize, p: &SystemProcessInformati
 /// Stops background tracing started by the collector.
 pub fn shutdown() {
     net::stop();
+    fps::stop();
     tray::remove();
 }
 

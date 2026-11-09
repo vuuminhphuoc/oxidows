@@ -73,6 +73,7 @@ as the feature.
 | Copy to clipboard | done | |
 | Summary view | done | button or double-click; double-click again to come back |
 | Open Resource Monitor | done | launches `resmon` |
+| FPS (extra, not in Windows' Task Manager) | done | DXGI / D3D9 `Present_Start` ETW events per swap chain; FPS, frame time, 1% low, 60 s graph, every app drawing frames; needs administrator; recording starts when the Performance tab first opens |
 
 ## App history
 
