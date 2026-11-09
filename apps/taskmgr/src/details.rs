@@ -358,7 +358,7 @@ pub fn columns_text(cols: &[Col]) -> String {
 }
 
 pub struct State {
-    filter: String,
+    pub(crate) filter: String,
     pub sort: SortBy<Col>,
     selected: Option<(u32, String)>,
     scroll_to: Option<u32>,
@@ -386,8 +386,19 @@ impl State {
     pub fn select(&mut self, pid: u32, snap: &Snapshot) {
         if let Some(p) = snap.processes.iter().find(|p| p.pid == pid) {
             self.selected = Some((pid, p.name.clone()));
-            self.filter.clear();
             self.scroll_to = Some(pid);
+        }
+    }
+
+    pub fn commands(&mut self, ui: &mut Ui, snap: &Snapshot) {
+        if ui_common::command_button(ui, ui_common::Icon::Settings, "Select columns", true, "").clicked() {
+            self.picking = true;
+        }
+        let can_end = self.selected.is_some();
+        if ui_common::command_button(ui, ui_common::Icon::Close, "End task", can_end, "").clicked()
+            && let Some((pid, name)) = self.selected.take()
+        {
+            end_task(&self.status, &snap.processes, pid, &name);
         }
     }
 
@@ -395,21 +406,6 @@ impl State {
     pub fn show(&mut self, ui: &mut Ui, snap: &Snapshot) -> bool {
         let rows = &snap.processes;
         let before = self.columns.clone();
-        ui.horizontal(|ui| {
-            ui.label("Search:");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.filter).hint_text("name, PID, user or path").desired_width(260.0),
-            );
-            if ui.add_enabled(self.selected.is_some(), egui::Button::new("End task")).clicked()
-                && let Some((pid, name)) = self.selected.take()
-            {
-                end_task(&self.status, rows, pid, &name);
-            }
-            if ui.button("Select columns").clicked() {
-                self.picking = true;
-            }
-        });
-        ui.add_space(4.0);
         self.column_picker(ui.ctx());
 
         let f = self.filter.trim().to_lowercase();

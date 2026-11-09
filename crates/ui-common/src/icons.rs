@@ -82,6 +82,8 @@ icons! {
     OpenFile = '\u{E8E5}', "📂";
     OpenWith = '\u{E7AC}', "⧉";
     Link = '\u{E71B}', "🔗";
+    Play = '\u{E768}', "▶";
+    Stop = '\u{E71A}', "■";
     // Places and files.
     Home = '\u{E80F}', "🏠";
     Gallery = '\u{E8B9}', "🖼";
