@@ -33,6 +33,8 @@ mod search;
 #[cfg(windows)]
 mod shell_menu;
 #[cfg(windows)]
+mod shell_new;
+#[cfg(windows)]
 mod shell_ns;
 #[cfg(windows)]
 mod thumbs;
@@ -711,6 +713,52 @@ pub fn thumbnail(path: &Path, size: u32) -> Option<IconImage> {
         None
     }
 }
+/// One entry of File Explorer's New menu besides Folder: a file type with a ShellNew handler.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewItem {
+    pub ext: String,
+    pub name: String,
+}
+
+/// The types Windows lists under New, in Windows' order (.lnk = "Shortcut" included).
+pub fn new_items() -> Vec<NewItem> {
+    #[cfg(windows)]
+    {
+        shell_new::new_items()
+    }
+    #[cfg(not(windows))]
+    {
+        Vec::new()
+    }
+}
+
+/// Creates "New <name><ext>" in `dir` ("New <name> (2)<ext>" etc. if taken) the way Windows does and returns its path.
+pub fn create_new(dir: &Path, item: &NewItem) -> io::Result<PathBuf> {
+    #[cfg(windows)]
+    {
+        shell_new::create_new(dir, item)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (dir, item);
+        Err(io::Error::new(io::ErrorKind::Unsupported, "create_new is Windows-only"))
+    }
+}
+
+pub(crate) fn new_file_name(name: &str, ext: &str, index: usize) -> String {
+    if index <= 1 { format!("New {name}{ext}") } else { format!("New {name} ({index}){ext}") }
+}
+
+pub(crate) fn unique_new_name(name: &str, ext: &str, mut exists: impl FnMut(&str) -> bool) -> String {
+    let mut i = 1;
+    loop {
+        let candidate = new_file_name(name, ext, i);
+        if !exists(&candidate) {
+            return candidate;
+        }
+        i += 1;
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -736,5 +784,17 @@ mod tests {
         assert_eq!((size, deleted), (1234, 1_700_000_000));
         assert_eq!(p.to_string_lossy(), "C:\\Users\\a\\x.txt");
         assert!(super::parse_bin_info(&b[..10]).is_none());
+    }
+    #[test]
+    fn new_name_unique() {
+        let mut existing = std::collections::HashSet::new();
+        let name1 = super::unique_new_name("Text Document", ".txt", |n| existing.contains(n));
+        assert_eq!(name1, "New Text Document.txt");
+        existing.insert(name1);
+        let name2 = super::unique_new_name("Text Document", ".txt", |n| existing.contains(n));
+        assert_eq!(name2, "New Text Document (2).txt");
+        existing.insert(name2);
+        let name3 = super::unique_new_name("Text Document", ".txt", |n| existing.contains(n));
+        assert_eq!(name3, "New Text Document (3).txt");
     }
 }
