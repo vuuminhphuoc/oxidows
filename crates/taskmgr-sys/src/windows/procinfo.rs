@@ -228,6 +228,55 @@ pub fn restart_elevated() -> io::Result<()> {
     if r as usize > 32 { Ok(()) } else { Err(io::Error::other("the administrator prompt was cancelled or failed")) }
 }
 
+/// Runs this exe with `args` through the UAC prompt, hidden, waits for it and returns its exit
+/// code. A declined prompt is `ErrorKind::PermissionDenied`.
+pub fn run_self_elevated(args: &str) -> io::Result<u32> {
+    use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, INFINITE, WaitForSingleObject};
+    use windows_sys::Win32::UI::Shell::{
+        SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
+
+    let exe = std::env::current_exe()?;
+    let exe: Vec<u16> = exe.as_os_str().encode_wide_nul();
+    let verb: Vec<u16> = "runas\0".encode_utf16().collect();
+    let params: Vec<u16> = args.encode_utf16().chain(Some(0)).collect();
+    // SAFETY: zeroed POD with its size set; the strings outlive the call.
+    let mut info: SHELLEXECUTEINFOW = unsafe { zeroed() };
+    info.cbSize = size_of::<SHELLEXECUTEINFOW>() as u32;
+    info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
+    info.lpVerb = verb.as_ptr();
+    info.lpFile = exe.as_ptr();
+    info.lpParameters = params.as_ptr();
+    info.nShow = SW_HIDE;
+    // SAFETY: `info` is fully set up above.
+    if unsafe { ShellExecuteExW(&mut info) } == 0 {
+        let e = io::Error::last_os_error();
+        // ERROR_CANCELLED: the user said no.
+        return Err(if e.raw_os_error() == Some(1223) {
+            io::Error::new(io::ErrorKind::PermissionDenied, "the administrator prompt was declined")
+        } else {
+            e
+        });
+    }
+    if info.hProcess.is_null() {
+        return Err(io::Error::other("the elevated helper did not start"));
+    }
+    let h = Handle(info.hProcess);
+    // SAFETY: process handle we own; out-pointer to a local.
+    unsafe {
+        if WaitForSingleObject(h.0, INFINITE) != WAIT_OBJECT_0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut code = 0u32;
+        if GetExitCodeProcess(h.0, &mut code) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(code)
+    }
+}
+
 trait EncodeWideNul {
     fn encode_wide_nul(&self) -> Vec<u16>;
 }

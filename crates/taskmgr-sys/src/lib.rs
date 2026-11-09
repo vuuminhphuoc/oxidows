@@ -229,19 +229,69 @@ pub fn startup_exe(command: &str) -> String {
     }
 }
 
-/// True when Ctrl+Shift+Esc / taskmgr.exe currently opens this exe.
-pub fn replaces_taskmgr() -> bool {
-    let me = std::env::current_exe().map(|p| p.display().to_string().to_lowercase()).unwrap_or_default();
-    imp::taskmgr_replacement().is_some_and(|v| !me.is_empty() && v.to_lowercase().contains(&me))
+/// Who Ctrl+Shift+Esc / taskmgr.exe starts now, from the IFEO `Debugger` value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TaskmgrHandler {
+    /// No replacement: Windows Task Manager.
+    BuiltIn,
+    /// This exe.
+    ThisExe,
+    /// Another copy of oxi-taskmgr, by path.
+    OtherCopy(String),
+    /// Some other tool (Process Explorer, System Informer), by its command.
+    OtherTool(String),
 }
 
-/// Makes Ctrl+Shift+Esc open this exe (`true`) or the built-in Task Manager (`false`). Needs admin.
+/// Whether an IFEO `Debugger` value starts one of our exes (this copy or another).
+pub fn is_oxidows_debugger(debugger: &str) -> bool {
+    debugger.to_ascii_lowercase().contains("oxi-taskmgr")
+}
+
+/// Sorts a `Debugger` value (`None`: there is none) relative to `me`, this exe's path.
+pub fn classify_debugger(debugger: Option<&str>, me: &str) -> TaskmgrHandler {
+    let Some(d) = debugger.map(str::trim).filter(|d| !d.is_empty()) else { return TaskmgrHandler::BuiltIn };
+    let path = d.trim_matches('"').to_string();
+    if !me.is_empty() && d.to_lowercase().contains(&me.to_lowercase()) {
+        TaskmgrHandler::ThisExe
+    } else if is_oxidows_debugger(d) {
+        TaskmgrHandler::OtherCopy(path)
+    } else {
+        TaskmgrHandler::OtherTool(path)
+    }
+}
+
+pub fn taskmgr_handler() -> TaskmgrHandler {
+    let me = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
+    classify_debugger(imp::taskmgr_replacement().as_deref(), &me)
+}
+
+/// True when Ctrl+Shift+Esc / taskmgr.exe currently opens this exe.
+pub fn replaces_taskmgr() -> bool {
+    taskmgr_handler() == TaskmgrHandler::ThisExe
+}
+
+/// Makes Ctrl+Shift+Esc open this exe (`true`) or gives it back (`false`): to Windows Task
+/// Manager, or to the tool that had it before. Needs admin; see [`set_replaces_taskmgr_as_admin`].
 pub fn set_replaces_taskmgr(on: bool) -> io::Result<()> {
     if on {
         let me = std::env::current_exe()?;
         imp::set_taskmgr_replacement(Some(&me.display().to_string()))
     } else {
         imp::set_taskmgr_replacement(None)
+    }
+}
+
+/// [`set_replaces_taskmgr`], through the administrator prompt when this process is not
+/// elevated: it runs this exe again as `--set-default` / `--restore-default --quiet` elevated
+/// and waits for it. Blocks until the prompt is answered.
+pub fn set_replaces_taskmgr_as_admin(on: bool) -> io::Result<()> {
+    if imp::is_elevated() {
+        return set_replaces_taskmgr(on);
+    }
+    let args = if on { "--set-default --quiet" } else { "--restore-default --quiet" };
+    match imp::run_self_elevated(args)? {
+        0 => Ok(()),
+        code => Err(io::Error::other(format!("the elevated helper failed (exit code {code})"))),
     }
 }
 
@@ -326,7 +376,23 @@ pub fn open_file_location(path: &str) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::split_command;
+    use super::{TaskmgrHandler, classify_debugger, split_command};
+
+    #[test]
+    fn classifies_debugger() {
+        let me = r"C:\Tools\oxi-taskmgr.exe";
+        assert_eq!(classify_debugger(None, me), TaskmgrHandler::BuiltIn);
+        assert_eq!(classify_debugger(Some("  "), me), TaskmgrHandler::BuiltIn);
+        assert_eq!(classify_debugger(Some(r#""c:\tools\OXI-TASKMGR.exe""#), me), TaskmgrHandler::ThisExe);
+        assert_eq!(
+            classify_debugger(Some(r#""D:\old\oxi-taskmgr.exe""#), me),
+            TaskmgrHandler::OtherCopy(r"D:\old\oxi-taskmgr.exe".into())
+        );
+        assert_eq!(
+            classify_debugger(Some(r#""C:\Sys\procexp64.exe""#), me),
+            TaskmgrHandler::OtherTool(r"C:\Sys\procexp64.exe".into())
+        );
+    }
 
     #[test]
     fn splits_commands() {
