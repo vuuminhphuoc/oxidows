@@ -341,6 +341,11 @@ pub fn toolbar(app: &mut App, ui: &mut Ui) {
                     app.show_properties(&c);
                     ui.close();
                 }
+                ui.separator();
+                if ui.button(Icon::Info.with("About and updates")).clicked() {
+                    app.about_open = true;
+                    ui.close();
+                }
             });
 
             // Search box on the right, address bar takes the rest.
