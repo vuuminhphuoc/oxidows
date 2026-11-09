@@ -278,6 +278,9 @@ struct App {
     tree_pending: HashSet<PathBuf>,
     pub active_tab: usize,
     pub nearby: nearby::Nearby,
+    /// The Options window (default file manager).
+    pub options_open: bool,
+    default_app: ui_common::default_app::DefaultApp,
 }
 
 impl App {
@@ -364,6 +367,9 @@ impl App {
             tree_pending: HashSet::new(),
             active_tab: 0,
             nearby: nearby::Nearby::new(),
+            // OXI_EXPLORER_OPTIONS=1 opens it at start, for screenshots.
+            options_open: std::env::var_os("OXI_EXPLORER_OPTIONS").is_some(),
+            default_app: ui_common::default_app::DefaultApp::new(cfg!(windows).then(folder_handler)),
         };
         let s = app.persist.settings.clone();
         app.apply_settings(&s);
@@ -2155,6 +2161,7 @@ impl eframe::App for App {
         egui::CentralPanel::default().frame(content).show(ui, |ui| view::file_list(self, ui));
         view::dialog(self, ui);
         nearby::show(self, ui);
+        self.options(ui.ctx());
         self.finish_drag(&ctx);
     }
 
@@ -2334,7 +2341,67 @@ fn main() -> eframe::Result {
     r
 }
 
+/// Default-app section texts (Options > Default file manager).
+const DEFAULT_APP: ui_common::default_app::Texts = ui_common::default_app::Texts {
+    what: "Win+E and opening a folder",
+    builtin: "File Explorer",
+    covers: "Covers Win+E, double-clicking a folder or drive (desktop, Start, Run, other apps), for your account \
+             only. The taskbar, Start and the desktop stay File Explorer's.",
+    needs_admin: false,
+    exe: "oxi-explorer.exe",
+    now_default: "Folders and Win+E now open in oxi-explorer",
+    now_builtin: "Folders and Win+E open in File Explorer again",
+    failed: "Could not change the default file manager",
+};
+
+fn folder_handler() -> ui_common::default_app::Handler {
+    use ui_common::default_app::Handler;
+    match explorer_sys::folder_handler() {
+        explorer_sys::FolderHandler::BuiltIn => Handler::BuiltIn,
+        explorer_sys::FolderHandler::Ours(exe) => {
+            let me = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
+            if exe.eq_ignore_ascii_case(&me) { Handler::ThisApp } else { Handler::OtherCopy(exe) }
+        }
+        explorer_sys::FolderHandler::Other(exe) => Handler::Other(exe),
+    }
+}
+
+fn set_default(on: bool) -> std::io::Result<()> {
+    let exe = if on { Some(std::env::current_exe()?) } else { None };
+    explorer_sys::set_default_file_manager(exe.as_deref())
+}
+
+impl App {
+    /// Options: which program opens folders and Win+E.
+    fn options(&mut self, ctx: &egui::Context) {
+        if !self.options_open {
+            return;
+        }
+        let mut open = true;
+        let mut msg = None;
+        egui::Window::new("Options").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+            ui.label(egui::RichText::new("Default file manager").strong());
+            ui.add_space(4.0);
+            msg = self.default_app.show(ui, &DEFAULT_APP, folder_handler, set_default);
+        });
+        if msg.is_some() {
+            self.status = msg;
+        }
+        self.options_open = open;
+    }
+}
+
 fn run(renderer: ui_common::Renderer) -> eframe::Result {
+    // `--set-default` / `--restore-default`: change the default file manager without a window.
+    if let Some((cmd, quiet)) = ui_common::default_app::command_from_args(std::env::args().skip(1)) {
+        std::process::exit(ui_common::default_app::run_command(
+            "File Explorer (oxidows)",
+            cmd,
+            quiet,
+            set_default,
+            &DEFAULT_APP,
+        ));
+    }
     let start = std::env::args_os()
         .nth(1)
         .map(PathBuf::from)

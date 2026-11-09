@@ -2,6 +2,7 @@
 //! theme (colors, accent, corners, spacing, fonts), in-app icons, common widgets, app icons and
 //! the renderer choice.
 
+pub mod default_app;
 mod fonts;
 mod icons;
 mod renderer;

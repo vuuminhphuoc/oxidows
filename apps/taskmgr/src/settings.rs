@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use egui::{RichText, Ui};
+use egui::Ui;
 
 use crate::Status;
 
@@ -144,7 +144,13 @@ impl Settings {
 }
 
 /// Draws the page. Returns true when something changed (the caller saves and applies it).
-pub fn show(ui: &mut Ui, s: &mut Settings, tabs: &[&str], status: &Status, replaces: &mut Option<bool>) -> bool {
+pub fn show(
+    ui: &mut Ui,
+    s: &mut Settings,
+    tabs: &[&str],
+    status: &Status,
+    default_app: &mut ui_common::default_app::DefaultApp,
+) -> bool {
     let before = s.clone();
     egui::Grid::new("settings").num_columns(2).spacing([24.0, 10.0]).show(ui, |ui| {
         ui.label("Default start page");
@@ -197,29 +203,15 @@ pub fn show(ui: &mut Ui, s: &mut Settings, tabs: &[&str], status: &Status, repla
         });
         ui.end_row();
 
-        ui.label("Ctrl+Shift+Esc");
-        ui.vertical(|ui| {
-            let mut on = replaces.unwrap_or(false);
-            let resp = ui
-                .add_enabled(replaces.is_some(), egui::Checkbox::new(&mut on, "Open oxidows instead of Task Manager"))
-                .on_hover_text(
-                    "Sets the Image File Execution Options 'Debugger' value for taskmgr.exe. Needs administrator.",
-                );
-            if resp.changed() {
-                match taskmgr_sys::set_replaces_taskmgr(on) {
-                    Ok(()) => {
-                        *replaces = Some(on);
-                        status.set(if on {
-                            "Ctrl+Shift+Esc now opens oxidows"
-                        } else {
-                            "Ctrl+Shift+Esc opens the built-in Task Manager again"
-                        });
-                    }
-                    Err(e) => status.set(format!("Could not change it (run as administrator?): {e}")),
-                }
-            }
-            ui.label(RichText::new("Move or delete this exe only after turning this off.").weak());
-        });
+        ui.label("Default app");
+        if let Some(msg) = default_app.show(
+            ui,
+            &crate::DEFAULT_APP,
+            crate::taskmgr_handler,
+            taskmgr_sys::set_replaces_taskmgr_as_admin,
+        ) {
+            status.set(msg);
+        }
         ui.end_row();
     });
     ui.add_space(12.0);
