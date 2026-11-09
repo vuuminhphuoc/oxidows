@@ -262,12 +262,22 @@ impl State {
                 let apps = self.view(&h.apps);
                 let mut clicked = None;
                 let mut pick = None;
-                TableBuilder::new(ui)
+                let cursor = self.selected.as_ref().and_then(|name| apps.iter().position(|a| &a.name == name));
+                let mut scroll_to = None;
+                if let Some(new_i) = crate::keys::list_keys(ui, apps.len(), cursor, |k| apps[k].name.clone()) {
+                    self.selected = Some(apps[new_i].name.clone());
+                    scroll_to = Some(new_i);
+                }
+                let mut table = TableBuilder::new(ui)
                     .resizable(true)
                     .sense(egui::Sense::click())
                     .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                     .column(Column::remainder().at_least(220.0).clip(true))
-                    .columns(Column::exact(110.0), 5)
+                    .columns(Column::exact(110.0), 5);
+                if let Some(i) = scroll_to {
+                    table = table.scroll_to_row(i, Some(egui::Align::Center));
+                }
+                table
                     .header(SORT_HEADER_HEIGHT, |mut hd| {
                         for (k, t) in [
                             (Sort::Name, "Name"),

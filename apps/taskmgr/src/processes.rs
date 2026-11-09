@@ -7,13 +7,148 @@ use egui::{Color32, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 use taskmgr_core::{
     ColumnTotals, ProcGroup, ProcessRow, Snapshot, SortKey, display_name, format_bits_per_sec, format_bytes, group_of,
-    sorted_view,
+    is_critical_process, sorted_view, type_label,
 };
 use taskmgr_sys::PriorityClass;
 use ui_common::{SORT_HEADER_TOTAL_HEIGHT, SortBy, sort_header_total};
 
 use crate::icons::Icons;
-use crate::{Dialog, Status};
+use crate::{ConfirmAction, Dialog, Status};
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PCol {
+    Type,
+    Status,
+    Publisher,
+    Pid,
+    ProcessName,
+    CommandLine,
+    Cpu,
+    Memory,
+    Disk,
+    Network,
+    Gpu,
+    GpuEngine,
+    Power,
+    PowerTrend,
+}
+
+impl PCol {
+    pub const ALL: [PCol; 14] = [
+        PCol::Type,
+        PCol::Status,
+        PCol::Publisher,
+        PCol::Pid,
+        PCol::ProcessName,
+        PCol::CommandLine,
+        PCol::Cpu,
+        PCol::Memory,
+        PCol::Disk,
+        PCol::Network,
+        PCol::Gpu,
+        PCol::GpuEngine,
+        PCol::Power,
+        PCol::PowerTrend,
+    ];
+
+    pub const DEFAULT: [PCol; 8] =
+        [PCol::Status, PCol::Cpu, PCol::Memory, PCol::Disk, PCol::Network, PCol::Gpu, PCol::Power, PCol::PowerTrend];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            PCol::Type => "type",
+            PCol::Status => "status",
+            PCol::Publisher => "publisher",
+            PCol::Pid => "pid",
+            PCol::ProcessName => "processname",
+            PCol::CommandLine => "commandline",
+            PCol::Cpu => "cpu",
+            PCol::Memory => "memory",
+            PCol::Disk => "disk",
+            PCol::Network => "network",
+            PCol::Gpu => "gpu",
+            PCol::GpuEngine => "gpuengine",
+            PCol::Power => "power",
+            PCol::PowerTrend => "powertrend",
+        }
+    }
+
+    pub fn from_key(k: &str) -> Option<PCol> {
+        match k {
+            "process_name" => Some(PCol::ProcessName),
+            "command_line" => Some(PCol::CommandLine),
+            "gpu_engine" => Some(PCol::GpuEngine),
+            _ => PCol::ALL.into_iter().find(|c| c.key() == k),
+        }
+    }
+
+    pub fn header(self) -> &'static str {
+        match self {
+            PCol::Type => "Type",
+            PCol::Status => "Status",
+            PCol::Publisher => "Publisher",
+            PCol::Pid => "PID",
+            PCol::ProcessName => "Process name",
+            PCol::CommandLine => "Command line",
+            PCol::Cpu => "CPU",
+            PCol::Memory => "Memory",
+            PCol::Disk => "Disk",
+            PCol::Network => "Network",
+            PCol::Gpu => "GPU",
+            PCol::GpuEngine => "GPU engine",
+            PCol::Power => "Power usage",
+            PCol::PowerTrend => "Power usage trend",
+        }
+    }
+
+    pub fn sort_key(self) -> SortKey {
+        match self {
+            PCol::Type => SortKey::Type,
+            PCol::Status => SortKey::Status,
+            PCol::Publisher => SortKey::Publisher,
+            PCol::Pid => SortKey::Pid,
+            PCol::ProcessName => SortKey::ProcessName,
+            PCol::CommandLine => SortKey::CommandLine,
+            PCol::Cpu => SortKey::Cpu,
+            PCol::Memory => SortKey::Memory,
+            PCol::Disk => SortKey::Disk,
+            PCol::Network => SortKey::Network,
+            PCol::Gpu => SortKey::Gpu,
+            PCol::GpuEngine => SortKey::GpuEngine,
+            PCol::Power => SortKey::Power,
+            PCol::PowerTrend => SortKey::PowerTrend,
+        }
+    }
+
+    fn column(self) -> Column {
+        match self {
+            PCol::Status => Column::exact(76.0),
+            PCol::Pid => Column::exact(64.0),
+            PCol::Cpu => Column::exact(64.0),
+            PCol::Memory | PCol::Disk | PCol::Network => Column::exact(90.0),
+            PCol::Gpu => Column::exact(60.0),
+            PCol::Power | PCol::PowerTrend => Column::exact(96.0),
+            PCol::Type => Column::initial(120.0).clip(true),
+            PCol::ProcessName => Column::initial(150.0).clip(true),
+            PCol::CommandLine => Column::initial(260.0).clip(true),
+            PCol::GpuEngine => Column::initial(100.0).clip(true),
+            PCol::Publisher => Column::initial(150.0).clip(true),
+        }
+    }
+}
+
+/// Missing setting = Windows' default set; "name" alone = every optional column hidden.
+pub fn parse_columns(v: &str) -> Vec<PCol> {
+    if v.trim().is_empty() {
+        return PCol::DEFAULT.to_vec();
+    }
+    PCol::ALL.into_iter().filter(|c| v.split(',').any(|k| PCol::from_key(k.trim()) == Some(*c))).collect()
+}
+
+/// Name is always shown, so it leads the list and keeps an empty choice distinct from "not set".
+pub fn columns_text(cols: &[PCol]) -> String {
+    std::iter::once("name").chain(cols.iter().map(|c| c.key())).collect::<Vec<_>>().join(",")
+}
 
 pub struct State {
     pub(crate) filter: String,
@@ -29,6 +164,7 @@ pub struct State {
     windir: String,
     status: Status,
     icons: Icons,
+    pub columns: Vec<PCol>,
 }
 
 enum Line {
@@ -86,8 +222,13 @@ pub fn end_task(status: &Status, rows: &[ProcessRow], pid: u32, name: &str) {
 }
 
 /// Ends a process and everything it started (children first), like "End process tree".
-pub fn end_tree(status: &Status, rows: &[ProcessRow], root: &ProcessRow) {
-    let mut order = vec![root.pid];
+pub fn end_tree(status: &Status, rows: &[ProcessRow], pid: u32, name: &str) {
+    // The confirmation can stay open a while; the PID may be gone or reused by then.
+    if !rows.iter().any(|r| r.pid == pid && r.name == name) {
+        status.set(format!("{name} ({pid}) has already exited"));
+        return;
+    }
+    let mut order = vec![pid];
     let mut i = 0;
     while i < order.len() {
         let parent = order[i];
@@ -101,15 +242,15 @@ pub fn end_tree(status: &Status, rows: &[ProcessRow], root: &ProcessRow) {
         i += 1;
     }
     let mut failed = 0;
-    for pid in order.iter().rev() {
-        if taskmgr_sys::end_process(*pid).is_err() {
+    for p in order.iter().rev() {
+        if taskmgr_sys::end_process(*p).is_err() {
             failed += 1;
         }
     }
     status.set(if failed == 0 {
-        format!("Ended {} and {} child process(es)", root.name, order.len() - 1)
+        format!("Ended {name} and {} child process(es)", order.len() - 1)
     } else {
-        format!("Ended {} of {} processes in the {} tree", order.len() - failed, order.len(), root.name)
+        format!("Ended {} of {} processes in the {name} tree", order.len() - failed, order.len())
     });
 }
 
@@ -150,7 +291,17 @@ pub fn process_menu(ui: &mut Ui, status: &Status, rows: &[ProcessRow], p: &Proce
         ui.close();
     }
     if ui.button("End task").clicked() {
-        end_task(status, rows, p.pid, &p.name);
+        if is_critical_process(&p.name) {
+            status.open(Dialog::Confirm {
+                text: format!(
+                    "Do you want to end the system process {}?\n\nEnding this process will cause Windows to become unusable or shut down, causing you to lose any unsaved data.",
+                    p.name
+                ),
+                action: ConfirmAction::CriticalEndTask { pid: p.pid, name: p.name.clone() },
+            });
+        } else {
+            end_task(status, rows, p.pid, &p.name);
+        }
         ui.close();
     }
     if p.name.eq_ignore_ascii_case("explorer.exe") && ui.button("Restart").clicked() {
@@ -158,15 +309,31 @@ pub fn process_menu(ui: &mut Ui, status: &Status, rows: &[ProcessRow], p: &Proce
         ui.close();
     }
     if ui.button("End process tree").clicked() {
-        end_tree(status, rows, p);
+        status.open(Dialog::Confirm {
+            text: format!(
+                "Do you want to end the process tree of {}?\n\nIf an open program is associated with this process, it will close and you will lose any unsaved data. If you end a system process, it might result in system instability. Are you sure you want to continue?",
+                p.name
+            ),
+            action: ConfirmAction::EndTree { pid: p.pid, name: p.name.clone() },
+        });
         ui.close();
     }
     let mut eco = taskmgr_sys::efficiency_mode(p.pid).unwrap_or(false);
     if ui.checkbox(&mut eco, "Efficiency mode").changed() {
-        status.set(match taskmgr_sys::set_efficiency_mode(p.pid, eco) {
-            Ok(()) => format!("Efficiency mode {} for {}", if eco { "on" } else { "off" }, p.name),
-            Err(e) => format!("Could not change efficiency mode of {}: {e}", p.name),
-        });
+        if eco {
+            status.open(Dialog::Confirm {
+                text: format!(
+                    "Turn on Efficiency mode for {}?\n\nEfficiency mode will lower process priority and improve power efficiency. It might cause instability for some processes.",
+                    p.name
+                ),
+                action: ConfirmAction::EfficiencyMode { pid: p.pid, name: p.name.clone() },
+            });
+        } else {
+            status.set(match taskmgr_sys::set_efficiency_mode(p.pid, false) {
+                Ok(()) => format!("Efficiency mode off for {}", p.name),
+                Err(e) => format!("Could not change efficiency mode of {}: {e}", p.name),
+            });
+        }
         ui.close();
     }
     ui.separator();
@@ -269,8 +436,32 @@ fn heat(ui: &Ui, fraction: f32) -> Color32 {
     base.gamma_multiply((0.08 + fraction.clamp(0.0, 1.0) * 0.7).min(0.78))
 }
 
+fn header_menu(ui: &mut Ui, columns: &mut Vec<PCol>) {
+    ui_common::MenuItem::new("Name").checked(true).enabled(false).ui(ui);
+    for c in PCol::ALL {
+        let mut on = columns.contains(&c);
+        if ui_common::menu_check(ui, None, c.header(), &mut on).clicked() {
+            if on {
+                if !columns.contains(&c) {
+                    columns.push(c);
+                    columns.sort_by_key(|x| PCol::ALL.iter().position(|a| a == x).unwrap_or(0));
+                }
+            } else {
+                columns.retain(|x| *x != c);
+            }
+        }
+    }
+}
+
 impl State {
-    pub fn new(status: Status, icons: Icons, group: bool, percent: bool, sort: Option<SortBy<SortKey>>) -> Self {
+    pub fn new(
+        status: Status,
+        icons: Icons,
+        group: bool,
+        percent: bool,
+        columns: Vec<PCol>,
+        sort: Option<SortBy<SortKey>>,
+    ) -> Self {
         Self {
             percent,
             filter: String::new(),
@@ -282,12 +473,17 @@ impl State {
             windir: std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into()),
             status,
             icons,
+            columns,
         }
     }
 
-    pub fn show(&mut self, ui: &mut Ui, snap: &Snapshot) {
+    pub fn show(&mut self, ui: &mut Ui, snap: &Snapshot) -> bool {
+        let before_cols = self.columns.clone();
         let rows = &snap.processes;
-        if self.selected.is_some() && ui.input(|i| i.key_pressed(egui::Key::Delete)) {
+        if self.selected.is_some()
+            && ui.input(|i| i.key_pressed(egui::Key::Delete))
+            && ui.ctx().memory(|m| m.focused().is_none())
+        {
             self.end_selected(rows);
         }
         ui.add_space(4.0);
@@ -338,6 +534,56 @@ impl State {
         } else {
             view.into_iter().map(Line::Row).collect()
         };
+
+        // Selectable rows: non-header rows in `lines`
+        let selectable: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, line)| match line {
+                Line::Header(..) => None,
+                _ => Some(idx),
+            })
+            .collect();
+
+        let cursor = self.selected.as_ref().and_then(|(pid, _)| {
+            selectable.iter().position(|&line_idx| match &lines[line_idx] {
+                Line::Row(i) | Line::Child(i) => rows[*i].pid == *pid,
+                Line::App(root, _, _) => rows[*root].pid == *pid,
+                Line::Header(..) => false,
+            })
+        });
+
+        let line_name = |k: usize| -> String {
+            let line_idx = selectable[k];
+            match &lines[line_idx] {
+                Line::Row(i) | Line::Child(i) => display_name(&rows[*i]).to_string(),
+                Line::App(root, _, _) => display_name(&rows[*root]).to_string(),
+                Line::Header(..) => String::new(),
+            }
+        };
+
+        let mut scroll_to_line = None;
+        if let Some(new_k) = crate::keys::list_keys(ui, selectable.len(), cursor, line_name) {
+            let line_idx = selectable[new_k];
+            let p = match &lines[line_idx] {
+                Line::Row(i) | Line::Child(i) => &rows[*i],
+                Line::App(root, _, _) => &rows[*root],
+                Line::Header(..) => unreachable!(),
+            };
+            self.selected = Some((p.pid, p.name.clone()));
+            scroll_to_line = Some(line_idx);
+        }
+
+        // Enter expands/collapses an app row in Processes
+        if ui.input(|i| i.key_pressed(egui::Key::Enter))
+            && ui.ctx().memory(|m| m.focused().is_none())
+            && let Some((pid, _)) = &self.selected
+            && lines.iter().any(|line| matches!(line, Line::App(root, _, n) if rows[*root].pid == *pid && *n > 0))
+            && !self.expanded.remove(pid)
+        {
+            self.expanded.insert(*pid);
+        }
+
         let mem_total = snap.system.mem_total.max(1) as f32;
         let net_on = snap.system.per_process_net;
         let sys = &snap.system;
@@ -355,48 +601,48 @@ impl State {
         let mut clicked_sort = None;
         let mut toggle_group = None;
         let mut toggle_app = None;
-        TableBuilder::new(ui)
+        let cols = self.columns.clone();
+        let mut table = TableBuilder::new(ui)
             .resizable(true)
             .sense(egui::Sense::click())
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-            .column(Column::remainder().at_least(200.0).clip(true))
-            .column(Column::exact(76.0))
-            .column(Column::exact(64.0))
-            .column(Column::exact(64.0))
-            .column(Column::exact(90.0))
-            .column(Column::exact(90.0))
-            .column(Column::exact(90.0))
-            .column(Column::exact(60.0))
-            .columns(Column::exact(96.0), 2)
-            .column(Column::initial(150.0).clip(true))
+            .column(Column::remainder().at_least(200.0).clip(true));
+        for &col in &cols {
+            table = table.column(col.column());
+        }
+        if let Some(line_idx) = scroll_to_line {
+            table = table.scroll_to_row(line_idx, Some(egui::Align::Center));
+        }
+        table
             .header(SORT_HEADER_TOTAL_HEIGHT, |mut h| {
-                for (key, title) in [
-                    (SortKey::Name, "Name"),
-                    (SortKey::Status, "Status"),
-                    (SortKey::Pid, "PID"),
-                    (SortKey::Cpu, "CPU"),
-                    (SortKey::Memory, "Memory"),
-                    (SortKey::Disk, "Disk"),
-                    (SortKey::Network, "Network"),
-                    (SortKey::Gpu, "GPU"),
-                    (SortKey::Power, "Power usage"),
-                    (SortKey::PowerTrend, "Power usage trend"),
-                    (SortKey::Publisher, "Publisher"),
-                ] {
-                    // Task Manager prints the machine's total above these columns.
-                    let total = match key {
-                        SortKey::Cpu => Some(totals.cpu),
-                        SortKey::Memory => Some(totals.memory),
-                        SortKey::Disk => Some(totals.disk),
-                        SortKey::Network => Some(totals.network),
-                        SortKey::Gpu => Some(totals.gpu),
+                h.col(|ui| {
+                    let resp = sort_header_total(ui, "Name", None, self.sort.arrow(SortKey::Name));
+                    if resp.clicked() {
+                        clicked_sort = Some(SortKey::Name);
+                    }
+                    resp.context_menu(|ui| {
+                        header_menu(ui, &mut self.columns);
+                    });
+                });
+                for &col in &cols {
+                    let total = match col {
+                        PCol::Cpu => Some(totals.cpu),
+                        PCol::Memory => Some(totals.memory),
+                        PCol::Disk => Some(totals.disk),
+                        PCol::Network => Some(totals.network),
+                        PCol::Gpu => Some(totals.gpu),
                         _ => None,
                     }
                     .map(ColumnTotals::label);
                     h.col(|ui| {
-                        if sort_header_total(ui, title, total.as_deref(), self.sort.arrow(key)).clicked() {
-                            clicked_sort = Some(key);
+                        let resp =
+                            sort_header_total(ui, col.header(), total.as_deref(), self.sort.arrow(col.sort_key()));
+                        if resp.clicked() {
+                            clicked_sort = Some(col.sort_key());
                         }
+                        resp.context_menu(|ui| {
+                            header_menu(ui, &mut self.columns);
+                        });
                     });
                 }
             })
@@ -409,7 +655,7 @@ impl State {
                                 let arrow = if self.collapsed[gi] { ">" } else { "v" };
                                 ui.label(RichText::new(format!("{arrow} {} ({n})", g.label())).strong());
                             });
-                            for _ in 0..10 {
+                            for _ in 0..cols.len() {
                                 row.col(|_| {});
                             }
                             if row.response().clicked() {
@@ -449,63 +695,90 @@ impl State {
                             }
                         }
                     });
-                    row.col(|ui| {
-                        if p.suspended {
-                            ui.label(RichText::new("Suspended").weak());
-                        } else if p.efficiency {
-                            ui.label(RichText::new("Efficiency").color(Color32::from_rgb(60, 170, 90)))
-                                .on_hover_text("Efficiency mode: this process runs at low priority and power");
-                        }
-                    });
-                    row.col(|ui| {
-                        ui.label(p.pid.to_string());
-                    });
-                    row.col(|ui| {
-                        ui.painter().rect_filled(ui.max_rect(), 0.0, heat(ui, p.cpu_pct / 100.0));
-                        ui.label(format!("{:.1}%", p.cpu_pct));
-                    });
-                    row.col(|ui| {
-                        ui.painter().rect_filled(ui.max_rect(), 0.0, heat(ui, p.memory as f32 / mem_total * 8.0));
-                        ui.label(if percent {
-                            format!("{:.1}%", p.memory as f32 * 100.0 / mem_total)
-                        } else {
-                            format_bytes(p.memory as f64)
-                        });
-                    });
-                    row.col(|ui| {
-                        ui.painter().rect_filled(ui.max_rect(), 0.0, heat(ui, (p.disk_bps / 10e6) as f32));
-                        ui.label(if percent {
-                            format!("{:.1}%", disk_pct(p.disk_bps))
-                        } else {
-                            format!("{}/s", format_bytes(p.disk_bps))
-                        });
-                    });
-                    row.col(|ui| {
-                        if net_on {
-                            ui.painter().rect_filled(ui.max_rect(), 0.0, heat(ui, (p.net_bps * 8.0 / 10e6) as f32));
-                            ui.label(if percent {
-                                format!("{:.1}%", net_pct(p.net_bps))
-                            } else {
-                                format_bits_per_sec(p.net_bps)
-                            });
-                        } else {
-                            ui.label(RichText::new("-").weak()).on_hover_text(NET_HINT);
-                        }
-                    });
-                    row.col(|ui| {
-                        ui.painter().rect_filled(ui.max_rect(), 0.0, heat(ui, p.gpu_pct / 100.0));
-                        ui.label(format!("{:.0}%", p.gpu_pct));
-                    });
-                    for score in [p.power, p.power_trend] {
-                        row.col(|ui| {
-                            ui.painter().rect_filled(ui.max_rect(), 0.0, heat(ui, score / 25.0));
-                            ui.label(taskmgr_core::power_label(score))
-                                .on_hover_text("Estimated from CPU, GPU, disk and network use");
+                    for &col in &cols {
+                        row.col(|ui| match col {
+                            PCol::Type => {
+                                ui.label(type_label(p, &self.windir));
+                            }
+                            PCol::Status => {
+                                if p.suspended {
+                                    ui.label(RichText::new("Suspended").weak());
+                                } else if p.efficiency {
+                                    ui.label(RichText::new("Efficiency").color(Color32::from_rgb(60, 170, 90)))
+                                        .on_hover_text("Efficiency mode: this process runs at low priority and power");
+                                }
+                            }
+                            PCol::Publisher => {
+                                ui.label(&p.info.publisher);
+                            }
+                            PCol::Pid => {
+                                ui.label(p.pid.to_string());
+                            }
+                            PCol::ProcessName => {
+                                ui.label(&p.name);
+                            }
+                            PCol::CommandLine => {
+                                ui.label(&p.info.command_line).on_hover_text(&p.info.command_line);
+                            }
+                            PCol::Cpu => {
+                                ui.painter().rect_filled(ui.max_rect(), 0.0, heat(ui, p.cpu_pct / 100.0));
+                                ui.label(format!("{:.1}%", p.cpu_pct));
+                            }
+                            PCol::Memory => {
+                                ui.painter().rect_filled(
+                                    ui.max_rect(),
+                                    0.0,
+                                    heat(ui, p.memory as f32 / mem_total * 8.0),
+                                );
+                                ui.label(if percent {
+                                    format!("{:.1}%", p.memory as f32 * 100.0 / mem_total)
+                                } else {
+                                    format_bytes(p.memory as f64)
+                                });
+                            }
+                            PCol::Disk => {
+                                ui.painter().rect_filled(ui.max_rect(), 0.0, heat(ui, (p.disk_bps / 10e6) as f32));
+                                ui.label(if percent {
+                                    format!("{:.1}%", disk_pct(p.disk_bps))
+                                } else {
+                                    format!("{}/s", format_bytes(p.disk_bps))
+                                });
+                            }
+                            PCol::Network => {
+                                if net_on {
+                                    ui.painter().rect_filled(
+                                        ui.max_rect(),
+                                        0.0,
+                                        heat(ui, (p.net_bps * 8.0 / 10e6) as f32),
+                                    );
+                                    ui.label(if percent {
+                                        format!("{:.1}%", net_pct(p.net_bps))
+                                    } else {
+                                        format_bits_per_sec(p.net_bps)
+                                    });
+                                } else {
+                                    ui.label(RichText::new("-").weak()).on_hover_text(NET_HINT);
+                                }
+                            }
+                            PCol::Gpu => {
+                                ui.painter().rect_filled(ui.max_rect(), 0.0, heat(ui, p.gpu_pct / 100.0));
+                                ui.label(format!("{:.0}%", p.gpu_pct));
+                            }
+                            PCol::GpuEngine => {
+                                ui.label(&p.gpu_engine);
+                            }
+                            PCol::Power => {
+                                ui.painter().rect_filled(ui.max_rect(), 0.0, heat(ui, p.power / 25.0));
+                                ui.label(taskmgr_core::power_label(p.power))
+                                    .on_hover_text("Estimated from CPU, GPU, disk and network use");
+                            }
+                            PCol::PowerTrend => {
+                                ui.painter().rect_filled(ui.max_rect(), 0.0, heat(ui, p.power_trend / 25.0));
+                                ui.label(taskmgr_core::power_label(p.power_trend))
+                                    .on_hover_text("Estimated from CPU, GPU, disk and network use");
+                            }
                         });
                     }
-                    row.col(|ui| {
-                        ui.label(&p.info.publisher);
-                    });
                     let resp = row.response();
                     if resp.clicked() {
                         self.selected = Some((p.pid, p.name.clone()));
@@ -530,6 +803,7 @@ impl State {
         if let Some(key) = clicked_sort {
             self.sort.click(key, key.descending_first());
         }
+        before_cols != self.columns
     }
 
     pub fn commands(&mut self, ui: &mut Ui, snap: &Snapshot) {
@@ -542,10 +816,19 @@ impl State {
             && let Some((pid, name)) = &self.selected
         {
             let eco = !taskmgr_sys::efficiency_mode(*pid).unwrap_or(false);
-            self.status.set(match taskmgr_sys::set_efficiency_mode(*pid, eco) {
-                Ok(()) => format!("Efficiency mode {} for {}", if eco { "on" } else { "off" }, name),
-                Err(e) => format!("Could not change efficiency mode of {}: {e}", name),
-            });
+            if eco {
+                self.status.open(Dialog::Confirm {
+                    text: format!(
+                        "Turn on Efficiency mode for {name}?\n\nEfficiency mode will lower process priority and improve power efficiency. It might cause instability for some processes."
+                    ),
+                    action: ConfirmAction::EfficiencyMode { pid: *pid, name: name.clone() },
+                });
+            } else {
+                self.status.set(match taskmgr_sys::set_efficiency_mode(*pid, false) {
+                    Ok(()) => format!("Efficiency mode off for {name}"),
+                    Err(e) => format!("Could not change efficiency mode of {name}: {e}"),
+                });
+            }
         }
         if ui_common::command_button(ui, ui_common::Icon::Close, "End task", can_action, "").clicked() {
             self.end_selected(&snap.processes);
@@ -558,7 +841,36 @@ impl State {
 
     pub fn end_selected(&mut self, rows: &[ProcessRow]) {
         if let Some((pid, name)) = self.selected.take() {
-            end_task(&self.status, rows, pid, &name);
+            if is_critical_process(&name) {
+                self.status.open(Dialog::Confirm {
+                    text: format!(
+                        "Do you want to end the system process {name}?\n\nEnding this process will cause Windows to become unusable or shut down, causing you to lose any unsaved data."
+                    ),
+                    action: ConfirmAction::CriticalEndTask { pid, name },
+                });
+            } else {
+                end_task(&self.status, rows, pid, &name);
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pcol_keys_and_round_trip() {
+        for col in PCol::ALL {
+            assert_eq!(PCol::from_key(col.key()), Some(col));
+        }
+        let text = columns_text(&PCol::DEFAULT);
+        let parsed = parse_columns(&text);
+        assert_eq!(parsed, PCol::DEFAULT.to_vec());
+        assert_eq!(parse_columns(""), PCol::DEFAULT.to_vec());
+        assert_eq!(parse_columns("invalid,junk"), Vec::<PCol>::new());
+        assert_eq!(parse_columns(&columns_text(&[])), Vec::<PCol>::new());
+        assert_eq!(parse_columns("cpu,type,cpu"), vec![PCol::Type, PCol::Cpu]);
+        assert_eq!(parse_columns("type,process_name,cpu"), vec![PCol::Type, PCol::ProcessName, PCol::Cpu]);
     }
 }

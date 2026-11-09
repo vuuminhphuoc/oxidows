@@ -24,6 +24,7 @@ as the feature.
 | Replace Ctrl+Shift+Esc / taskmgr.exe | done | Settings > Default app: IFEO `Debugger`, asks for admin (UAC) itself; restore gives back Task Manager or the tool that had it; `--restore-default`; `taskmgr /startup` opens Startup |
 | One instance: starting it again brings the open window forward | done | named mutex; also from a non-elevated start to an elevated window, and out of the tray; Run as administrator waits for the old one |
 | Notification-area icon with CPU usage | done | left click shows, right click Show / Exit |
+| Keyboard navigation in every table | done | Arrow Up/Down, Page Up/Down, Home/End, type-ahead (900 ms wrapping), Enter toggles apps in Processes, Delete ends task in Processes and Details |
 | Keyboard: Delete = End task, Ctrl+Tab / Ctrl+Shift+Tab between pages | done | |
 | Sort every table by any column: click a header, click again to reverse, chevron above the sorted column | done | Processes, App history, Startup apps, Users, Details, Services; each page's sort is saved between runs |
 
@@ -54,8 +55,10 @@ as the feature.
 | Status column | done | Suspended, Efficiency |
 | Publisher column | done | version resource CompanyName |
 | Power usage, Power usage trend | done | estimated from CPU, GPU, disk and network (Windows' column is an estimate too); trend is a two-minute average |
-| End process tree | done | children first, PID-reuse guard |
-| Efficiency mode | done | EcoQoS + idle priority |
+| End process tree | done | children first, PID-reuse guard; confirms with "End process tree" / "Cancel" |
+| Efficiency mode | done | EcoQoS + idle priority; confirms before turning on ("Turn on Efficiency mode" / "Cancel") |
+| Critical process protection | done | confirms before ending critical Windows processes ("Shut down" / "Cancel") |
+| Choose columns (right-click header) | done | 14 choices matching Windows 11, saved as processes_columns |
 | Open file location, Copy command line, Search online | done | |
 | Set priority, Set affinity | done | |
 | Create memory dump file | done | `MiniDumpWriteDump` to `%TEMP%` |

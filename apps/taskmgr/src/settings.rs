@@ -74,6 +74,8 @@ pub struct Settings {
     pub group_by_type: bool,
     /// Memory, Disk and Network on the Processes page as percentages.
     pub values_pct: bool,
+    /// Visible Processes columns, as keys (see `processes::PCol::key`).
+    pub processes_columns: String,
     /// Visible Details columns, as keys (see `details::Col::key`).
     pub details_columns: String,
     /// Sorted column per table, as `column:asc` / `column:desc`; empty for the table's default.
@@ -102,6 +104,7 @@ impl Default for Settings {
             run_as_admin: AdminMode::Off,
             group_by_type: true,
             values_pct: false,
+            processes_columns: crate::processes::columns_text(&crate::processes::PCol::DEFAULT),
             details_columns: crate::details::columns_text(&crate::details::Col::DEFAULT),
             sort_processes: String::new(),
             sort_history: String::new(),
@@ -143,6 +146,7 @@ impl Settings {
                 "minimize_on_use" => s.minimize_on_use = v == "true",
                 "group_by_type" => s.group_by_type = v != "false",
                 "values_pct" => s.values_pct = v == "true",
+                "processes_columns" => s.processes_columns = v.to_string(),
                 "details_columns" => s.details_columns = v.to_string(),
                 "sort_processes" => s.sort_processes = v.to_string(),
                 "sort_history" => s.sort_history = v.to_string(),
@@ -163,7 +167,7 @@ impl Settings {
     pub fn to_text(&self) -> String {
         let theme = self.theme.key();
         let mut t = format!(
-            "default_tab={}\ninterval_ms={}\nalways_on_top={}\nhide_when_minimized={}\nminimize_on_use={}\ntheme={theme}\ngroup_by_type={}\nvalues_pct={}\ndetails_columns={}\n",
+            "default_tab={}\ninterval_ms={}\nalways_on_top={}\nhide_when_minimized={}\nminimize_on_use={}\ntheme={theme}\ngroup_by_type={}\nvalues_pct={}\nprocesses_columns={}\ndetails_columns={}\n",
             self.default_tab,
             self.interval_ms,
             self.always_on_top,
@@ -171,6 +175,7 @@ impl Settings {
             self.minimize_on_use,
             self.group_by_type,
             self.values_pct,
+            self.processes_columns,
             self.details_columns
         );
         t.push_str(&format!("cpu_logical={}\ncpu_kernel={}\n", self.cpu_logical, self.cpu_kernel));
@@ -379,6 +384,7 @@ mod tests {
             run_as_admin: AdminMode::Task,
             group_by_type: false,
             values_pct: true,
+            processes_columns: "status,cpu,memory".into(),
             details_columns: "name,pid,cmdline".into(),
             sort_processes: "memory:desc".into(),
             sort_history: "name:asc".into(),

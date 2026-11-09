@@ -432,7 +432,7 @@ pub struct RawSample {
 }
 
 /// A process with its rates, ready to show.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ProcessRow {
     pub pid: u32,
     pub parent_pid: u32,
@@ -1070,10 +1070,14 @@ pub enum SortKey {
     /// Running, then Efficiency mode, then Suspended.
     Status,
     Publisher,
+    Type,
+    ProcessName,
+    CommandLine,
+    GpuEngine,
 }
 
 impl SortKey {
-    pub const ALL: [SortKey; 12] = [
+    pub const ALL: [SortKey; 16] = [
         SortKey::Name,
         SortKey::Pid,
         SortKey::Cpu,
@@ -1086,8 +1090,11 @@ impl SortKey {
         SortKey::PowerTrend,
         SortKey::Status,
         SortKey::Publisher,
+        SortKey::Type,
+        SortKey::ProcessName,
+        SortKey::CommandLine,
+        SortKey::GpuEngine,
     ];
-
     /// Name in the settings file.
     pub fn key(self) -> &'static str {
         match self {
@@ -1103,16 +1110,35 @@ impl SortKey {
             SortKey::PowerTrend => "powertrend",
             SortKey::Status => "status",
             SortKey::Publisher => "publisher",
+            SortKey::Type => "type",
+            SortKey::ProcessName => "processname",
+            SortKey::CommandLine => "commandline",
+            SortKey::GpuEngine => "gpuengine",
         }
     }
 
     pub fn from_key(k: &str) -> Option<SortKey> {
-        SortKey::ALL.into_iter().find(|s| s.key() == k)
+        match k {
+            "process_name" => Some(SortKey::ProcessName),
+            "command_line" => Some(SortKey::CommandLine),
+            "gpu_engine" => Some(SortKey::GpuEngine),
+            _ => SortKey::ALL.into_iter().find(|s| s.key() == k),
+        }
     }
 
     /// Text reads best A to Z; numbers biggest first, as Task Manager does.
     pub fn descending_first(self) -> bool {
-        !matches!(self, SortKey::Name | SortKey::Pid | SortKey::Status | SortKey::Publisher)
+        !matches!(
+            self,
+            SortKey::Name
+                | SortKey::Pid
+                | SortKey::Status
+                | SortKey::Publisher
+                | SortKey::Type
+                | SortKey::ProcessName
+                | SortKey::CommandLine
+                | SortKey::GpuEngine
+        )
     }
 }
 
@@ -1152,6 +1178,29 @@ const WINDOWS_NAMES: &[&str] = &[
     "LsaIso.exe",
 ];
 
+/// Critical Windows system processes that ask for confirmation before ending.
+pub const CRITICAL_PROCESSES: &[&str] =
+    &["csrss.exe", "wininit.exe", "winlogon.exe", "smss.exe", "services.exe", "lsass.exe"];
+
+/// True when `name` is a critical Windows system process (case-insensitive).
+pub fn is_critical_process(name: &str) -> bool {
+    CRITICAL_PROCESSES.iter().any(|n| n.eq_ignore_ascii_case(name))
+}
+
+/// Case-insensitive text order, as Windows sorts names.
+pub fn cmp_text(a: &str, b: &str) -> std::cmp::Ordering {
+    a.chars().flat_map(char::to_lowercase).cmp(b.chars().flat_map(char::to_lowercase))
+}
+
+/// Display label for a process type: "App", "Background process", or "Windows process".
+pub fn type_label(p: &ProcessRow, windir: &str) -> &'static str {
+    match group_of(p, windir) {
+        ProcGroup::Apps => "App",
+        ProcGroup::Background => "Background process",
+        ProcGroup::Windows => "Windows process",
+    }
+}
+
 /// Apps own a visible window; Windows processes run from the Windows folder (except Explorer,
 /// which Task Manager lists as an app when it has a window); everything else is background.
 pub fn group_of(p: &ProcessRow, windir: &str) -> ProcGroup {
@@ -1183,13 +1232,19 @@ pub fn sorted_view(rows: &[ProcessRow], filter: &str, key: SortKey, descending: 
             filter.is_empty() || pid_filter == Some(rows[i].pid) || rows[i].name.to_lowercase().contains(&filter)
         })
         .collect();
+    // Only the Type column needs the Windows folder; this runs every frame.
+    let windir = if key == SortKey::Type {
+        std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into())
+    } else {
+        String::new()
+    };
     idx.sort_by(|&a, &b| {
         let (a, b) = (&rows[a], &rows[b]);
         let ord = match key {
-            SortKey::Name => display_name(a).to_lowercase().cmp(&display_name(b).to_lowercase()),
+            SortKey::Name => cmp_text(display_name(a), display_name(b)),
             SortKey::Pid => a.pid.cmp(&b.pid),
             SortKey::Status => (a.suspended, a.efficiency).cmp(&(b.suspended, b.efficiency)),
-            SortKey::Publisher => a.info.publisher.to_lowercase().cmp(&b.info.publisher.to_lowercase()),
+            SortKey::Publisher => cmp_text(&a.info.publisher, &b.info.publisher),
             SortKey::Cpu => a.cpu_pct.total_cmp(&b.cpu_pct),
             SortKey::Memory => a.memory.cmp(&b.memory),
             SortKey::Disk => a.disk_bps.total_cmp(&b.disk_bps),
@@ -1198,6 +1253,10 @@ pub fn sorted_view(rows: &[ProcessRow], filter: &str, key: SortKey, descending: 
             SortKey::Threads => a.threads.cmp(&b.threads),
             SortKey::Power => a.power.total_cmp(&b.power),
             SortKey::PowerTrend => a.power_trend.total_cmp(&b.power_trend),
+            SortKey::Type => cmp_text(type_label(a, &windir), type_label(b, &windir)),
+            SortKey::ProcessName => cmp_text(&a.name, &b.name),
+            SortKey::CommandLine => cmp_text(&a.info.command_line, &b.info.command_line),
+            SortKey::GpuEngine => cmp_text(&a.gpu_engine, &b.gpu_engine),
         };
         let ord = if descending { ord.reverse() } else { ord };
         ord.then(a.pid.cmp(&b.pid))
@@ -1435,6 +1494,66 @@ mod tests {
         assert_eq!(sorted_view(&rows, "", SortKey::Cpu, true), vec![1, 0, 2]);
         assert_eq!(sorted_view(&rows, "CHROME", SortKey::Cpu, false), vec![2, 0]);
         assert_eq!(sorted_view(&rows, "3", SortKey::Name, false), vec![2]);
+    }
+    #[test]
+    fn critical_processes_list() {
+        for name in ["csrss.exe", "wininit.exe", "winlogon.exe", "smss.exe", "services.exe", "lsass.exe"] {
+            assert!(is_critical_process(name), "{name} should be critical");
+            assert!(is_critical_process(&name.to_uppercase()), "{name} uppercase should be critical");
+        }
+        assert!(!is_critical_process("svchost.exe"));
+        assert!(!is_critical_process("explorer.exe"));
+        assert!(!is_critical_process("notepad.exe"));
+    }
+
+    #[test]
+    fn sort_by_new_keys() {
+        let p1 = ProcessRow {
+            pid: 1,
+            name: "beta.exe".into(),
+            gpu_engine: "3D".into(),
+            info: Arc::new(StaticInfo {
+                command_line: "beta --arg".into(),
+                path: r"C:\Windows\System32\beta.exe".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let p2 = ProcessRow {
+            pid: 2,
+            name: "alpha.exe".into(),
+            gpu_engine: "Video".into(),
+            has_window: true,
+            info: Arc::new(StaticInfo {
+                command_line: "alpha -v".into(),
+                path: r"C:\Program Files\alpha.exe".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let p3 = ProcessRow {
+            pid: 3,
+            name: "gamma.exe".into(),
+            gpu_engine: "Copy".into(),
+            has_window: false,
+            info: Arc::new(StaticInfo {
+                command_line: "gamma".into(),
+                path: r"C:\Tools\gamma.exe".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let rows = vec![p1, p2, p3];
+        // ProcessName: alpha (2), beta (1), gamma (3)
+        assert_eq!(sorted_view(&rows, "", SortKey::ProcessName, false), vec![1, 0, 2]);
+        // CommandLine: "alpha -v" (2), "beta --arg" (1), "gamma" (3)
+        assert_eq!(sorted_view(&rows, "", SortKey::CommandLine, false), vec![1, 0, 2]);
+        // GpuEngine: "3D" (1), "Copy" (3), "Video" (2)
+        assert_eq!(sorted_view(&rows, "", SortKey::GpuEngine, false), vec![0, 2, 1]);
+        // Type: p2 is App ("App"), p3 is Background ("Background process"), p1 is in C:\Windows ("Windows process")
+        assert_eq!(sorted_view(&rows, "", SortKey::Type, false), vec![1, 2, 0]);
+        assert_eq!(cmp_text("Apple", "banana"), std::cmp::Ordering::Less);
+        assert_eq!(cmp_text("banana", "Banana"), std::cmp::Ordering::Equal);
     }
 
     #[test]
