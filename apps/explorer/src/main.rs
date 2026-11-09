@@ -1801,7 +1801,8 @@ impl App {
             Ok(path) => {
                 self.selected.clear();
                 self.pending_select = path.file_name().map(|n| n.to_string_lossy().into_owned());
-                self.pending_rename = true;
+                // A new shortcut opens Windows' Create Shortcut wizard, which names it.
+                self.pending_rename = !item.ext.eq_ignore_ascii_case(".lnk");
                 self.refresh();
             }
             Err(e) => self.status = Some(format!("Could not create {}: {e}", item.name)),
