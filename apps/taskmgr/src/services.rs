@@ -3,21 +3,71 @@
 
 use egui::{RichText, Ui};
 use egui_extras::{Column, TableBuilder};
-use taskmgr_core::{ServiceState, Snapshot};
+use taskmgr_core::{Service, ServiceState, Snapshot};
 use taskmgr_sys::ServiceAction;
+use ui_common::{SORT_HEADER_HEIGHT, SortBy, cmp_text, sort_header};
 
 use crate::Status;
+
+/// The columns, in order; any of them sorts the list.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Col {
+    Name,
+    Pid,
+    Description,
+    Status,
+    Group,
+}
+
+impl Col {
+    const ALL: [Col; 5] = [Col::Name, Col::Pid, Col::Description, Col::Status, Col::Group];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Col::Name => "name",
+            Col::Pid => "pid",
+            Col::Description => "description",
+            Col::Status => "status",
+            Col::Group => "group",
+        }
+    }
+
+    pub fn from_key(k: &str) -> Option<Col> {
+        Col::ALL.into_iter().find(|c| c.key() == k)
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Col::Name => "Name",
+            Col::Pid => "PID",
+            Col::Description => "Description",
+            Col::Status => "Status",
+            Col::Group => "Group",
+        }
+    }
+
+    fn cmp(self, a: &Service, b: &Service) -> std::cmp::Ordering {
+        match self {
+            Col::Name => cmp_text(&a.name, &b.name),
+            Col::Pid => a.pid.cmp(&b.pid),
+            Col::Description => cmp_text(&a.display_name, &b.display_name),
+            Col::Status => a.state.label().cmp(b.state.label()),
+            Col::Group => cmp_text(&a.group, &b.group),
+        }
+    }
+}
 
 pub struct State {
     filter: String,
     selected: Option<String>,
+    pub sort: SortBy<Col>,
     status: Status,
     ctx: egui::Context,
 }
 
 impl State {
-    pub fn new(status: Status, ctx: egui::Context) -> Self {
-        Self { filter: String::new(), selected: None, status, ctx }
+    pub fn new(status: Status, ctx: egui::Context, sort: Option<SortBy<Col>>) -> Self {
+        Self { filter: String::new(), selected: None, sort: sort.unwrap_or(SortBy::new(Col::Name, false)), status, ctx }
     }
 
     /// "Go to service(s)": show the services hosted by `pid`.
@@ -83,7 +133,7 @@ impl State {
         ui.add_space(4.0);
 
         let f = self.filter.trim().to_lowercase();
-        let view: Vec<_> = services
+        let mut view: Vec<_> = services
             .iter()
             .filter(|s| {
                 f.is_empty()
@@ -93,7 +143,10 @@ impl State {
                     || s.group.to_lowercase().contains(&f)
             })
             .collect();
+        let sort = self.sort;
+        view.sort_by(|a, b| sort.apply(sort.key.cmp(a, b)).then_with(|| cmp_text(&a.name, &b.name)));
         let mut action = None;
+        let mut clicked = None;
         TableBuilder::new(ui)
             .striped(true)
             .resizable(true)
@@ -104,10 +157,12 @@ impl State {
             .column(Column::remainder().clip(true))
             .column(Column::exact(90.0))
             .column(Column::initial(170.0).clip(true))
-            .header(20.0, |mut h| {
-                for t in ["Name", "PID", "Description", "Status", "Group"] {
+            .header(SORT_HEADER_HEIGHT, |mut h| {
+                for c in Col::ALL {
                     h.col(|ui| {
-                        ui.label(RichText::new(t).strong());
+                        if sort_header(ui, c.title(), self.sort.arrow(c)).clicked() {
+                            clicked = Some(c);
+                        }
                     });
                 }
             })
@@ -157,6 +212,9 @@ impl State {
                     });
                 });
             });
+        if let Some(c) = clicked {
+            self.sort.click(c, false);
+        }
         if let Some((name, a)) = action {
             self.run(name, a);
         }

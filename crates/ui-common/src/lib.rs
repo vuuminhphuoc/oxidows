@@ -5,12 +5,14 @@
 mod fonts;
 mod icons;
 mod renderer;
+mod sort;
 pub mod theme;
 mod widgets;
 
 pub use fonts::{ICONS, SEMIBOLD, ensure_glyphs, has_icon_font};
 pub use icons::{ICON_SIZE, Icon};
 pub use renderer::{Renderer, choose as choose_renderer, relaunch_with};
+pub use sort::{SORT_HEADER_HEIGHT, SortBy, cmp_text, sort_header};
 pub use theme::{Palette, Theme, setup};
 pub use widgets::*;
 

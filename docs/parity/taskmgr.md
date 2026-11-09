@@ -22,6 +22,7 @@ as the feature.
 | Replace Ctrl+Shift+Esc / taskmgr.exe | done | opt-in on Settings, IFEO `Debugger`, needs admin |
 | Notification-area icon with CPU usage | done | left click shows, right click Show / Exit |
 | Keyboard: Delete = End task, Ctrl+Tab / Ctrl+Shift+Tab between pages | done | |
+| Sort every table by any column: click a header, click again to reverse, chevron above the sorted column | done | Processes, App history, Startup apps, Users, Details, Services; each page's sort is saved between runs |
 
 ## Processes
 

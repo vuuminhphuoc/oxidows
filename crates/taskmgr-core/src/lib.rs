@@ -1024,6 +1024,53 @@ pub enum SortKey {
     Threads,
     Power,
     PowerTrend,
+    /// Running, then Efficiency mode, then Suspended.
+    Status,
+    Publisher,
+}
+
+impl SortKey {
+    pub const ALL: [SortKey; 12] = [
+        SortKey::Name,
+        SortKey::Pid,
+        SortKey::Cpu,
+        SortKey::Memory,
+        SortKey::Disk,
+        SortKey::Network,
+        SortKey::Gpu,
+        SortKey::Threads,
+        SortKey::Power,
+        SortKey::PowerTrend,
+        SortKey::Status,
+        SortKey::Publisher,
+    ];
+
+    /// Name in the settings file.
+    pub fn key(self) -> &'static str {
+        match self {
+            SortKey::Name => "name",
+            SortKey::Pid => "pid",
+            SortKey::Cpu => "cpu",
+            SortKey::Memory => "memory",
+            SortKey::Disk => "disk",
+            SortKey::Network => "network",
+            SortKey::Gpu => "gpu",
+            SortKey::Threads => "threads",
+            SortKey::Power => "power",
+            SortKey::PowerTrend => "powertrend",
+            SortKey::Status => "status",
+            SortKey::Publisher => "publisher",
+        }
+    }
+
+    pub fn from_key(k: &str) -> Option<SortKey> {
+        SortKey::ALL.into_iter().find(|s| s.key() == k)
+    }
+
+    /// Text reads best A to Z; numbers biggest first, as Task Manager does.
+    pub fn descending_first(self) -> bool {
+        !matches!(self, SortKey::Name | SortKey::Pid | SortKey::Status | SortKey::Publisher)
+    }
 }
 
 /// The three sections of the Processes tab.
@@ -1096,8 +1143,10 @@ pub fn sorted_view(rows: &[ProcessRow], filter: &str, key: SortKey, descending: 
     idx.sort_by(|&a, &b| {
         let (a, b) = (&rows[a], &rows[b]);
         let ord = match key {
-            SortKey::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+            SortKey::Name => display_name(a).to_lowercase().cmp(&display_name(b).to_lowercase()),
             SortKey::Pid => a.pid.cmp(&b.pid),
+            SortKey::Status => (a.suspended, a.efficiency).cmp(&(b.suspended, b.efficiency)),
+            SortKey::Publisher => a.info.publisher.to_lowercase().cmp(&b.info.publisher.to_lowercase()),
             SortKey::Cpu => a.cpu_pct.total_cmp(&b.cpu_pct),
             SortKey::Memory => a.memory.cmp(&b.memory),
             SortKey::Disk => a.disk_bps.total_cmp(&b.disk_bps),
