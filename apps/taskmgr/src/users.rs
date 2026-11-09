@@ -108,6 +108,7 @@ fn net_cell(ui: &mut Ui, on: bool, bps: f64) {
 }
 
 pub struct State {
+    pub(crate) filter: String,
     expanded: HashSet<u32>,
     selected: Option<u32>,
     pub sort: SortBy<Col>,
@@ -123,11 +124,36 @@ enum Line {
 impl State {
     pub fn new(status: Status, icons: Icons, sort: Option<SortBy<Col>>) -> Self {
         Self {
+            filter: String::new(),
             expanded: HashSet::new(),
             selected: None,
             sort: sort.unwrap_or(SortBy::new(Col::User, false)),
             status,
             icons,
+        }
+    }
+
+    pub fn commands(&mut self, ui: &mut Ui, snap: &Snapshot) {
+        let sessions = snap.sessions.as_deref().map(Vec::as_slice).unwrap_or(&[]);
+        let users = users_view(&snap.processes, sessions);
+        let sel = self.selected.and_then(|id| users.iter().find(|u| u.session_id == id));
+        let can = sel.is_some_and(|u| !u.state.is_empty());
+
+        if ui_common::command_button(ui, ui_common::Icon::Close, "Sign off", can, "").clicked()
+            && let Some(u) = sel
+        {
+            self.status.open(Dialog::Confirm {
+                text: format!("Sign off {}? Any unsaved data in their apps may be lost.", u.user),
+                action: ConfirmAction::SignOff { session: u.session_id, user: u.user.clone() },
+            });
+        }
+        if ui_common::command_button(ui, ui_common::Icon::DisconnectDrive, "Disconnect", can, "").clicked()
+            && let Some(u) = sel
+        {
+            self.status.open(Dialog::Confirm {
+                text: format!("Disconnect {}? Their apps keep running.", u.user),
+                action: ConfirmAction::Disconnect { session: u.session_id, user: u.user.clone() },
+            });
         }
     }
 
@@ -149,27 +175,10 @@ impl State {
             })
             .collect();
         users.sort_by(|a, b| sort.apply(sort.key.cmp_users(a, b)).then(a.u.session_id.cmp(&b.u.session_id)));
-        let sel = self.selected.and_then(|id| users.iter().map(|l| &l.u).find(|u| u.session_id == id));
-        ui.horizontal(|ui| {
-            let can = sel.is_some_and(|u| !u.state.is_empty());
-            if ui.add_enabled(can, egui::Button::new("Disconnect")).clicked()
-                && let Some(u) = sel
-            {
-                self.status.open(Dialog::Confirm {
-                    text: format!("Disconnect {}? Their apps keep running.", u.user),
-                    action: ConfirmAction::Disconnect { session: u.session_id, user: u.user.clone() },
-                });
-            }
-            if ui.add_enabled(can, egui::Button::new("Sign off")).clicked()
-                && let Some(u) = sel
-            {
-                self.status.open(Dialog::Confirm {
-                    text: format!("Sign off {}? Any unsaved data in their apps may be lost.", u.user),
-                    action: ConfirmAction::SignOff { session: u.session_id, user: u.user.clone() },
-                });
-            }
-        });
-        ui.add_space(4.0);
+        let f = self.filter.trim().to_lowercase();
+        if !f.is_empty() {
+            users.retain(|l| l.u.user.to_lowercase().contains(&f));
+        }
 
         let mut lines = Vec::new();
         for (i, l) in users.iter().enumerate() {

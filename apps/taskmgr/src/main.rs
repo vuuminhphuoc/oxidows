@@ -183,7 +183,7 @@ pub enum ConfirmAction {
 /// request to jump to a process on the Details tab.
 #[derive(Clone, Default)]
 pub struct Status {
-    msg: Arc<Mutex<Option<String>>>,
+    msg: Arc<Mutex<Option<(String, Instant)>>>,
     dialog: Arc<Mutex<Option<Dialog>>>,
     goto_details: Arc<Mutex<Option<u32>>>,
     goto_services: Arc<Mutex<Option<u32>>>,
@@ -194,11 +194,23 @@ pub struct Status {
 impl Status {
     pub fn set(&self, msg: impl Into<String>) {
         if let Ok(mut m) = self.msg.lock() {
-            *m = Some(msg.into());
+            *m = Some((msg.into(), Instant::now()));
         }
     }
     fn get(&self) -> Option<String> {
-        self.msg.lock().ok().and_then(|m| m.clone())
+        let mut m = self.msg.lock().ok()?;
+        if let Some((_, at)) = m.as_ref()
+            && at.elapsed() >= Duration::from_secs(8)
+        {
+            *m = None;
+            return None;
+        }
+        m.as_ref().map(|(s, _)| s.clone())
+    }
+    pub fn clear(&self) {
+        if let Ok(mut m) = self.msg.lock() {
+            *m = None;
+        }
     }
     pub fn open(&self, d: Dialog) {
         if let Ok(mut m) = self.dialog.lock() {
@@ -224,6 +236,7 @@ struct App {
     rx: Receiver<Result<Arc<Snapshot>, String>>,
     snapshot: Arc<Snapshot>,
     error: Option<String>,
+    search: String,
     tab: Tab,
     status: Status,
     elevated: bool,
@@ -399,6 +412,7 @@ impl App {
             rx,
             snapshot: Arc::default(),
             error: None,
+            search: String::new(),
             tab,
             elevated: taskmgr_sys::is_elevated(),
             processes: processes::State::new(
@@ -653,56 +667,173 @@ impl App {
         });
     }
 
+    fn search_bar(&mut self, ui: &mut egui::Ui) {
+        let focus_search = ui.input_mut(|i| {
+            i.consume_key(egui::Modifiers::CTRL, egui::Key::E) || i.consume_key(egui::Modifiers::CTRL, egui::Key::F)
+        });
+        let before = self.search.clone();
+        egui::Panel::top("search").show_separator_line(false).show(ui, |ui| {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let total_w = 360.0 + 16.0 + ui.spacing().item_spacing.x;
+                let pad = ((ui.available_width() - total_w) / 2.0).max(0.0);
+                ui.add_space(pad);
+                ui.label(ui_common::Icon::Search.rich());
+                let r = ui.add(
+                    egui::TextEdit::singleline(&mut self.search)
+                        .desired_width(360.0)
+                        .hint_text("Type a name, publisher, or PID to search"),
+                );
+                if focus_search {
+                    r.request_focus();
+                }
+                // egui drops focus on Esc before widgets see the key, so read it from the raw events.
+                let esc = ui.input(|i| {
+                    i.raw
+                        .events
+                        .iter()
+                        .any(|e| matches!(e, egui::Event::Key { key: egui::Key::Escape, pressed: true, .. }))
+                });
+                if esc && (r.has_focus() || r.lost_focus()) {
+                    self.search.clear();
+                }
+            });
+            ui.add_space(4.0);
+        });
+        if self.search != before && matches!(self.tab, Tab::Performance | Tab::Settings) {
+            self.tab = Tab::Processes;
+        }
+    }
+
     /// The page title on the left, commands on the right.
     fn header(&mut self, ui: &mut egui::Ui) {
+        let snap = self.snapshot.clone();
         egui::Panel::top("header").show_separator_line(false).show(ui, |ui| {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 ui.add_space(4.0);
                 ui_common::page_title(ui, self.tab.label());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let mut ms = INTERVAL_MS.load(Ordering::Relaxed);
-                    let label = match ms {
-                        0 => "Paused",
-                        500 => "0.5 s",
-                        1000 => "1 s",
-                        _ => "2 s",
-                    };
-                    egui::ComboBox::from_id_salt("interval")
-                        .selected_text(ui_common::Icon::Stopwatch.with(label))
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut ms, 500, "High (0.5 s)");
-                            ui.selectable_value(&mut ms, 1000, "Normal (1 s)");
-                            ui.selectable_value(&mut ms, 2000, "Low (2 s)");
-                            ui.selectable_value(&mut ms, 0, "Paused");
-                        })
-                        .response
-                        .on_hover_text("Real time update speed");
-                    if ms != INTERVAL_MS.load(Ordering::Relaxed) {
-                        INTERVAL_MS.store(ms, Ordering::Relaxed);
-                        self.settings.interval_ms = ms;
-                        self.save_settings();
-                    }
-                    if !self.elevated
-                        && ui
-                            .button(ui_common::Icon::Shield.with("Run as administrator"))
-                            .on_hover_text(
-                                "Needed to end elevated processes, control services and edit machine-wide startup apps",
-                            )
-                            .clicked()
-                    {
-                        match taskmgr_sys::restart_elevated() {
-                            Ok(()) => std::process::exit(0),
-                            Err(e) => self.status.set(e.to_string()),
+                    if self.tab != Tab::Settings {
+                        self.see_more_menu(ui);
+                        ui_common::command_separator(ui);
+                        match self.tab {
+                            Tab::Processes => self.processes.commands(ui, &snap),
+                            Tab::Performance => {}
+                            Tab::AppHistory => self.history.commands(ui),
+                            Tab::Startup => self.startup.commands(ui, &snap),
+                            Tab::Users => self.users.commands(ui, &snap),
+                            Tab::Details => self.details.commands(ui, &snap),
+                            Tab::Services => self.services.commands(ui, &snap),
+                            Tab::Settings => {}
                         }
-                    }
-                    if ui.button(ui_common::Icon::NewWindow.with("Run new task")).clicked() {
-                        self.status.open(Dialog::RunTask { command: String::new(), admin: false });
+                        if self.tab != Tab::Performance {
+                            ui_common::command_separator(ui);
+                        }
+                        if ui_common::command_button(ui, ui_common::Icon::Add, "Run new task", true, "").clicked() {
+                            self.status.open(Dialog::RunTask { command: String::new(), admin: false });
+                        }
                     }
                 });
             });
+            self.info_bar(ui);
             ui.add_space(4.0);
         });
+    }
+
+    fn see_more_menu(&mut self, ui: &mut egui::Ui) {
+        ui_common::tool_menu(ui, ui_common::Icon::More, "See more", |ui| {
+            if self.tab == Tab::Startup {
+                if ui_common::menu_item(ui, ui_common::Icon::Refresh, "Refresh", None).clicked() {
+                    self.startup.reload();
+                    ui.close();
+                }
+                ui.separator();
+            } else if self.tab == Tab::AppHistory {
+                if ui_common::menu_item(ui, ui_common::Icon::Refresh, "Refresh", None).clicked() {
+                    self.history.start();
+                    ui.close();
+                }
+                ui.separator();
+            }
+            ui_common::MenuItem::new("Real time update speed").submenu(ui, |ui| {
+                let cur = INTERVAL_MS.load(Ordering::Relaxed);
+                for (ms, label) in [(500, "High 0.5 s"), (1000, "Normal 1 s"), (2000, "Low 2 s"), (0, "Paused")] {
+                    if ui_common::MenuItem::new(label).selected(cur == ms).ui(ui).clicked() {
+                        INTERVAL_MS.store(ms, Ordering::Relaxed);
+                        self.settings.interval_ms = ms;
+                        self.save_settings();
+                        ui.close();
+                    }
+                }
+            });
+            if !self.elevated {
+                ui.separator();
+                let r = ui_common::menu_item(ui, ui_common::Icon::Shield, "Run as administrator", None).on_hover_text(
+                    "Needed to end elevated processes, control services and edit machine-wide startup apps",
+                );
+                if r.clicked() {
+                    match taskmgr_sys::restart_elevated() {
+                        Ok(()) => std::process::exit(0),
+                        Err(e) => self.status.set(e.to_string()),
+                    }
+                    ui.close();
+                }
+            }
+        });
+    }
+
+    fn info_bar(&mut self, ui: &mut egui::Ui) {
+        let err = self.error.clone();
+        let status = self.status.get();
+        if err.is_none() && status.is_none() {
+            return;
+        }
+        let p = ui_common::Palette::of(ui);
+        ui.add_space(4.0);
+        if let Some(e) = err {
+            let frame = egui::Frame::new()
+                .corner_radius(4.0)
+                .fill(ui_common::theme::mix(p.chrome, p.danger, 0.15))
+                .stroke(egui::Stroke::new(1.0, p.danger))
+                .inner_margin(egui::Margin::symmetric(8, 4));
+            frame.show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(ui_common::Icon::Warning.sized(14.0).color(p.danger));
+                    ui.label(egui::RichText::new(&e).color(p.text));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add(egui::Button::new(ui_common::Icon::Close.sized(10.0)).frame_when_inactive(false))
+                            .on_hover_text("Close")
+                            .clicked()
+                        {
+                            self.error = None;
+                        }
+                    });
+                });
+            });
+        } else if let Some(msg) = status {
+            let frame = egui::Frame::new()
+                .corner_radius(4.0)
+                .fill(p.hover)
+                .stroke(egui::Stroke::new(1.0, p.divider))
+                .inner_margin(egui::Margin::symmetric(8, 4));
+            frame.show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(ui_common::Icon::Info.sized(14.0));
+                    ui.label(egui::RichText::new(&msg).color(p.text));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add(egui::Button::new(ui_common::Icon::Close.sized(10.0)).frame_when_inactive(false))
+                            .on_hover_text("Close")
+                            .clicked()
+                        {
+                            self.status.clear();
+                        }
+                    });
+                });
+            });
+        }
     }
 }
 
@@ -750,6 +881,16 @@ impl eframe::App for App {
             }
         }
         let snap = self.snapshot.clone();
+        if let Ok(guard) = self.status.msg.lock()
+            && let Some((_, at)) = guard.as_ref()
+        {
+            // Wake once when the message is due to go; an expired one waits for the header to clear
+            // it (the summary view has no header, so don't spin on it).
+            let remaining = Duration::from_secs(8).saturating_sub(at.elapsed());
+            if !remaining.is_zero() {
+                ui.ctx().request_repaint_after(remaining);
+            }
+        }
         // Ctrl+Tab / Ctrl+Shift+Tab move between pages, as in Task Manager.
         let (next, prev) = ui.input_mut(|i| {
             (
@@ -766,46 +907,31 @@ impl eframe::App for App {
         // Summary view: the Performance list alone, as in Task Manager.
         let summary = self.tab == Tab::Performance && self.performance.summary;
         if !summary {
+            self.search_bar(ui);
             self.nav(ui);
             self.header(ui);
         }
         if let Some(pid) = self.status.goto_details.lock().ok().and_then(|mut g| g.take()) {
             self.tab = Tab::Details;
+            self.search.clear();
             self.details.select(pid, &snap);
         }
         if let Some(pid) = self.status.goto_services.lock().ok().and_then(|mut g| g.take()) {
             self.tab = Tab::Services;
+            self.search = pid.to_string();
             self.services.show_pid(pid);
         }
         self.dialogs(ui.ctx());
         WANT_SERVICES.store(self.tab == Tab::Services, Ordering::Relaxed);
         WANT_SESSIONS.store(self.tab == Tab::Users, Ordering::Relaxed);
 
-        if !summary {
-            egui::Panel::bottom("status").show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    let s = &snap.system;
-                    ui.label(format!(
-                        "Processes: {}   CPU: {:.0}%   Memory: {:.0}%",
-                        s.process_count,
-                        s.cpu_pct,
-                        if s.mem_total == 0 { 0.0 } else { s.mem_used as f64 * 100.0 / s.mem_total as f64 }
-                    ));
-                    if let Some(e) = &self.error {
-                        ui.colored_label(ui.visuals().error_fg_color, e);
-                    }
-                    if let Some(msg) = self.status.get() {
-                        ui.separator();
-                        ui.label(msg);
-                    }
-                });
-            });
-        }
-
         let content = ui_common::content_frame(ui.style());
         let sorts = self.sorts();
         egui::CentralPanel::default().frame(content).show(ui, |ui| match self.tab {
-            Tab::Processes => self.processes.show(ui, &snap),
+            Tab::Processes => {
+                self.processes.filter = self.search.clone();
+                self.processes.show(ui, &snap);
+            }
             Tab::Performance => {
                 self.performance.show(ui, &snap);
                 let p = &self.performance;
@@ -815,16 +941,29 @@ impl eframe::App for App {
                     self.save_settings();
                 }
             }
-            Tab::AppHistory => self.history.show(ui, self.elevated),
-            Tab::Startup => self.startup.show(ui, &snap),
-            Tab::Users => self.users.show(ui, &snap),
+            Tab::AppHistory => {
+                self.history.filter = self.search.clone();
+                self.history.show(ui, self.elevated);
+            }
+            Tab::Startup => {
+                self.startup.filter = self.search.clone();
+                self.startup.show(ui, &snap);
+            }
+            Tab::Users => {
+                self.users.filter = self.search.clone();
+                self.users.show(ui, &snap);
+            }
             Tab::Details => {
+                self.details.filter = self.search.clone();
                 if self.details.show(ui, &snap) {
                     self.settings.details_columns = details::columns_text(&self.details.columns);
                     self.save_settings();
                 }
             }
-            Tab::Services => self.services.show(ui, &snap),
+            Tab::Services => {
+                self.services.filter = self.search.clone();
+                self.services.show(ui, &snap);
+            }
             Tab::Settings => {
                 egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
                     let tabs: Vec<&str> = Tab::ALL.iter().filter(|t| **t != Tab::Settings).map(|t| t.label()).collect();
@@ -854,6 +993,10 @@ impl eframe::App for App {
                 });
             }
         });
+        if self.processes.group != self.settings.group_by_type {
+            self.settings.group_by_type = self.processes.group;
+            self.save_settings();
+        }
         if self.sorts() != sorts {
             let s = &mut self.settings;
             s.sort_processes = self.processes.sort.to_text(taskmgr_core::SortKey::key);
@@ -1011,5 +1154,15 @@ mod tests {
         let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert_eq!(tab_from_args(args(&[r"C:\Windows\system32\taskmgr.exe", "/0", "/startup"])), Some(Tab::Startup));
         assert_eq!(tab_from_args(args(&[r"C:\Windows\system32\taskmgr.exe"])), None);
+    }
+
+    #[test]
+    fn status_message_expiry_and_clear() {
+        let status = Status::default();
+        assert_eq!(status.get(), None);
+        status.set("Hello");
+        assert_eq!(status.get(), Some("Hello".to_string()));
+        status.clear();
+        assert_eq!(status.get(), None);
     }
 }
