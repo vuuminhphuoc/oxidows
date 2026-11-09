@@ -204,7 +204,11 @@ pub fn menu_check(ui: &mut Ui, icon: impl Into<MenuIcon>, label: &str, on: &mut 
 /// A small heading above a group of rows ("View").
 pub fn menu_heading(ui: &mut Ui, text: &str) -> Response {
     let c = crate::Palette::of(ui).text_secondary;
-    ui.add(egui::Label::new(egui::RichText::new(text).color(c).size(12.0)).selectable(false))
+    ui.horizontal(|ui| {
+        ui.add_space(ICON_X - ui.spacing().item_spacing.x);
+        ui.add(egui::Label::new(egui::RichText::new(text).color(c).size(12.0)).selectable(false))
+    })
+    .inner
 }
 
 /// Pictures of Explorer's layouts and panes, drawn in a 16 px square in the icon font's thin
@@ -215,7 +219,7 @@ pub enum ViewIcon {
     ExtraLarge,
     /// Two by two pictures.
     Large,
-    /// Three by three pictures.
+    /// Three by three small pictures.
     Medium,
     /// Small pictures with their names beside them, in two columns.
     Small,
@@ -271,20 +275,20 @@ impl ViewIcon {
         };
         match self {
             ViewIcon::ExtraLarge => {
-                boxed(1.5, 1.5, 13.0, 13.0, 2.5);
+                boxed(1.5, 1.5, 13.0, 13.0, 2.0);
                 // A landscape in it, so it reads as a picture.
                 painter.line(vec![at(4.0, 11.5), at(7.0, 8.0), at(9.0, 10.0), at(10.5, 8.5), at(12.5, 11.0)], stroke);
                 painter.circle_filled(at(10.5, 5.0), 1.2 * s, color);
             }
             ViewIcon::Large => {
                 for (x, y) in [(1.5, 1.5), (9.0, 1.5), (1.5, 9.0), (9.0, 9.0)] {
-                    boxed(x, y, 5.5, 5.5, 1.5);
+                    boxed(x, y, 5.5, 5.5, 1.0);
                 }
             }
             ViewIcon::Medium => {
                 for y in [1.5, 6.5, 11.5] {
                     for x in [1.5, 6.5, 11.5] {
-                        boxed(x, y, 3.0, 3.0, 0.5);
+                        dot(x, y, 3.0);
                     }
                 }
             }
@@ -311,14 +315,14 @@ impl ViewIcon {
             }
             ViewIcon::Tiles => {
                 for y in [1.5, 9.0] {
-                    boxed(1.5, y, 5.5, 5.5, 1.5);
+                    boxed(1.5, y, 5.5, 5.5, 1.0);
                     line(9.0, y + 1.5, 6.0);
                     line(9.0, y + 4.0, 4.0);
                 }
             }
             ViewIcon::Content => {
                 for y in [1.5, 9.5] {
-                    boxed(1.5, y, 4.5, 4.5, 1.0);
+                    boxed(1.5, y, 4.5, 4.5, 0.5);
                     line(8.0, y + 1.0, 6.5);
                     line(8.0, y + 3.5, 4.0);
                 }
