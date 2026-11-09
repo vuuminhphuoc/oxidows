@@ -622,3 +622,22 @@ fn firewall_rule_lookup_needs_no_elevation() {
     // Just must not hang or panic; the answer depends on the machine.
     eprintln!("firewall: {:?}", explorer_sys::firewall_state());
 }
+
+#[test]
+fn shell_new_items_and_create() {
+    let _g = guard("shell_new_items_and_create");
+    let items = explorer_sys::new_items();
+    let txt = items.iter().find(|i| i.ext == ".txt").expect("new_items() must contain .txt");
+    assert_eq!(txt.name, "Text Document");
+
+    let dir = scratch("shell-new");
+    let file1 = explorer_sys::create_new(&dir, txt).expect("creates first file");
+    assert_eq!(file1, dir.join("New Text Document.txt"));
+    assert!(file1.is_file());
+
+    let file2 = explorer_sys::create_new(&dir, txt).expect("creates second file");
+    assert_eq!(file2, dir.join("New Text Document (2).txt"));
+    assert!(file2.is_file());
+
+    let _ = fs::remove_dir_all(&dir);
+}

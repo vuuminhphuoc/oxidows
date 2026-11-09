@@ -39,7 +39,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Feature | Status | Notes |
 | --- | --- | --- |
 | Command bar: New ▾, Cut, Copy, Paste, Rename, Share, Delete, Sort ▾, View ▾, See more, Details | ✅ | buttons turn off when they don't apply; Recycle Bin shows Empty / Restore the selected items instead of New |
-| New ▾: Folder, Shortcut and the file types Windows registers (ShellNew) | 🟡 | Folder works; the registered types land with the ShellNew reader |
+| New ▾: Folder, Shortcut and the file types Windows registers (ShellNew) | ✅ | types read from the registry (NullFile, Data, FileName templates, Command), sorted by name; Shortcut opens Windows' Create Shortcut wizard |
 | Sort ▾: Name, Date modified, Type, Size, More, Ascending / Descending, Group by | ✅ | works in every view, not only Details |
 | Status bar: item and selection counts, Details / Large icons switches on the right | ✅ | |
 | Back / Forward right-click lists recent locations | ✅ | |
