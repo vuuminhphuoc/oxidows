@@ -5,9 +5,96 @@ use std::collections::HashSet;
 
 use egui::{RichText, Ui};
 use egui_extras::{Column, TableBuilder};
-use taskmgr_core::{Snapshot, display_name, format_bits_per_sec, format_bytes, users_view};
+use taskmgr_core::{ProcessRow, Snapshot, UserUsage, display_name, format_bits_per_sec, format_bytes, users_view};
+use ui_common::{SORT_HEADER_HEIGHT, SortBy, cmp_text, sort_header};
 
 use crate::{ConfirmAction, Dialog, Status};
+
+/// The columns, in order; any of them sorts the users, and the processes under an expanded user
+/// where the column applies to them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Col {
+    User,
+    Session,
+    Status,
+    Processes,
+    Cpu,
+    Memory,
+    Disk,
+    Network,
+}
+
+impl Col {
+    const ALL: [Col; 8] =
+        [Col::User, Col::Session, Col::Status, Col::Processes, Col::Cpu, Col::Memory, Col::Disk, Col::Network];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Col::User => "user",
+            Col::Session => "session",
+            Col::Status => "status",
+            Col::Processes => "processes",
+            Col::Cpu => "cpu",
+            Col::Memory => "memory",
+            Col::Disk => "disk",
+            Col::Network => "network",
+        }
+    }
+
+    pub fn from_key(k: &str) -> Option<Col> {
+        Col::ALL.into_iter().find(|c| c.key() == k)
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Col::User => "User",
+            Col::Session => "Session",
+            Col::Status => "Status",
+            Col::Processes => "Processes",
+            Col::Cpu => "CPU",
+            Col::Memory => "Memory",
+            Col::Disk => "Disk",
+            Col::Network => "Network",
+        }
+    }
+
+    fn descending_first(self) -> bool {
+        matches!(self, Col::Processes | Col::Cpu | Col::Memory | Col::Disk | Col::Network)
+    }
+
+    fn cmp_users(self, a: &UserLine, b: &UserLine) -> std::cmp::Ordering {
+        match self {
+            Col::User => cmp_text(&a.u.user, &b.u.user),
+            Col::Session => a.u.session_id.cmp(&b.u.session_id),
+            Col::Status => cmp_text(&a.u.state, &b.u.state),
+            Col::Processes => a.u.processes.cmp(&b.u.processes),
+            Col::Cpu => a.u.cpu_pct.total_cmp(&b.u.cpu_pct),
+            Col::Memory => a.u.memory.cmp(&b.u.memory),
+            Col::Disk => a.disk.total_cmp(&b.disk),
+            Col::Network => a.net.total_cmp(&b.net),
+        }
+    }
+
+    /// Processes have no session status or count: those columns order them by CPU, biggest first.
+    fn cmp_procs(self, a: &ProcessRow, b: &ProcessRow) -> Option<std::cmp::Ordering> {
+        Some(match self {
+            Col::User => cmp_text(display_name(a), display_name(b)),
+            Col::Session => a.pid.cmp(&b.pid),
+            Col::Cpu => a.cpu_pct.total_cmp(&b.cpu_pct),
+            Col::Memory => a.memory.cmp(&b.memory),
+            Col::Disk => a.disk_bps.total_cmp(&b.disk_bps),
+            Col::Network => a.net_bps.total_cmp(&b.net_bps),
+            Col::Status | Col::Processes => return None,
+        })
+    }
+}
+
+/// A user with the disk and network totals of their processes.
+struct UserLine {
+    u: UserUsage,
+    disk: f64,
+    net: f64,
+}
 
 fn net_cell(ui: &mut Ui, on: bool, bps: f64) {
     if on {
@@ -20,6 +107,7 @@ fn net_cell(ui: &mut Ui, on: bool, bps: f64) {
 pub struct State {
     expanded: HashSet<u32>,
     selected: Option<u32>,
+    pub sort: SortBy<Col>,
     status: Status,
 }
 
@@ -29,8 +117,8 @@ enum Line {
 }
 
 impl State {
-    pub fn new(status: Status) -> Self {
-        Self { expanded: HashSet::new(), selected: None, status }
+    pub fn new(status: Status, sort: Option<SortBy<Col>>) -> Self {
+        Self { expanded: HashSet::new(), selected: None, sort: sort.unwrap_or(SortBy::new(Col::User, false)), status }
     }
 
     pub fn show(&mut self, ui: &mut Ui, snap: &Snapshot) {
@@ -40,7 +128,18 @@ impl State {
         if users.len() > 1 {
             users.retain(|u| u.session_id != 0 || !u.state.is_empty());
         }
-        let sel = self.selected.and_then(|id| users.iter().find(|u| u.session_id == id));
+        let sort = self.sort;
+        let mut users: Vec<UserLine> = users
+            .into_iter()
+            .map(|u| {
+                let mine = || snap.processes.iter().filter(|p| p.session_id == u.session_id);
+                let disk = mine().map(|p| p.disk_bps).sum();
+                let net = mine().map(|p| p.net_bps).sum();
+                UserLine { u, disk, net }
+            })
+            .collect();
+        users.sort_by(|a, b| sort.apply(sort.key.cmp_users(a, b)).then(a.u.session_id.cmp(&b.u.session_id)));
+        let sel = self.selected.and_then(|id| users.iter().map(|l| &l.u).find(|u| u.session_id == id));
         ui.horizontal(|ui| {
             let can = sel.is_some_and(|u| !u.state.is_empty());
             if ui.add_enabled(can, egui::Button::new("Disconnect")).clicked()
@@ -63,18 +162,26 @@ impl State {
         ui.add_space(4.0);
 
         let mut lines = Vec::new();
-        for (i, u) in users.iter().enumerate() {
+        for (i, l) in users.iter().enumerate() {
             lines.push(Line::User(i));
-            if self.expanded.contains(&u.session_id) {
+            if self.expanded.contains(&l.u.session_id) {
                 let mut procs: Vec<usize> =
-                    (0..snap.processes.len()).filter(|&i| snap.processes[i].session_id == u.session_id).collect();
-                procs.sort_by(|&a, &b| snap.processes[b].cpu_pct.total_cmp(&snap.processes[a].cpu_pct));
+                    (0..snap.processes.len()).filter(|&i| snap.processes[i].session_id == l.u.session_id).collect();
+                procs.sort_by(|&a, &b| {
+                    let (a, b) = (&snap.processes[a], &snap.processes[b]);
+                    match sort.key.cmp_procs(a, b) {
+                        Some(o) => sort.apply(o),
+                        None => b.cpu_pct.total_cmp(&a.cpu_pct),
+                    }
+                    .then(a.pid.cmp(&b.pid))
+                });
                 lines.extend(procs.into_iter().map(Line::Proc));
             }
         }
         let mem_total = snap.system.mem_total.max(1) as f64;
         let net_on = snap.system.per_process_net;
         let mut toggle = None;
+        let mut clicked = None;
         TableBuilder::new(ui)
             .striped(true)
             .resizable(true)
@@ -88,22 +195,22 @@ impl State {
             .column(Column::exact(130.0))
             .column(Column::exact(90.0))
             .column(Column::remainder())
-            .header(22.0, |mut h| {
-                for t in ["User", "Session", "Status", "Processes", "CPU", "Memory", "Disk", "Network"] {
+            .header(SORT_HEADER_HEIGHT, |mut h| {
+                for c in Col::ALL {
                     h.col(|ui| {
-                        ui.label(RichText::new(t).strong());
+                        if sort_header(ui, c.title(), self.sort.arrow(c)).clicked() {
+                            clicked = Some(c);
+                        }
                     });
                 }
             })
             .body(|body| {
                 body.rows(22.0, lines.len(), |mut row| match lines[row.index()] {
                     Line::User(i) => {
-                        let u = &users[i];
+                        let UserLine { u, disk, net } = &users[i];
+                        let (disk, net) = (*disk, *net);
                         row.set_selected(self.selected == Some(u.session_id));
                         let open = self.expanded.contains(&u.session_id);
-                        let mine = || snap.processes.iter().filter(|p| p.session_id == u.session_id);
-                        let disk: f64 = mine().map(|p| p.disk_bps).sum();
-                        let net: f64 = mine().map(|p| p.net_bps).sum();
                         row.col(|ui| {
                             let name = if u.user.is_empty() { "(system)" } else { &u.user };
                             ui.label(RichText::new(format!("{} {name}", if open { "v" } else { ">" })).strong());
@@ -160,6 +267,9 @@ impl State {
                     }
                 });
             });
+        if let Some(c) = clicked {
+            self.sort.click(c, c.descending_first());
+        }
         if let Some(id) = toggle
             && !self.expanded.remove(&id)
         {

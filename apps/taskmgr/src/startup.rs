@@ -5,11 +5,105 @@ use egui_extras::{Column, TableBuilder};
 use std::collections::HashMap;
 
 use taskmgr_core::{Snapshot, StartupItem, format_bytes, startup_impact};
+use ui_common::{SORT_HEADER_HEIGHT, SortBy, cmp_text, sort_header};
 
 use crate::Status;
 
+/// The columns, in order; any of them sorts the list.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Col {
+    Name,
+    Publisher,
+    Status,
+    Impact,
+    Cpu,
+    Disk,
+    Command,
+    Location,
+}
+
+impl Col {
+    const ALL: [Col; 8] =
+        [Col::Name, Col::Publisher, Col::Status, Col::Impact, Col::Cpu, Col::Disk, Col::Command, Col::Location];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Col::Name => "name",
+            Col::Publisher => "publisher",
+            Col::Status => "status",
+            Col::Impact => "impact",
+            Col::Cpu => "cpu",
+            Col::Disk => "disk",
+            Col::Command => "command",
+            Col::Location => "location",
+        }
+    }
+
+    pub fn from_key(k: &str) -> Option<Col> {
+        Col::ALL.into_iter().find(|c| c.key() == k)
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Col::Name => "Name",
+            Col::Publisher => "Publisher",
+            Col::Status => "Status",
+            Col::Impact => "Startup impact",
+            Col::Cpu => "CPU at startup",
+            Col::Disk => "Disk I/O at startup",
+            Col::Command => "Command",
+            Col::Location => "Registered in",
+        }
+    }
+
+    /// Text columns sort A to Z first; impact and costs biggest first.
+    fn descending_first(self) -> bool {
+        matches!(self, Col::Impact | Col::Cpu | Col::Disk)
+    }
+}
+
+/// "Startup impact" as shown: disabled apps have none, unmeasured ones say so.
+fn impact(it: &StartupItem, cost: Option<(u64, u64)>) -> &'static str {
+    match cost {
+        _ if !it.enabled => "None",
+        Some((cpu, io)) => startup_impact(cpu, io),
+        None => "Not measured",
+    }
+}
+
+fn impact_rank(label: &str) -> i8 {
+    match label {
+        "High" => 3,
+        "Medium" => 2,
+        "Low" => 1,
+        "None" => 0,
+        _ => -1,
+    }
+}
+
+/// Indices of `items` in the order of `sort`, name breaking ties.
+fn sorted(items: &[StartupItem], cost: &[Option<(u64, u64)>], sort: SortBy<Col>) -> Vec<usize> {
+    let mut v: Vec<usize> = (0..items.len()).collect();
+    v.sort_by(|&i, &j| {
+        let (a, b) = (&items[i], &items[j]);
+        let o = match sort.key {
+            Col::Name => cmp_text(&a.name, &b.name),
+            Col::Publisher => cmp_text(&a.publisher, &b.publisher),
+            Col::Status => a.enabled.cmp(&b.enabled),
+            Col::Impact => impact_rank(impact(a, cost[i])).cmp(&impact_rank(impact(b, cost[j]))),
+            Col::Cpu => cost[i].map(|c| c.0).cmp(&cost[j].map(|c| c.0)),
+            Col::Disk => cost[i].map(|c| c.1).cmp(&cost[j].map(|c| c.1)),
+            Col::Command => cmp_text(&a.command, &b.command),
+            Col::Location => cmp_text(&a.location, &b.location),
+        };
+        sort.apply(o).then_with(|| cmp_text(&a.name, &b.name))
+    });
+    v
+}
+
 pub struct State {
     items: Option<Vec<StartupItem>>,
+    pub sort: SortBy<Col>,
     selected: Option<usize>,
     bios_ms: Option<u32>,
     status: Status,
@@ -28,8 +122,15 @@ fn now_filetime() -> u64 {
 }
 
 impl State {
-    pub fn new(status: Status) -> Self {
-        Self { items: None, selected: None, bios_ms: taskmgr_sys::last_bios_ms(), status, measured: HashMap::new() }
+    pub fn new(status: Status, sort: Option<SortBy<Col>>) -> Self {
+        Self {
+            items: None,
+            sort: sort.unwrap_or(SortBy::new(Col::Name, false)),
+            selected: None,
+            bios_ms: taskmgr_sys::last_bios_ms(),
+            status,
+            measured: HashMap::new(),
+        }
     }
 
     /// Records the startup cost of processes that sign-in started. Windows measures the boot itself;
@@ -56,8 +157,10 @@ impl State {
             .iter()
             .map(|it| self.measured.get(&taskmgr_sys::startup_exe(&it.command).to_lowercase()).copied())
             .collect();
+        let view = sorted(items, &cost, self.sort);
         let mut toggle = None;
         let mut reload = false;
+        let mut clicked = None;
         ui.horizontal(|ui| {
             let sel = self.selected.and_then(|i| items.get(i));
             if ui.add_enabled(sel.is_some_and(|s| !s.enabled), egui::Button::new("Enable")).clicked() {
@@ -91,25 +194,18 @@ impl State {
             .columns(Column::exact(100.0), 3)
             .column(Column::initial(300.0).clip(true))
             .column(Column::remainder().clip(true))
-            .header(20.0, |mut h| {
-                for t in [
-                    "Name",
-                    "Publisher",
-                    "Status",
-                    "Startup impact",
-                    "CPU at startup",
-                    "Disk I/O at startup",
-                    "Command",
-                    "Registered in",
-                ] {
+            .header(SORT_HEADER_HEIGHT, |mut h| {
+                for c in Col::ALL {
                     h.col(|ui| {
-                        ui.label(RichText::new(t).strong());
+                        if sort_header(ui, c.title(), self.sort.arrow(c)).clicked() {
+                            clicked = Some(c);
+                        }
                     });
                 }
             })
             .body(|body| {
-                body.rows(20.0, items.len(), |mut row| {
-                    let i = row.index();
+                body.rows(20.0, view.len(), |mut row| {
+                    let i = view[row.index()];
                     let it = &items[i];
                     row.set_selected(self.selected == Some(i));
                     row.col(|ui| {
@@ -123,12 +219,8 @@ impl State {
                     });
                     let c = cost[i];
                     row.col(|ui| {
-                        ui.label(match c {
-                            _ if !it.enabled => "None",
-                            Some((cpu, io)) => startup_impact(cpu, io),
-                            None => "Not measured",
-                        })
-                        .on_hover_text("From the app's own CPU and disk use since it started at sign-in");
+                        ui.label(impact(it, c))
+                            .on_hover_text("From the app's own CPU and disk use since it started at sign-in");
                     });
                     row.col(|ui| {
                         ui.label(c.map_or(String::new(), |(cpu, _)| format!("{} ms", cpu / 10_000)));
@@ -168,6 +260,9 @@ impl State {
                     });
                 });
             });
+        if let Some(c) = clicked {
+            self.sort.click(c, c.descending_first());
+        }
         if let Some((i, on)) = toggle
             && let Some(it) = items.get(i)
         {

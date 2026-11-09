@@ -9,13 +9,13 @@ use taskmgr_core::{
     ProcGroup, ProcessRow, Snapshot, SortKey, display_name, format_bits_per_sec, format_bytes, group_of, sorted_view,
 };
 use taskmgr_sys::PriorityClass;
+use ui_common::{SORT_HEADER_HEIGHT, SortBy, sort_header};
 
 use crate::{Dialog, Status};
 
 pub struct State {
     filter: String,
-    sort: SortKey,
-    ascending: bool,
+    pub sort: SortBy<SortKey>,
     /// Selected (pid, name): the name guards against ending a reused PID.
     selected: Option<(u32, String)>,
     group: bool,
@@ -267,12 +267,11 @@ fn heat(ui: &Ui, fraction: f32) -> Color32 {
 }
 
 impl State {
-    pub fn new(status: Status, group: bool, percent: bool) -> Self {
+    pub fn new(status: Status, group: bool, percent: bool, sort: Option<SortBy<SortKey>>) -> Self {
         Self {
             percent,
             filter: String::new(),
-            sort: SortKey::default(),
-            ascending: false,
+            sort: sort.unwrap_or(SortBy::new(SortKey::default(), true)),
             selected: None,
             group,
             collapsed: [false; 3],
@@ -298,7 +297,7 @@ impl State {
         }
         ui.add_space(4.0);
 
-        let view = sorted_view(rows, &self.filter, self.sort, !self.ascending);
+        let view = sorted_view(rows, &self.filter, self.sort.key, self.sort.descending);
         let lines: Vec<Line> = if self.group {
             let mut kids: HashMap<u32, Vec<usize>> = HashMap::new();
             for (i, r) in rows.iter().enumerate() {
@@ -375,29 +374,23 @@ impl State {
             .column(Column::exact(60.0))
             .columns(Column::exact(96.0), 2)
             .column(Column::initial(150.0).clip(true))
-            .header(row_h, |mut h| {
+            .header(SORT_HEADER_HEIGHT, |mut h| {
                 for (key, title) in [
-                    (Some(SortKey::Name), "Name"),
-                    (None, "Status"),
-                    (Some(SortKey::Pid), "PID"),
-                    (Some(SortKey::Cpu), "CPU"),
-                    (Some(SortKey::Memory), "Memory"),
-                    (Some(SortKey::Disk), "Disk"),
-                    (Some(SortKey::Network), "Network"),
-                    (Some(SortKey::Gpu), "GPU"),
-                    (Some(SortKey::Power), "Power usage"),
-                    (Some(SortKey::PowerTrend), "Power usage trend"),
-                    (None, "Publisher"),
+                    (SortKey::Name, "Name"),
+                    (SortKey::Status, "Status"),
+                    (SortKey::Pid, "PID"),
+                    (SortKey::Cpu, "CPU"),
+                    (SortKey::Memory, "Memory"),
+                    (SortKey::Disk, "Disk"),
+                    (SortKey::Network, "Network"),
+                    (SortKey::Gpu, "GPU"),
+                    (SortKey::Power, "Power usage"),
+                    (SortKey::PowerTrend, "Power usage trend"),
+                    (SortKey::Publisher, "Publisher"),
                 ] {
-                    h.col(|ui| match key {
-                        Some(key) => {
-                            let arrow = if self.sort == key { if self.ascending { " ^" } else { " v" } } else { "" };
-                            if ui.button(RichText::new(format!("{title}{arrow}")).strong()).clicked() {
-                                clicked_sort = Some(key);
-                            }
-                        }
-                        None => {
-                            ui.label(RichText::new(title).strong());
+                    h.col(|ui| {
+                        if sort_header(ui, title, self.sort.arrow(key)).clicked() {
+                            clicked_sort = Some(key);
                         }
                     });
                 }
@@ -527,13 +520,7 @@ impl State {
         }
 
         if let Some(key) = clicked_sort {
-            if self.sort == key {
-                self.ascending = !self.ascending;
-            } else {
-                self.sort = key;
-                // Names read best A→Z; numbers biggest first.
-                self.ascending = matches!(key, SortKey::Name | SortKey::Pid);
-            }
+            self.sort.click(key, key.descending_first());
         }
     }
 

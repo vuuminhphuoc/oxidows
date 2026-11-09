@@ -19,6 +19,17 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use taskmgr_core::{Extras, Sampler, Snapshot};
+use ui_common::SortBy;
+
+/// The sort of every table, in tab order.
+type Sorts = (
+    SortBy<taskmgr_core::SortKey>,
+    SortBy<history::Sort>,
+    SortBy<startup::Col>,
+    SortBy<users::Col>,
+    SortBy<details::Col>,
+    SortBy<services::Col>,
+);
 
 /// Shared with the sampler thread. 0 = paused.
 static INTERVAL_MS: AtomicU64 = AtomicU64::new(1000);
@@ -361,13 +372,29 @@ impl App {
             error: None,
             tab,
             elevated: taskmgr_sys::is_elevated(),
-            processes: processes::State::new(status.clone(), settings.group_by_type, settings.values_pct),
+            processes: processes::State::new(
+                status.clone(),
+                settings.group_by_type,
+                settings.values_pct,
+                SortBy::parse(&settings.sort_processes, taskmgr_core::SortKey::from_key),
+            ),
             performance: performance::State::default(),
-            history: history::State::new(cc.egui_ctx.clone()),
-            details: details::State::new(status.clone(), details::parse_columns(&settings.details_columns)),
-            services: services::State::new(status.clone(), cc.egui_ctx.clone()),
-            startup: startup::State::new(status.clone()),
-            users: users::State::new(status.clone()),
+            history: history::State::new(
+                cc.egui_ctx.clone(),
+                SortBy::parse(&settings.sort_history, history::Sort::from_key),
+            ),
+            details: details::State::new(
+                status.clone(),
+                details::parse_columns(&settings.details_columns),
+                SortBy::parse(&settings.sort_details, details::Col::from_key),
+            ),
+            services: services::State::new(
+                status.clone(),
+                cc.egui_ctx.clone(),
+                SortBy::parse(&settings.sort_services, services::Col::from_key),
+            ),
+            startup: startup::State::new(status.clone(), SortBy::parse(&settings.sort_startup, startup::Col::from_key)),
+            users: users::State::new(status.clone(), SortBy::parse(&settings.sort_users, users::Col::from_key)),
             settings,
             default_app: ui_common::default_app::DefaultApp::new(cfg!(windows).then(taskmgr_handler)),
             tray: false,
@@ -379,6 +406,18 @@ impl App {
             frame_cpu: 0.0,
             frames_since: Instant::now(),
         }
+    }
+
+    /// Every table's sort, to notice a header click (each one is saved, as Task Manager does).
+    fn sorts(&self) -> Sorts {
+        (
+            self.processes.sort,
+            self.history.sort,
+            self.startup.sort,
+            self.users.sort,
+            self.details.sort,
+            self.services.sort,
+        )
     }
 
     fn save_settings(&self) {
@@ -714,6 +753,7 @@ impl eframe::App for App {
         }
 
         let content = ui_common::content_frame(ui.style());
+        let sorts = self.sorts();
         egui::CentralPanel::default().frame(content).show(ui, |ui| match self.tab {
             Tab::Processes => self.processes.show(ui, &snap),
             Tab::Performance => self.performance.show(ui, &snap),
@@ -745,6 +785,16 @@ impl eframe::App for App {
                 }
             }
         });
+        if self.sorts() != sorts {
+            let s = &mut self.settings;
+            s.sort_processes = self.processes.sort.to_text(taskmgr_core::SortKey::key);
+            s.sort_history = self.history.sort.to_text(history::Sort::key);
+            s.sort_startup = self.startup.sort.to_text(startup::Col::key);
+            s.sort_users = self.users.sort.to_text(users::Col::key);
+            s.sort_details = self.details.sort.to_text(details::Col::key);
+            s.sort_services = self.services.sort.to_text(services::Col::key);
+            self.save_settings();
+        }
     }
 }
 
