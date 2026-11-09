@@ -298,6 +298,9 @@ struct App {
     tree_pending: HashSet<PathBuf>,
     pub active_tab: usize,
     pub nearby: nearby::Nearby,
+    /// The About window (See more > About and updates), with "Check for updates".
+    pub about_open: bool,
+    pub updater: ui_common::Updater,
     /// The Options window (default file manager).
     pub options_open: bool,
     /// Layout of the icon view drawn last frame (None in Details), for the arrow keys.
@@ -391,6 +394,12 @@ impl App {
             tree_pending: HashSet::new(),
             active_tab: 0,
             nearby: nearby::Nearby::new(),
+            about_open: false,
+            updater: ui_common::Updater::new(ui_common::AppInfo {
+                name: "File Explorer",
+                asset: "oxi-explorer.exe",
+                version: env!("CARGO_PKG_VERSION"),
+            }),
             // OXI_EXPLORER_OPTIONS=1 opens it at start, for screenshots.
             options_open: std::env::var_os("OXI_EXPLORER_OPTIONS").is_some(),
             folder_confirm: None,
@@ -2209,6 +2218,16 @@ impl eframe::App for App {
         egui::CentralPanel::default().frame(content).show(ui, |ui| view::file_list(self, ui));
         view::dialog(self, ui);
         nearby::show(self, ui);
+        if self.about_open {
+            let mut open = true;
+            egui::Window::new("About")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(&ctx, |ui| self.updater.ui(ui));
+            self.about_open = open;
+        }
         self.options(ui.ctx());
         self.finish_drag(&ctx);
     }
@@ -2374,6 +2393,8 @@ fn recent_files(max: usize) -> Vec<Entry> {
 }
 
 fn main() -> eframe::Result {
+    // After an in-app update: wait for the replaced exe to exit, clear its leftovers.
+    ui_common::update::startup();
     // OpenGL where there is a GPU driver, wgpu (WARP) otherwise; see `ui_common::choose_renderer`.
     let (renderer, auto) = ui_common::choose_renderer();
     let r = run(renderer);

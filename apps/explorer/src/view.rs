@@ -322,6 +322,11 @@ fn more_menu(app: &mut App, ui: &mut Ui) {
         app.show_properties(&c);
         ui.close();
     }
+    ui.separator();
+    if menu_item(ui, Icon::Info, "About and updates", None).clicked() {
+        app.about_open = true;
+        ui.close();
+    }
 }
 
 pub fn toolbar(app: &mut App, ui: &mut Ui) {

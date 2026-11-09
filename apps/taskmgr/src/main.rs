@@ -224,6 +224,8 @@ struct App {
     startup: startup::State,
     users: users::State,
     settings: settings::Settings,
+    /// The About section at the bottom of Settings, with "Check for updates".
+    updater: ui_common::Updater,
     /// Whether Ctrl+Shift+Esc opens this exe; None where that cannot be changed.
     default_app: ui_common::default_app::DefaultApp,
     tray: bool,
@@ -396,6 +398,11 @@ impl App {
             startup: startup::State::new(status.clone(), SortBy::parse(&settings.sort_startup, startup::Col::from_key)),
             users: users::State::new(status.clone(), SortBy::parse(&settings.sort_users, users::Col::from_key)),
             settings,
+            updater: ui_common::Updater::new(ui_common::AppInfo {
+                name: "Task Manager",
+                asset: "oxi-taskmgr.exe",
+                version: env!("CARGO_PKG_VERSION"),
+            }),
             default_app: ui_common::default_app::DefaultApp::new(cfg!(windows).then(taskmgr_handler)),
             tray: false,
             nav_open: true,
@@ -768,21 +775,29 @@ impl eframe::App for App {
             }
             Tab::Services => self.services.show(ui, &snap),
             Tab::Settings => {
-                let tabs: Vec<&str> = Tab::ALL.iter().filter(|t| **t != Tab::Settings).map(|t| t.label()).collect();
-                let before = self.settings.clone();
-                if settings::show(ui, &mut self.settings, &tabs, &self.status, &mut self.default_app) {
-                    let s = &self.settings;
-                    if s.theme != before.theme {
-                        s.apply_theme(ui.ctx());
+                egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+                    let tabs: Vec<&str> = Tab::ALL.iter().filter(|t| **t != Tab::Settings).map(|t| t.label()).collect();
+                    let before = self.settings.clone();
+                    if settings::show(ui, &mut self.settings, &tabs, &self.status, &mut self.default_app) {
+                        let s = &self.settings;
+                        if s.theme != before.theme {
+                            s.apply_theme(ui.ctx());
+                        }
+                        if s.always_on_top != before.always_on_top {
+                            s.apply_on_top(ui.ctx());
+                        }
+                        INTERVAL_MS.store(s.interval_ms, Ordering::Relaxed);
+                        self.processes.set_group(s.group_by_type);
+                        self.processes.percent = s.values_pct;
+                        self.save_settings();
                     }
-                    if s.always_on_top != before.always_on_top {
-                        s.apply_on_top(ui.ctx());
-                    }
-                    INTERVAL_MS.store(s.interval_ms, Ordering::Relaxed);
-                    self.processes.set_group(s.group_by_type);
-                    self.processes.percent = s.values_pct;
-                    self.save_settings();
-                }
+                    // As in Windows 11's Task Manager, About closes the Settings page.
+                    ui.add_space(20.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new("About").strong().size(16.0));
+                    self.updater.ui(ui);
+                });
             }
         });
         if self.sorts() != sorts {
@@ -799,6 +814,8 @@ impl eframe::App for App {
 }
 
 fn main() -> eframe::Result {
+    // After an in-app update: wait for the replaced exe to exit, clear its leftovers.
+    ui_common::update::startup();
     // `--set-default` / `--restore-default`: change Ctrl+Shift+Esc without opening the window
     // (the settings page runs this elevated, and it is the way back if the window won't open).
     if let Some((cmd, quiet)) = ui_common::default_app::command_from_args(std::env::args().skip(1)) {
