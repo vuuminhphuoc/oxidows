@@ -50,9 +50,11 @@ fn spec(mode: ViewMode) -> Spec {
 /// Height of a group heading in the icon views.
 const HEADING: f32 = 32.0;
 
-/// Thumbnail size the view asks the shell for.
-pub fn thumb_px(mode: ViewMode) -> u32 {
-    if mode == ViewMode::ExtraLarge { 256 } else { 96 }
+/// Thumbnail size the view asks the shell for: the size the picture is drawn at, in pixels of
+/// this display. The shell scales it smoothly; scaling a bigger one down here would leave jagged
+/// edges, and a smaller one up would blur it (at 125 % or 150 % display scaling).
+pub fn thumb_px(mode: ViewMode, pixels_per_point: f32) -> u32 {
+    (spec(mode).img * pixels_per_point.max(0.5)).round().clamp(16.0, 1024.0) as u32
 }
 
 /// Whether the view draws shell thumbnails (otherwise small system icons).
@@ -256,7 +258,8 @@ pub fn show(
             let thumb = if thumbs { app.thumbs.get(&path) } else { None };
             let painted = match thumb {
                 Some(IconState::Ready(tex)) => {
-                    let s = tex.size_vec2();
+                    // Texture pixels to points: drawn at most at its own size on this display.
+                    let s = tex.size_vec2() / ui.ctx().pixels_per_point();
                     let k = (sp.img / s.x.max(s.y)).min(1.0);
                     let r = Rect::from_center_size(img_rect.center(), s * k);
                     ui.painter().image(

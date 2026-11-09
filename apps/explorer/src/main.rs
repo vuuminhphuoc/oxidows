@@ -88,6 +88,11 @@ pub enum ViewMode {
     Content,
 }
 
+/// Thumbnails and icons are often drawn smaller than they are (a 96 px thumbnail in Medium
+/// icons): mipmaps keep their edges smooth instead of jagged.
+const SMOOTH: egui::TextureOptions =
+    egui::TextureOptions { mipmap_mode: Some(egui::TextureFilter::Linear), ..egui::TextureOptions::LINEAR };
+
 impl ViewMode {
     /// In Explorer's order, with their Ctrl+Shift+number shortcuts.
     pub const ALL: [(ViewMode, &'static str, &'static str); 8] = [
@@ -783,7 +788,7 @@ impl App {
     }
 
     pub fn request_thumbs(&mut self) {
-        let px = grid::thumb_px(self.view_mode);
+        let px = grid::thumb_px(self.view_mode, self.ctx.pixels_per_point());
         if px != self.thumb_px {
             self.thumbs.clear();
             self.thumb_px = px;
@@ -959,7 +964,7 @@ impl App {
                             Some(i) => IconState::Ready(self.ctx.load_texture(
                                 format!("thumb-{}", p.display()),
                                 egui::ColorImage::from_rgba_premultiplied([i.width, i.height], &i.rgba),
-                                egui::TextureOptions::LINEAR,
+                                SMOOTH,
                             )),
                             None => IconState::Failed,
                         };
@@ -985,7 +990,7 @@ impl App {
                         Some(i) => IconState::Ready(self.ctx.load_texture(
                             format!("icon-{key:?}"),
                             egui::ColorImage::from_rgba_unmultiplied([i.width, i.height], &i.rgba),
-                            egui::TextureOptions::LINEAR,
+                            SMOOTH,
                         )),
                         None => IconState::Failed,
                     };
