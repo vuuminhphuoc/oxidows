@@ -697,4 +697,6 @@ fn everything_search_if_running() {
     let entry = found_entry.expect("Everything did not find temp file within 5 s");
     assert_eq!(Path::new(&entry.name).canonicalize().ok(), file_path.canonicalize().ok().or(Some(file_path)));
     assert_eq!(entry.size, content.len() as u64);
+    // Read from disk after Everything answered (it doesn't index these by default).
+    assert!(entry.created > 0 && !entry.hidden);
 }

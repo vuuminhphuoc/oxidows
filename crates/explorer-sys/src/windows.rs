@@ -72,7 +72,7 @@ const DROPEFFECT_MOVE: u32 = 2;
 /// 100 ns intervals between 1601-01-01 and 1970-01-01.
 const FILETIME_UNIX_EPOCH: i64 = 116_444_736_000_000_000;
 
-fn wide(s: impl AsRef<std::ffi::OsStr>) -> Vec<u16> {
+pub(crate) fn wide(s: impl AsRef<std::ffi::OsStr>) -> Vec<u16> {
     s.as_ref().encode_wide().chain(Some(0)).collect()
 }
 
@@ -82,7 +82,7 @@ fn from_wide(buf: &[u16]) -> OsString {
 }
 
 /// Paths past MAX_PATH need the `\\?\` prefix for the ANSI-era API limits to go away.
-fn long_path(p: &Path) -> PathBuf {
+pub(crate) fn long_path(p: &Path) -> PathBuf {
     let s = p.as_os_str();
     if s.len() < 240 || s.to_string_lossy().starts_with(r"\\?\") {
         return p.to_path_buf();

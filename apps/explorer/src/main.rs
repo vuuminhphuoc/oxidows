@@ -439,9 +439,13 @@ impl App {
     /// the name ("sub\\file.txt"), so opening, copying and deleting them works unchanged.
     ///
     /// Searches are answered by the first backend that can handle them:
-    /// 1. Everything (voidtools): instant name searches over the NTFS/ReFS journal when running.
-    /// 2. Windows Search: indexed properties and contents via the shell's ISearchFolderItemFactory.
-    /// 3. Parallel walk: multi-threaded folder walk with up to 8 threads evaluating AQS filters and contents.
+    /// 1. Everything (voidtools), for name-only queries on local NTFS/ReFS when it runs: it keeps every
+    ///    file name in memory, so a whole drive answers in well under a second. No hits fall through to 2,
+    ///    since Everything may exclude the folder.
+    /// 2. Windows Search, exactly as Explorer's search box sends the query: the index answers (contents and
+    ///    properties included) where the folder is indexed, the shell crawls it otherwise.
+    /// 3. Without the shell: a walk on up to 8 threads applying the query's AQS subset (`kind:`, `date:`,
+    ///    `size:`, `ext:`, `content:`, wildcards) to each item.
     ///
     /// Links/junctions are not followed (no loops).
     pub fn start_deep_search(&mut self, query: String) {

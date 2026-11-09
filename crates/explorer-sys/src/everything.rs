@@ -35,6 +35,7 @@ pub const EVERYTHING_IPC_FOLDER: u32 = 0x00000001;
 pub const EVERYTHING_IPC_DRIVE: u32 = 0x00000002;
 pub const EVERYTHING_IPC_ROOT: u32 = 0x00000002;
 
+#[cfg(windows)]
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x00000010;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -200,9 +201,7 @@ impl Drop for WindowGuard {
 /// Names matching `words` (all of them, case-insensitive substring; `*`/`?` wildcards match the whole name)
 /// under `root`, from a running Everything. `found` gets each result with `name` = full path.
 ///
-/// Only `FULL_PATH_AND_NAME | SIZE | DATE_MODIFIED` are requested from Everything. Requesting `DATE_CREATED`
-/// or `ATTRIBUTES` causes Everything 1.4 to read metadata from disk for every result rather than answering
-/// solely from its in-memory database, which would turn millisecond searches into multi-second disk crawls.
+/// Only `FULL_PATH_AND_NAME | SIZE | DATE_MODIFIED` are requested from Everything (see [`fill_from_disk`]).
 #[cfg(windows)]
 pub fn search(root: &Path, words: &[String], cancel: &AtomicBool, found: &mut dyn FnMut(Entry)) -> io::Result<()> {
     search_timed(root, words, cancel, found).map(|_| ())
@@ -383,41 +382,78 @@ pub fn search_timed(
         (root_buf.as_str(), root_str.as_ref())
     };
     let prefix_len = root_with_slash.len();
-    let no_slash_len = root_no_slash.len();
 
+    let mut entries = Vec::with_capacity(raw_items.len());
     for item in raw_items {
-        if cancel.load(Ordering::Relaxed) {
-            return Ok(reply_took);
-        }
-        let matches_prefix =
-            item.path.len() >= prefix_len && item.path[..prefix_len].eq_ignore_ascii_case(root_with_slash);
-        let matches_root =
-            !matches_prefix && item.path.len() == no_slash_len && item.path.eq_ignore_ascii_case(root_no_slash);
+        // `get` rather than slicing: a non-ASCII name can put a char boundary inside the prefix length.
+        let matches_prefix = item.path.get(..prefix_len).is_some_and(|p| p.eq_ignore_ascii_case(root_with_slash));
+        let matches_root = !matches_prefix && item.path.eq_ignore_ascii_case(root_no_slash);
         if !matches_prefix && !matches_root {
             continue;
         }
-
         let is_dir = item.flags & EVERYTHING_IPC_FOLDER != 0;
-        let size = if is_dir { 0 } else { item.size };
-        let attrs = if is_dir { FILE_ATTRIBUTE_DIRECTORY } else { 0 };
-        let modified = crate::windows::filetime_parts_to_unix(item.date_modified.0, item.date_modified.1);
-
-        found(Entry {
+        entries.push(Entry {
             name: item.path,
             is_dir,
-            size,
-            modified,
-            created: 0,
-            attrs,
-            hidden: false,
-            system: false,
-            link: false,
-            label: None,
-            note: None,
+            size: if is_dir { 0 } else { item.size },
+            modified: crate::windows::filetime_parts_to_unix(item.date_modified.0, item.date_modified.1),
+            attrs: if is_dir { FILE_ATTRIBUTE_DIRECTORY } else { 0 },
+            ..Default::default()
         });
+    }
+    fill_from_disk(&mut entries, cancel);
+    for e in entries {
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(reply_took);
+        }
+        found(e);
     }
 
     Ok(reply_took)
+}
+
+/// Everything 1.4 indexes only names, sizes and modified dates by default: asking it for attributes or the
+/// creation date makes it read every result from disk on one thread (7.9 s instead of 0.3 s for 72k hits).
+/// They are read here on several threads instead, so hidden and system files stay hidden as in the listing
+/// and the Date created column is filled. An item that can't be read keeps what Everything gave.
+#[cfg(windows)]
+fn fill_from_disk(entries: &mut [Entry], cancel: &AtomicBool) {
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileAttributesExW, GetFileExInfoStandard, WIN32_FILE_ATTRIBUTE_DATA,
+    };
+
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 8);
+    let chunk = entries.len().div_ceil(threads).max(1);
+    std::thread::scope(|s| {
+        for part in entries.chunks_mut(chunk) {
+            s.spawn(move || {
+                for e in part {
+                    if cancel.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let path = crate::windows::wide(crate::windows::long_path(Path::new(&e.name)));
+                    let mut d: WIN32_FILE_ATTRIBUTE_DATA = unsafe { std::mem::zeroed() };
+                    let ok = unsafe {
+                        GetFileAttributesExW(
+                            path.as_ptr(),
+                            GetFileExInfoStandard,
+                            (&mut d as *mut WIN32_FILE_ATTRIBUTE_DATA).cast(),
+                        )
+                    };
+                    if ok == 0 {
+                        continue;
+                    }
+                    let (hidden, system, link) = crate::windows::entry_flags(d.dwFileAttributes);
+                    e.attrs = d.dwFileAttributes;
+                    (e.hidden, e.system, e.link) = (hidden, system, link);
+                    e.created = crate::windows::filetime_parts_to_unix(
+                        d.ftCreationTime.dwLowDateTime,
+                        d.ftCreationTime.dwHighDateTime,
+                    );
+                }
+            });
+        }
+    });
 }
 
 /// True only for a local fixed NTFS or ReFS volume.
