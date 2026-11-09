@@ -1207,8 +1207,10 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
     let dragging = app.drag.is_some();
     let mut drag_start: Option<String> = None;
     let mut hover_target: Option<PathBuf> = None;
+    // A name being edited in place: drawn by its row or tile, committed after the list.
+    let mut renaming = app.renaming.take();
     if app.view_mode != ViewMode::Details {
-        crate::grid::show(app, ui, &mut action, &mut wanted_icons, shell_menus, in_bin);
+        crate::grid::show(app, ui, &mut action, &mut wanted_icons, shell_menus, in_bin, &mut renaming);
     } else {
         let band_active = ui.data(|d| d.get_temp::<[f32; 2]>(egui::Id::new(DETAILS_BAND)).is_some());
         let mut table = TableBuilder::new(ui)
@@ -1329,7 +1331,12 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                             }
                         }
                         ui.add_space(4.0);
-                        ui.add(egui::Label::new(name_text).selectable(false).truncate());
+                        match renaming.as_mut().filter(|r| r.original == e.name) {
+                            Some(r) => rename_field(ui, r, None),
+                            None => {
+                                ui.add(egui::Label::new(name_text).selectable(false).truncate());
+                            }
+                        }
                         if e.link {
                             ui.label(RichText::new(" ⤴").weak());
                         }
@@ -1502,6 +1509,20 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
         details_band(app, ui, band_start, &drawn, &rows_map);
     }
 
+    if let Some(mut r) = renaming {
+        match r.outcome.take() {
+            Some(true) => {
+                if let Some(e) = app.finish_rename(&r) {
+                    // Stay in the field with the message, as Explorer does.
+                    r.error = Some(e);
+                    r.opened = false;
+                    app.renaming = Some(r);
+                }
+            }
+            Some(false) => {}
+            None => app.renaming = Some(r),
+        }
+    }
     app.request_icons(wanted_icons);
     app.request_thumbs();
     if let Some(n) = drag_start {
@@ -1636,14 +1657,10 @@ fn map_drive_dialog(app: &mut App, ui: &mut Ui, mut m: MapDrive) {
 
 pub fn dialog(app: &mut App, ui: &mut Ui) {
     let Some(mut d) = app.dialog.take() else { return };
-    let (title, text, error, opened) = match &mut d {
-        Dialog::Rename { text, error, opened, others, .. } => {
-            (if others.is_empty() { "Rename" } else { "Rename all selected" }, text, error, opened)
-        }
-        Dialog::NewFolder { text, error, opened } => ("New folder", text, error, opened),
+    match &mut d {
         Dialog::MapDrive(_) => {
             let Dialog::MapDrive(m) = d else { unreachable!() };
-            return map_drive_dialog(app, ui, m);
+            map_drive_dialog(app, ui, m)
         }
         Dialog::ConfirmPurge(items) => {
             let (mut yes, mut no) = (false, false);
@@ -1667,59 +1684,50 @@ pub fn dialog(app: &mut App, ui: &mut Ui) {
             } else if !no && !modal.should_close() {
                 app.dialog = Some(d);
             }
-            return;
         }
-    };
-    let mut submit = false;
-    let mut cancel = false;
-    let modal = egui::Modal::new(egui::Id::new("dialog")).show(ui.ctx(), |ui| {
-        ui.set_width(360.0);
-        ui.heading(title);
-        ui.add_space(6.0);
-        let r = ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
-        if !*opened {
-            *opened = true;
-            r.request_focus();
-            // Select the name without its extension, as Explorer does.
-            let stem = match text.rfind('.') {
-                Some(i) if i > 0 && title == "Rename" => text[..i].chars().count(),
-                _ => text.chars().count(),
-            };
-            if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), r.id) {
-                let range = egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(stem));
-                state.cursor.set_char_range(Some(range));
-                state.store(ui.ctx(), r.id);
-            }
-        }
-        if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-            submit = true;
-        }
-        if let Some(e) = error {
-            ui.colored_label(ui.visuals().error_fg_color, *e);
-        }
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            if ui.button("OK").clicked() {
-                submit = true;
-            }
-            if ui.button("Cancel").clicked() {
-                cancel = true;
-            }
-        });
+    }
+}
+
+/// The in-place name editor over an item's label: focused with the name's stem selected when it
+/// opens; Enter or clicking elsewhere commits, Esc cancels. An error shows under the field.
+pub fn rename_field(ui: &mut Ui, r: &mut crate::InlineRename, rect: Option<egui::Rect>) {
+    // As wide as the name (Explorer's box hugs the text), within the column.
+    let text_w = ui.fonts_mut(|f| {
+        f.layout_no_wrap(r.text.clone(), egui::FontId::proportional(ui_common::theme::BODY), egui::Color32::WHITE)
+            .size()
+            .x
     });
-    if modal.should_close() {
-        cancel = true;
-    }
-    if submit {
-        match app.finish_dialog(&d) {
-            None => return,
-            Some(e) => match &mut d {
-                Dialog::Rename { error, .. } | Dialog::NewFolder { error, .. } => *error = Some(e),
-                Dialog::MapDrive(_) | Dialog::ConfirmPurge(_) => {}
-            },
+    // egui drops focus on Esc before widgets see the key, so read it from the raw events.
+    let esc = ui.input(|i| {
+        i.raw.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::Escape, pressed: true, .. }))
+    });
+    let edit = egui::TextEdit::singleline(&mut r.text).margin(egui::vec2(3.0, 1.0));
+    let resp = match rect {
+        Some(rect) => ui.put(rect, edit.desired_width(rect.width())),
+        None => ui.add(edit.desired_width((text_w + 24.0).clamp(60.0, ui.available_width().max(60.0)))),
+    };
+    if !r.opened {
+        r.opened = true;
+        resp.request_focus();
+        // Select the name without its extension, as Explorer does (folders: all of it).
+        let n = r.text.chars().count();
+        let stem = match r.text.rfind('.') {
+            Some(i) if i > 0 && !r.dir.join(&r.original).is_dir() => r.text[..i].chars().count(),
+            _ => n,
+        };
+        if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), resp.id) {
+            let range = egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(stem));
+            state.cursor.set_char_range(Some(range));
+            state.store(ui.ctx(), resp.id);
         }
+    } else if resp.lost_focus() {
+        r.outcome = Some(!esc);
     }
-    if !cancel {
-        app.dialog = Some(d);
+    if resp.changed() {
+        r.error = None;
+    }
+    if let Some(e) = r.error {
+        egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), resp.id.with("err"), &resp)
+            .show(|ui| ui.colored_label(ui.visuals().error_fg_color, e));
     }
 }

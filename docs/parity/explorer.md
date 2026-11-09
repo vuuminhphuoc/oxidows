@@ -47,7 +47,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Sort chevron above the column title, plain header text | ✅ | shared with Task Manager |
 | Tabs in the title bar, Mica background | ❌ | own row under the system title bar |
 | Windows 11 context menu with “Show more options” | ❌ | the classic shell menu opens directly |
-| Rename in place (not in a dialog) | ❌ | |
+| Rename in place (not in a dialog) | ✅ | the name turns into a text box in every view; Enter or clicking elsewhere keeps it, Esc cancels; a bad name shows a tip and stays editable |
 | Header filter drop-downs, More… column chooser | ❌ | |
 
 ## Hover and tooltips
@@ -111,7 +111,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Delete to Recycle Bin, Shift+Delete permanently | ✅ | |
 | Native progress, conflict and Undo dialogs | ✅ | `SHFileOperationW` |
 | Undo / Redo (Ctrl+Z / Ctrl+Y) inside the app | ✅ | rename, new folder, copy, move, delete to Recycle Bin |
-| New folder (Ctrl+Shift+N) | ✅ | |
+| New folder (Ctrl+Shift+N) | ✅ | made at once as "New folder" and renamed in place, as in Windows 11 (also New ▸ file types) |
 | New → text file, shortcut, other registered types | ✅ | through the shell menu |
 | Drag and drop into the window | ✅ | move on same drive, copy across drives |
 | Drag onto folders, the navigation pane and the Recycle Bin | ✅ | Ctrl copies, Shift moves, as Explorer |

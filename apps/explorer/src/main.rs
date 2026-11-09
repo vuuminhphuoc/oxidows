@@ -146,21 +146,23 @@ pub enum IconState {
 }
 
 enum Dialog {
-    /// `others`: more selected items, renamed together as "text (1)", "text (2)", …
-    Rename {
-        original: String,
-        others: Vec<String>,
-        text: String,
-        error: Option<&'static str>,
-        opened: bool,
-    },
-    NewFolder {
-        text: String,
-        error: Option<&'static str>,
-        opened: bool,
-    },
     MapDrive(MapDrive),
     ConfirmPurge(Vec<Entry>),
+}
+
+/// A name being edited in place in the file list (F2, New folder, New ▸ type), as Explorer
+/// does. `others`: more selected items, renamed together as "text (1)", "text (2)", …
+pub struct InlineRename {
+    /// The folder the items are in (the user may navigate away before it is committed).
+    pub dir: PathBuf,
+    pub original: String,
+    pub others: Vec<String>,
+    pub text: String,
+    pub error: Option<&'static str>,
+    /// The field has been focused and its stem selected.
+    pub opened: bool,
+    /// Set by the field: `Some(true)` to commit, `Some(false)` to cancel.
+    pub outcome: Option<bool>,
 }
 
 pub struct MapDrive {
@@ -253,6 +255,7 @@ struct App {
     pending_select: Option<String>,
     /// Start renaming `pending_select` once it is selected (a new file from New ▸).
     pending_rename: bool,
+    pub renaming: Option<InlineRename>,
     /// File types for the command bar's New menu, read when it first opens.
     pub new_items: Option<Vec<explorer_sys::NewItem>>,
     /// Whether the clipboard holds something to paste, and when that was last checked.
@@ -366,6 +369,7 @@ impl App {
             scroll_to: None,
             pending_select: None,
             pending_rename: false,
+            renaming: None,
             new_items: None,
             paste_ready: (false, None),
             type_ahead: (String::new(), Instant::now()),
@@ -1146,6 +1150,10 @@ impl App {
     }
 
     fn entered_new_folder(&mut self, select: Option<String>) {
+        // Leaving the folder commits a name being edited, as clicking elsewhere does.
+        if let Some(r) = self.renaming.take() {
+            let _ = self.finish_rename(&r);
+        }
         self.selected.clear();
         self.cursor = None;
         self.anchor = None;
@@ -1694,18 +1702,28 @@ impl App {
             return;
         }
         // In view order, so the numbering follows what the user sees.
-        let sel: Vec<String> =
-            self.view.iter().map(|&i| &self.entries[i].name).filter(|n| self.selected.contains(*n)).cloned().collect();
-        if let Some(first) = sel.first() {
+        let sel: Vec<(usize, String)> = self
+            .view
+            .iter()
+            .enumerate()
+            .map(|(pos, &i)| (pos, &self.entries[i].name))
+            .filter(|(_, n)| self.selected.contains(*n))
+            .map(|(pos, n)| (pos, n.clone()))
+            .collect();
+        if let Some((pos, first)) = sel.first().cloned() {
             // In search results `name` is a relative path; only its last part is edited.
-            let leaf = Path::new(first).file_name().map_or_else(|| first.clone(), |n| n.to_string_lossy().into_owned());
-            self.dialog = Some(Dialog::Rename {
-                original: first.clone(),
-                others: sel[1..].to_vec(),
+            let leaf =
+                Path::new(&first).file_name().map_or_else(|| first.clone(), |n| n.to_string_lossy().into_owned());
+            self.renaming = Some(InlineRename {
+                dir: self.cur.clone(),
+                original: first,
+                others: sel[1..].iter().map(|(_, n)| n.clone()).collect(),
                 text: leaf,
                 error: None,
                 opened: false,
+                outcome: None,
             });
+            self.scroll_to = Some(pos);
         }
     }
 
@@ -1800,18 +1818,33 @@ impl App {
         self.paste_ready.0
     }
 
+    /// Ctrl+Shift+N: creates "New folder" here and starts renaming it in place, as Explorer does.
     pub fn begin_new_folder(&mut self) {
         if self.in_virtual_place() {
             return;
         }
-        self.dialog =
-            Some(Dialog::NewFolder { text: unique_name("New folder", &self.entries), error: None, opened: false });
+        let name = unique_name("New folder", &self.entries);
+        let path = self.cur.join(&name);
+        match std::fs::create_dir(&path) {
+            Ok(()) => {
+                self.push_undo(undo::Undoable::NewFolder(path));
+                self.selected.clear();
+                self.pending_select = Some(name);
+                self.pending_rename = true;
+                self.refresh();
+            }
+            Err(e) => self.status = Some(format!("Could not create folder: {e}")),
+        }
     }
 
-    /// Returns an error to show in the dialog, or `None` once done.
-    fn finish_dialog(&mut self, dialog: &Dialog) -> Option<&'static str> {
-        match dialog {
-            Dialog::Rename { original, others, text, .. } if !others.is_empty() => {
+    /// Commits an in-place rename. Returns an error to show by the field (which stays open), or
+    /// `None` once done.
+    pub fn finish_rename(&mut self, r: &InlineRename) -> Option<&'static str> {
+        let InlineRename { dir, original, others, text, .. } = r;
+        // Still in the folder it was started in: select the result there.
+        let here = *dir == self.cur;
+        match () {
+            () if !others.is_empty() => {
                 let base = text.trim_end();
                 if let Err(e) = validate_name(base) {
                     return Some(e);
@@ -1823,7 +1856,7 @@ impl App {
                 let mut done = Vec::new();
                 let mut failed = 0;
                 for (old, new) in names.iter().zip(&new_names) {
-                    let from = self.cur.join(old);
+                    let from = dir.join(old);
                     let to = from.with_file_name(new);
                     if to.exists() || std::fs::rename(&from, &to).is_err() {
                         failed += 1;
@@ -1831,22 +1864,26 @@ impl App {
                         done.push((from, to));
                     }
                 }
-                self.selected = done
-                    .iter()
-                    .filter_map(|(_, to)| to.file_name().map(|n| n.to_string_lossy().into_owned()))
-                    .collect();
+                if here {
+                    self.selected = done
+                        .iter()
+                        .filter_map(|(_, to)| to.file_name().map(|n| n.to_string_lossy().into_owned()))
+                        .collect();
+                }
                 if failed > 0 {
                     self.status = Some(format!("Renamed {}, {failed} could not be renamed", done.len()));
                 }
                 if !done.is_empty() {
                     self.push_undo(undo::Undoable::Renames(done));
                 }
-                self.refresh();
+                if here {
+                    self.refresh();
+                }
                 None
             }
-            Dialog::Rename { original, text, .. } => {
+            () => {
                 let new = text.trim_end();
-                let from = self.cur.join(original);
+                let from = dir.join(original);
                 let old_leaf = from.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 if new == old_leaf {
                     return None;
@@ -1863,32 +1900,14 @@ impl App {
                 match std::fs::rename(&from, &to) {
                     Ok(()) => {
                         self.push_undo(undo::Undoable::Rename { from: from.clone(), to: to.clone() });
-                        self.selected.clear();
-                        let parent = Path::new(original).parent().unwrap_or(Path::new(""));
-                        self.pending_select = Some(parent.join(new).to_string_lossy().into_owned());
-                        self.refresh();
+                        if here {
+                            self.selected.clear();
+                            let parent = Path::new(original).parent().unwrap_or(Path::new(""));
+                            self.pending_select = Some(parent.join(new).to_string_lossy().into_owned());
+                            self.refresh();
+                        }
                     }
                     Err(e) => self.status = Some(format!("Could not rename: {e}")),
-                }
-                None
-            }
-            Dialog::MapDrive(_) | Dialog::ConfirmPurge(_) => None,
-            Dialog::NewFolder { text, .. } => {
-                let name = text.trim_end();
-                if let Err(e) = validate_name(name) {
-                    return Some(e);
-                }
-                if self.entries.iter().any(|e| e.name.eq_ignore_ascii_case(name)) {
-                    return Some("There is already an item with that name");
-                }
-                match std::fs::create_dir(self.cur.join(name)) {
-                    Ok(()) => {
-                        self.push_undo(undo::Undoable::NewFolder(self.cur.join(name)));
-                        self.selected.clear();
-                        self.pending_select = Some(name.to_string());
-                        self.refresh();
-                    }
-                    Err(e) => self.status = Some(format!("Could not create folder: {e}")),
                 }
                 None
             }

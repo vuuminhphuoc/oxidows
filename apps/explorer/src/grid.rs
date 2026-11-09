@@ -132,6 +132,7 @@ pub fn show(
     wanted_icons: &mut Vec<IconKey>,
     shell_menus: bool,
     in_bin: bool,
+    renaming: &mut Option<crate::InlineRename>,
 ) {
     let mut sp = spec(app.view_mode);
     let thumbs = uses_thumbs(app.view_mode) && !in_bin;
@@ -381,6 +382,33 @@ pub fn show(
                 let d = e.display();
                 d.rfind('.').filter(|&i| i > 0).map_or(d, |i| &d[..i]).to_string()
             };
+            // The in-place name editor takes the name's place.
+            let editing = renaming.as_mut().filter(|r| r.original == e.name);
+            if let Some(r) = editing {
+                let r_rect = match sp.style {
+                    Style::Stacked => Rect::from_min_size(
+                        egui::pos2(rect.left() + 2.0, img_rect.bottom() + 2.0),
+                        egui::vec2(rect.width() - 4.0, 20.0),
+                    ),
+                    Style::Inline => {
+                        let x = img_rect.right() + 4.0;
+                        Rect::from_min_max(
+                            egui::pos2(x, rect.center().y - 10.0),
+                            egui::pos2(rect.right() - 2.0, rect.center().y + 10.0),
+                        )
+                    }
+                    Style::Tile | Style::Content => {
+                        let x = img_rect.right() + 6.0;
+                        let top = rect.top() + if sp.style == Style::Content { 9.0 } else { 3.0 };
+                        Rect::from_min_max(
+                            egui::pos2(x, top),
+                            egui::pos2(rect.right().min(x + 260.0) - 2.0, top + 20.0),
+                        )
+                    }
+                };
+                crate::view::rename_field(ui, r, Some(r_rect));
+                continue;
+            }
             match sp.style {
                 Style::Stacked => {
                     let mut job = egui::text::LayoutJob::simple(
