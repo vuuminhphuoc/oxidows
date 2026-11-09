@@ -71,9 +71,73 @@ fn delete_tree(key: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// Deletes `key` when it holds no values and no subkeys (one we may have created), so undo leaves
+/// the user's classes as they were.
+fn delete_if_empty(key: &str) {
+    use windows_sys::Win32::System::Registry::{KEY_READ, RegCloseKey, RegOpenKeyExW, RegQueryInfoKeyW};
+    let k = w(key);
+    let mut h: HKEY = std::ptr::null_mut();
+    // SAFETY: NUL-terminated name, out-pointer to a local; the handle is closed below.
+    if unsafe { RegOpenKeyExW(HKEY_CURRENT_USER as HKEY, k.as_ptr(), 0, KEY_READ, &mut h) } != ERROR_SUCCESS {
+        return;
+    }
+    let (mut subkeys, mut values) = (0u32, 0u32);
+    let none = std::ptr::null_mut::<u32>;
+    // SAFETY: open key; unused outputs are null.
+    let r = unsafe {
+        RegQueryInfoKeyW(
+            h,
+            std::ptr::null_mut(),
+            none(),
+            null(),
+            &mut subkeys,
+            none(),
+            none(),
+            &mut values,
+            none(),
+            none(),
+            none(),
+            std::ptr::null_mut(),
+        )
+    };
+    // SAFETY: the key opened above.
+    unsafe { RegCloseKey(h) };
+    if r == ERROR_SUCCESS && subkeys == 0 && values == 0 {
+        // SAFETY: NUL-terminated name.
+        unsafe { windows_sys::Win32::System::Registry::RegDeleteKeyW(HKEY_CURRENT_USER as HKEY, k.as_ptr()) };
+    }
+}
+
 /// Whether folders currently open in oxi-explorer.
 pub fn is_default() -> bool {
     get(r"Software\Classes\Directory\shell", None).as_deref() == Some(VERB)
+}
+
+/// Verbs Windows itself uses as a folder's default; a user value of one of these is no takeover.
+const BUILT_IN_VERBS: [&str; 5] = ["", "none", "open", "explore", "opennewwindow"];
+
+/// Who opens folders now: `Ours(exe)` when our verb is the default (with the exe it starts),
+/// `Other(command)` when some other program's verb is, `BuiltIn` otherwise.
+pub fn handler() -> crate::FolderHandler {
+    let shell = r"Software\Classes\Directory\shell";
+    let Some(verb) = get(shell, None) else { return crate::FolderHandler::BuiltIn };
+    let command = get(&format!(r"{shell}\{verb}\command"), None).unwrap_or_default();
+    if verb == VERB {
+        crate::FolderHandler::Ours(crate::command_exe(&command))
+    } else if BUILT_IN_VERBS.iter().any(|v| v.eq_ignore_ascii_case(&verb)) {
+        crate::FolderHandler::BuiltIn
+    } else {
+        crate::FolderHandler::Other(if command.is_empty() { verb } else { crate::command_exe(&command) })
+    }
+}
+
+/// Where a Win+E command another program had goes while ours is in, to be put back on undo.
+const PREVIOUS: &str = "oxidows.Previous";
+
+/// Whether a Win+E command starts oxi-explorer: by name, or `exe` (ours, however it is named).
+fn is_ours(command: &str, exe: Option<&str>) -> bool {
+    command.to_ascii_lowercase().contains("oxi-explorer")
+        || exe.is_some_and(|e| !e.is_empty() && crate::command_exe(command).eq_ignore_ascii_case(e))
 }
 
 pub fn set_default(exe: &Path) -> io::Result<()> {
@@ -89,12 +153,19 @@ pub fn set_default(exe: &Path) -> io::Result<()> {
         set(&shell, None, VERB)?;
     }
     let cmd = format!(r"{WIN_E}\shell\opennewwindow\command");
+    // Another file manager's Win+E (Files, Directory Opus) comes back on undo.
+    let me = exe.display().to_string();
+    if let Some(old) = get(&cmd, None).filter(|v| !is_ours(v, Some(&me))) {
+        set(&cmd, Some(PREVIOUS), &old)?;
+    }
     set(&cmd, None, &format!("\"{}\"", exe.display()))?;
     // An empty DelegateExecute makes the shell run the command instead of its own handler.
     set(&cmd, Some("DelegateExecute"), "")
 }
 
 pub fn unset_default() -> io::Result<()> {
+    // The exe we set, to know our Win+E command below even if the exe was renamed.
+    let our_exe = get(r"Software\Classes\Directory\shell\oxi-explorer\command", None).map(|c| crate::command_exe(&c));
     for class in ["Directory", "Drive"] {
         let shell = format!(r"Software\Classes\{class}\shell");
         let previous = get(&format!(r"{shell}\{VERB}"), Some("PreviousDefault")).filter(|v| !v.is_empty());
@@ -112,11 +183,27 @@ pub fn unset_default() -> io::Result<()> {
             }
         }
     }
-    delete_tree(&format!(r"{WIN_E}\shell\opennewwindow"))?;
+    let cmd = format!(r"{WIN_E}\shell\opennewwindow\command");
+    let ours = get(&cmd, None).is_some_and(|v| is_ours(&v, our_exe.as_deref()));
+    match get(&cmd, Some(PREVIOUS)).filter(|v| !v.is_empty()) {
+        Some(old) if ours => {
+            set(&cmd, None, &old)?;
+            let (k, n) = (w(&cmd), w(PREVIOUS));
+            // SAFETY: NUL-terminated key and value names. Best effort.
+            let _ = unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER as HKEY, k.as_ptr(), n.as_ptr()) };
+        }
+        // Someone else's since: leave it.
+        Some(_) => {}
+        None if ours => delete_tree(&format!(r"{WIN_E}\shell\opennewwindow"))?,
+        None => {}
+    }
+    for class in ["Directory", "Drive"] {
+        delete_if_empty(&format!(r"Software\Classes\{class}\shell"));
+        delete_if_empty(&format!(r"Software\Classes\{class}"));
+    }
     // The parents only if nothing else of the user's is in them.
     for k in [format!(r"{WIN_E}\shell"), WIN_E.to_string()] {
-        let k = w(&k);
-        let _ = unsafe { windows_sys::Win32::System::Registry::RegDeleteKeyW(HKEY_CURRENT_USER as HKEY, k.as_ptr()) };
+        delete_if_empty(&k);
     }
     Ok(())
 }

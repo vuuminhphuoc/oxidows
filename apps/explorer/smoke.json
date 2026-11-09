@@ -1,1 +1,1 @@
-{"views": [{"name": "nearby", "settle": 5, "env": {"OXI_EXPLORER_NEARBY": "1"}}]}
+{"views": [{"name": "nearby", "settle": 5, "env": {"OXI_EXPLORER_NEARBY": "1"}}, {"name": "options", "env": {"OXI_EXPLORER_OPTIONS": "1"}}]}

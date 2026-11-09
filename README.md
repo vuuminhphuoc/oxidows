@@ -26,6 +26,22 @@ as administrator (its *Run as administrator* button relaunches it through UAC).
 Nearby sharing in Explorer needs the free [LocalSend](https://localsend.org) app on the phone; see
 [`apps/explorer`](apps/explorer#nearby-sharing-localsend).
 
+## Use them as the default apps
+
+Each app can take over the Windows shortcuts that open its original, and give them back:
+
+| App | Where | Takes over | Needs |
+| --- | --- | --- | --- |
+| Task Manager | Settings > Default app > Set as default | Ctrl+Shift+Esc, Ctrl+Alt+Del > Task Manager, taskbar right-click > Task Manager, anything that runs `taskmgr.exe` | administrator (Windows asks) |
+| File Explorer | `…` > Options > Set as default | Win+E, opening a folder or drive from the desktop, Start, Run or another app | nothing, your account only |
+
+Explorer never replaces the shell: the taskbar, Start and the desktop stay File Explorer's.
+**Restore** in the same place puts back exactly what was there before (Windows' own app, or a tool
+such as Process Explorer or Files that had it), and removes every registry entry the app made.
+Move or delete the exe only after restoring. To undo without opening the app, run
+`oxi-taskmgr.exe --restore-default` or `oxi-explorer.exe --restore-default` (`--set-default` does
+the opposite; add `--quiet` to skip the message box).
+
 | Processes | Performance |
 | --- | --- |
 | ![Processes tab](docs/images/taskmgr-processes.png) | ![Performance tab](docs/images/taskmgr-performance.png) |
