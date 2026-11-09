@@ -951,7 +951,13 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
             h.col(|ui| {
                 let sorted = key.is_some_and(|k| app.sort == k);
                 let arrow = if sorted { if app.ascending { " ⏶" } else { " ⏷" } } else { "" };
-                let resp = ui.add(egui::Button::new(RichText::new(format!("{title}{arrow}")).strong()).frame(false));
+                // The whole cell is the button, as in Explorer, not just its text.
+                let rect = ui.max_rect();
+                let resp = ui.interact(rect, ui.id().with(("col-header", title)), Sense::click());
+                if resp.hovered() && key.is_some() {
+                    ui.painter().rect_filled(rect, 2.0, ui.visuals().widgets.hovered.weak_bg_fill);
+                }
+                ui.add(egui::Label::new(RichText::new(format!("{title}{arrow}")).strong()).selectable(false));
                 if resp.clicked() && key.is_some() {
                     *out = key;
                 }

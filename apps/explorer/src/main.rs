@@ -300,6 +300,8 @@ struct App {
     pub nearby: nearby::Nearby,
     /// The Options window (default file manager).
     pub options_open: bool,
+    /// Layout of the icon view drawn last frame (None in Details), for the arrow keys.
+    pub grid_nav: Option<grid::GridNav>,
     /// Options ▸ Folder views: the button waiting for "Yes" (Apply to all folders, Reset folders).
     folder_confirm: Option<FolderAction>,
     default_app: ui_common::default_app::DefaultApp,
@@ -392,6 +394,7 @@ impl App {
             // OXI_EXPLORER_OPTIONS=1 opens it at start, for screenshots.
             options_open: std::env::var_os("OXI_EXPLORER_OPTIONS").is_some(),
             folder_confirm: None,
+            grid_nav: None,
             default_app: ui_common::default_app::DefaultApp::new(cfg!(windows).then(folder_handler)),
         };
         let s = app.persist.settings.clone();
@@ -1996,7 +1999,29 @@ impl App {
         let mut events = Vec::new();
         ui.input_mut(|i| {
             let shift = i.modifiers.shift;
-            for (key, step) in [(Key::ArrowDown, 1isize), (Key::ArrowUp, -1), (Key::PageDown, 20), (Key::PageUp, -20)] {
+            // In the icon views the arrows follow the grid (Left/Right too); in Details they
+            // move up and down the list.
+            let grid = self.grid_nav.as_ref().filter(|_| self.view_mode != ViewMode::Details);
+            for key in [Key::ArrowLeft, Key::ArrowRight, Key::ArrowUp, Key::ArrowDown] {
+                if !i.key_pressed(key) || n == 0 || i.modifiers.alt {
+                    continue;
+                }
+                let back = matches!(key, Key::ArrowLeft | Key::ArrowUp);
+                let to = match (self.cursor.filter(|&c| c < n), grid) {
+                    // Nothing focused yet: the first item (the last going back).
+                    (None, _) => Some(if back { n - 1 } else { 0 }),
+                    (Some(c), Some(g)) => grid::arrow_step(g, c, key),
+                    (Some(c), None) => match key {
+                        Key::ArrowUp => c.checked_sub(1),
+                        Key::ArrowDown => Some(c + 1).filter(|&p| p < n),
+                        _ => None,
+                    },
+                };
+                if let Some(to) = to {
+                    moved = Some((to, shift));
+                }
+            }
+            for (key, step) in [(Key::PageDown, 20isize), (Key::PageUp, -20)] {
                 if i.key_pressed(key) && n > 0 && !i.modifiers.alt {
                     let c = self.cursor.map_or(if step > 0 { -1 } else { n as isize }, |c| c as isize);
                     moved = Some(((c + step).clamp(0, n as isize - 1) as usize, shift));
