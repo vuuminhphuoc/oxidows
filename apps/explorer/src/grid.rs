@@ -224,8 +224,12 @@ pub fn show(
         if bg.clicked() {
             *action = Some(Action::ClearSelection);
         }
-        if bg.secondary_clicked() && shell_menus {
+        let shift = ui.input(|i| i.modifiers.shift);
+        if bg.secondary_clicked() && shell_menus && shift {
             *action = Some(Action::ShellMenu(None));
+        }
+        if !(shell_menus && shift) {
+            bg.context_menu(|ui| crate::menus::background(app, ui, action));
         }
         let band_id = ui.id().with("band");
         if bg.drag_started()
@@ -483,6 +487,7 @@ pub fn show(
                 let r = Rect::from_min_size(rect.min + egui::vec2(4.0, 4.0), egui::vec2(18.0, 18.0));
                 ticked = ui.put(r, egui::Checkbox::without_text(&mut on)).changed();
             }
+            let is_renaming = renaming.as_ref().is_some_and(|r| r.original == e.name);
             if ticked {
                 *action = Some(Action::Click(pos, egui::Modifiers::COMMAND | egui::Modifiers::CTRL));
             } else if resp.middle_clicked() && e.is_dir {
@@ -491,8 +496,21 @@ pub fn show(
                 *action = Some(Action::Open(pos));
             } else if resp.clicked() {
                 *action = Some(Action::Click(pos, resp.ctx.input(|i| i.modifiers)));
-            } else if resp.secondary_clicked() {
-                *action = Some(if shell_menus { Action::ShellMenu(Some(pos)) } else { Action::ContextSelect(pos) });
+            } else if !is_renaming && resp.secondary_clicked() {
+                let shift = resp.ctx.input(|i| i.modifiers.shift);
+                *action =
+                    Some(if shell_menus && shift { Action::ShellMenu(Some(pos)) } else { Action::ContextSelect(pos) });
+            }
+            let shift = resp.ctx.input(|i| i.modifiers.shift);
+            if !is_renaming && !(shell_menus && shift) {
+                if in_bin {
+                    resp.context_menu(|ui| crate::menus::recycle_bin_item(ui, action));
+                } else {
+                    resp.context_menu(|ui| {
+                        let info = crate::menus::ItemInfo::new(app, e, pos, shell_menus);
+                        crate::menus::item(ui, &info, action);
+                    });
+                }
             }
         }
     });
