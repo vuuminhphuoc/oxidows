@@ -295,6 +295,8 @@ struct App {
     pub nearby: nearby::Nearby,
     /// The Options window (default file manager).
     pub options_open: bool,
+    /// Options ▸ Folder views: the button waiting for "Yes" (Apply to all folders, Reset folders).
+    folder_confirm: Option<FolderAction>,
     default_app: ui_common::default_app::DefaultApp,
 }
 
@@ -384,6 +386,7 @@ impl App {
             nearby: nearby::Nearby::new(),
             // OXI_EXPLORER_OPTIONS=1 opens it at start, for screenshots.
             options_open: std::env::var_os("OXI_EXPLORER_OPTIONS").is_some(),
+            folder_confirm: None,
             default_app: ui_common::default_app::DefaultApp::new(cfg!(windows).then(folder_handler)),
         };
         let s = app.persist.settings.clone();
@@ -2386,8 +2389,72 @@ fn set_default(on: bool) -> std::io::Result<()> {
     explorer_sys::set_default_file_manager(exe.as_deref())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FolderAction {
+    Apply,
+    Reset,
+}
+
 impl App {
-    /// Options: which program opens folders and Win+E.
+    /// Options ▸ Folder views, as on the View tab of Windows' Folder Options.
+    fn folder_views_ui(&mut self, ui: &mut egui::Ui) {
+        use settings::{FolderKind, folder_key};
+        let kind = FolderKind::of(&folder_key(&self.cur), &self.places);
+        let virtual_place = self.in_virtual_place();
+        ui.label(egui::RichText::new("Folder views").strong());
+        ui.add_space(2.0);
+        ui.label(format!(
+            "Each folder keeps its own view. You can apply the view of this folder (such as Details or \
+             Large icons) to all folders of this type ({}).",
+            kind.name()
+        ));
+        ui.add_space(4.0);
+        match self.folder_confirm {
+            None => {
+                ui.horizontal(|ui| {
+                    let apply = ui.add_enabled(!virtual_place, egui::Button::new("Apply to all folders"));
+                    let apply = if virtual_place { apply.on_disabled_hover_text("Open a folder first") } else { apply };
+                    if apply.clicked() {
+                        self.folder_confirm = Some(FolderAction::Apply);
+                    }
+                    if ui.button("Reset folders").clicked() {
+                        self.folder_confirm = Some(FolderAction::Reset);
+                    }
+                });
+            }
+            Some(action) => {
+                ui.label(match action {
+                    FolderAction::Apply => {
+                        format!("Make all {} folders match this folder's view settings?", kind.name())
+                    }
+                    FolderAction::Reset => "Reset all folders to their default view settings?".to_string(),
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("Yes").clicked() {
+                        let view = self.folder_view();
+                        let s = &mut self.persist.settings;
+                        match action {
+                            FolderAction::Apply => {
+                                s.apply_to_kind(kind, view, &self.places);
+                                self.status = Some(format!("All {} folders now use this view", kind.name()));
+                            }
+                            FolderAction::Reset => {
+                                s.reset_folders();
+                                self.reload_folder_view();
+                                self.status = Some("Folder views reset".into());
+                            }
+                        }
+                        self.folder_confirm = None;
+                    }
+                    if ui.button("No").clicked() {
+                        self.folder_confirm = None;
+                    }
+                });
+            }
+        }
+    }
+
+    /// Options: which program opens folders and Win+E, and folder views.
     fn options(&mut self, ctx: &egui::Context) {
         if !self.options_open {
             return;
@@ -2398,11 +2465,18 @@ impl App {
             ui.label(egui::RichText::new("Default file manager").strong());
             ui.add_space(4.0);
             msg = self.default_app.show(ui, &DEFAULT_APP, folder_handler, set_default);
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(4.0);
+            self.folder_views_ui(ui);
         });
         if msg.is_some() {
             self.status = msg;
         }
         self.options_open = open;
+        if !open {
+            self.folder_confirm = None;
+        }
     }
 }
 
