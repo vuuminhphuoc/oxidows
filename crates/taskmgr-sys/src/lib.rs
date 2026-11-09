@@ -295,6 +295,13 @@ pub fn set_replaces_taskmgr_as_admin(on: bool) -> io::Result<()> {
     }
 }
 
+/// One Task Manager at a time: true when this process should go on, false when another
+/// instance is running (its window was brought to the front; exit). `wait_for_previous` is for
+/// a restart (`--restarted`), which waits for the instance that started it to exit.
+pub fn single_instance(wait_for_previous: bool) -> bool {
+    imp::single_instance(wait_for_previous)
+}
+
 pub fn is_elevated() -> bool {
     imp::is_elevated()
 }

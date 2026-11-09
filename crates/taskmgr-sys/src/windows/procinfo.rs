@@ -223,7 +223,9 @@ pub fn restart_elevated() -> io::Result<()> {
     let exe: Vec<u16> = exe.as_os_str().encode_wide_nul();
     let verb: Vec<u16> = "runas\0".encode_utf16().collect();
     // SAFETY: NUL-terminated wide strings.
-    let r = unsafe { ShellExecuteW(null_mut(), verb.as_ptr(), exe.as_ptr(), null(), null(), SW_SHOWNORMAL) };
+    // `--restarted`: the new instance waits for this one to exit (one Task Manager at a time).
+    let params: Vec<u16> = "--restarted\0".encode_utf16().collect();
+    let r = unsafe { ShellExecuteW(null_mut(), verb.as_ptr(), exe.as_ptr(), params.as_ptr(), null(), SW_SHOWNORMAL) };
     // Values above 32 mean success.
     if r as usize > 32 { Ok(()) } else { Err(io::Error::other("the administrator prompt was cancelled or failed")) }
 }

@@ -20,8 +20,10 @@ as the feature.
 | Settings: minimize on use | done | after Switch to |
 | Settings persisted between runs | done | `%APPDATA%\oxidows\taskmgr.ini` |
 | Replace Ctrl+Shift+Esc / taskmgr.exe | done | Settings > Default app: IFEO `Debugger`, asks for admin (UAC) itself; restore gives back Task Manager or the tool that had it; `--restore-default`; `taskmgr /startup` opens Startup |
+| One instance: starting it again brings the open window forward | done | named mutex; also from a non-elevated start to an elevated window, and out of the tray; Run as administrator waits for the old one |
 | Notification-area icon with CPU usage | done | left click shows, right click Show / Exit |
 | Keyboard: Delete = End task, Ctrl+Tab / Ctrl+Shift+Tab between pages | done | |
+| Sort every table by any column: click a header, click again to reverse, chevron above the sorted column | done | Processes, App history, Startup apps, Users, Details, Services; each page's sort is saved between runs |
 
 ## Processes
 

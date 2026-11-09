@@ -63,3 +63,36 @@ fn paint(ui: &Ui, rect: Rect, series: &[(&Ring, Color32)], max: f32, grid: bool)
     }
     painter.rect_stroke(rect, 0.0, Stroke::new(1.0, border), egui::StrokeKind::Inside);
 }
+
+/// Hover readout for a graph drawn by the functions above: a thin line at the sample under the
+/// pointer and a tooltip naming it ("12 seconds ago") with each series' value there.
+/// `title` heads the tooltip (e.g. "CPU 3"); `fmt` turns a raw sample into text.
+pub fn hover(ui: &Ui, resp: &egui::Response, title: &str, series: &[(&str, &Ring)], fmt: impl Fn(f32) -> String) {
+    let Some(pos) = resp.hover_pos() else { return };
+    let Some((_, first)) = series.first() else { return };
+    let rect = resp.rect;
+    let step = rect.width() / (first.capacity().max(2) - 1) as f32;
+    let back = ((rect.right() - pos.x) / step).round().max(0.0) as usize;
+    let at = |r: &Ring| r.len().checked_sub(back + 1).and_then(|i| r.iter().nth(i));
+    if series.iter().all(|(_, r)| at(r).is_none()) {
+        return;
+    }
+    let x = rect.right() - back as f32 * step;
+    ui.painter_at(rect).vline(x, rect.y_range(), Stroke::new(1.0, ui.visuals().weak_text_color()));
+    let mut lines = Vec::new();
+    if !title.is_empty() {
+        lines.push(title.to_string());
+    }
+    let ms = crate::INTERVAL_MS.load(std::sync::atomic::Ordering::Relaxed);
+    lines.push(match back {
+        0 => "Now".to_string(),
+        _ if ms == 0 => format!("{back} samples ago"),
+        _ => format!("{} seconds ago", (back as u64 * ms).div_ceil(1000)),
+    });
+    for (name, r) in series {
+        if let Some(v) = at(r) {
+            lines.push(if name.is_empty() { fmt(v) } else { format!("{name}: {}", fmt(v)) });
+        }
+    }
+    resp.clone().on_hover_text_at_pointer(lines.join("\n"));
+}

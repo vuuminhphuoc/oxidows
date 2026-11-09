@@ -25,6 +25,14 @@ pub struct Settings {
     pub values_pct: bool,
     /// Visible Details columns, as keys (see `details::Col::key`).
     pub details_columns: String,
+    /// Sorted column per table, as `column:asc` / `column:desc`; empty for the table's default.
+    /// Task Manager keeps each page's sort order the same way.
+    pub sort_processes: String,
+    pub sort_history: String,
+    pub sort_startup: String,
+    pub sort_users: String,
+    pub sort_details: String,
+    pub sort_services: String,
 }
 
 impl Default for Settings {
@@ -39,6 +47,12 @@ impl Default for Settings {
             group_by_type: true,
             values_pct: false,
             details_columns: crate::details::columns_text(&crate::details::Col::DEFAULT),
+            sort_processes: String::new(),
+            sort_history: String::new(),
+            sort_startup: String::new(),
+            sort_users: String::new(),
+            sort_details: String::new(),
+            sort_services: String::new(),
         }
     }
 }
@@ -66,6 +80,12 @@ impl Settings {
                 "group_by_type" => s.group_by_type = v != "false",
                 "values_pct" => s.values_pct = v == "true",
                 "details_columns" => s.details_columns = v.to_string(),
+                "sort_processes" => s.sort_processes = v.to_string(),
+                "sort_history" => s.sort_history = v.to_string(),
+                "sort_startup" => s.sort_startup = v.to_string(),
+                "sort_users" => s.sort_users = v.to_string(),
+                "sort_details" => s.sort_details = v.to_string(),
+                "sort_services" => s.sort_services = v.to_string(),
                 "theme" => s.theme = Theme::parse(v),
                 _ => {}
             }
@@ -75,7 +95,7 @@ impl Settings {
 
     pub fn to_text(&self) -> String {
         let theme = self.theme.key();
-        format!(
+        let mut t = format!(
             "default_tab={}\ninterval_ms={}\nalways_on_top={}\nhide_when_minimized={}\nminimize_on_use={}\ntheme={theme}\ngroup_by_type={}\nvalues_pct={}\ndetails_columns={}\n",
             self.default_tab,
             self.interval_ms,
@@ -85,7 +105,20 @@ impl Settings {
             self.group_by_type,
             self.values_pct,
             self.details_columns
-        )
+        );
+        for (k, v) in [
+            ("sort_processes", &self.sort_processes),
+            ("sort_history", &self.sort_history),
+            ("sort_startup", &self.sort_startup),
+            ("sort_users", &self.sort_users),
+            ("sort_details", &self.sort_details),
+            ("sort_services", &self.sort_services),
+        ] {
+            if !v.is_empty() {
+                t.push_str(&format!("{k}={v}\n"));
+            }
+        }
+        t
     }
 
     pub fn load() -> Self {
@@ -204,6 +237,12 @@ mod tests {
             group_by_type: false,
             values_pct: true,
             details_columns: "name,pid,cmdline".into(),
+            sort_processes: "memory:desc".into(),
+            sort_history: "name:asc".into(),
+            sort_startup: "impact:desc".into(),
+            sort_users: "cpu:desc".into(),
+            sort_details: "pid:asc".into(),
+            sort_services: "status:desc".into(),
         };
         assert_eq!(Settings::parse(&s.to_text()), s);
         assert_eq!(Settings::parse("junk\ninterval_ms=abc"), Settings::default());

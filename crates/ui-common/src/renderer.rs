@@ -34,7 +34,14 @@ pub fn relaunch_with(r: Renderer) -> std::io::Result<()> {
         Renderer::Glow => "glow",
         Renderer::Wgpu => "wgpu",
     };
-    std::process::Command::new(exe).args(args).env("OXI_RENDERER", name).spawn().map(drop)
+    // `--restarted` tells a single-instance app to wait for this process to exit.
+    let restarted = args.iter().any(|a| a == "--restarted");
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(args).env("OXI_RENDERER", name);
+    if !restarted {
+        cmd.arg("--restarted");
+    }
+    cmd.spawn().map(drop)
 }
 
 /// A desktop-attached display adapter from a GPU vendor whose drivers ship OpenGL, outside a
