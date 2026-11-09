@@ -1,23 +1,31 @@
 # File Explorer (oxi-explorer)
 
-A fast Windows File Explorer written in Rust. First version: browse, open, and manage files.
+A fast Windows File Explorer written in Rust, with every feature of the Windows 11 one
+([parity checklist](../../docs/parity/explorer.md): 84 of 84 rows done in v0.4.0).
 
 ![Explorer](../../docs/images/explorer.png)
 
 ## What works
 
-- Back / Forward / Up, clickable breadcrumbs, type a path (Ctrl+L or click the address bar).
-- Sidebar: Home, Desktop, Downloads, Documents, Pictures, Music, Videos, and every drive with free space.
-- Details view: Name, Date modified, Type, Size. Sort by any column (folders first, natural order:
-  `file2` before `file10`), search the current folder, show/hide hidden items.
-- Open files with their default app, open folders, Properties dialog, Open in Terminal.
-- Cut / Copy / Paste through the real Windows clipboard, so it works both ways with the built-in Explorer.
-  Delete to Recycle Bin, Shift+Delete permanently, Rename (F2), New folder (Ctrl+Shift+N).
-  Copy/move/delete use the Windows shell, so progress, "replace or skip" and Undo work as usual.
-- Drop files from another window to copy (across drives) or move (same drive).
-- The folder refreshes by itself when other programs change it.
-- Keyboard: arrows/Home/End/PageUp/PageDown (Shift to extend), Enter, Backspace, Alt+Left/Right/Up,
-  F5, Ctrl+A, Ctrl+F, Esc, Alt+Enter, type the first letters of a name to jump to it.
+- **Navigation**: Back / Forward / Up, breadcrumbs with a subfolder dropdown per segment, typed paths
+  with autocomplete (`%TEMP%`, `shell:startup`, UNC), recent locations, tabs (drag to reorder or out
+  into a new window), Ctrl+N new window, folder tree, Quick access pins, This PC.
+- **Views**: Extra large / Large / Medium / Small icons, List, Details, Tiles, Content
+  (Ctrl+Shift+1…8), Compact view; system icons with overlays, thumbnails from the shell's cache;
+  choose and resize columns (Date created, Attributes, Authors, Dimensions, Owner, …), group by,
+  preview pane (the registered Windows preview handlers: Office, PDF, media) and details pane.
+- **Files**: the shell's own right-click menu (7-Zip, Git, Send to, Open with, New ▸, …),
+  Cut / Copy / Paste through the real Windows clipboard, Copy as path, Rename and batch rename,
+  Recycle Bin or permanent delete with the native progress and conflict dialogs, Undo / Redo,
+  drag and drop in, between and out of the window, Properties, Open in Terminal.
+- **Search**: filter as you type, Enter searches subfolders through the Windows Search index
+  (file contents, `kind:`, `date:`), with its own walk where the index is missing.
+- **Places**: Recycle Bin (restore, empty), Home with recent files, Libraries, Gallery, OneDrive
+  status, Control Panel and other shell folders, network shares (`\\server` lists its shares,
+  Windows' sign-in dialog, map / disconnect drives), computers and media devices on the LAN, and
+  phones over MTP under This PC (browse, thumbnails, copy both ways).
+- **Behaviour**: folders refresh by themselves, large folders stay responsive, long paths work,
+  window size and per-folder view and sort are remembered, light / dark theme follows Windows.
 
 ## Nearby sharing (LocalSend)
 
@@ -39,9 +47,10 @@ turned on in the window.
 
 | Path | What it does |
 | --- | --- |
-| `crates/explorer-sys` | Talks to Windows. A folder is read with one `FindFirstFileExW(FindExInfoBasic, FIND_FIRST_EX_LARGE_FETCH)` pass: no per-file stat, no 8.3 names, results stream in batches of 2048. `SHFileOperationW` for copy/move/delete, `CF_HDROP` clipboard, `FindFirstChangeNotificationW` watcher, `SHGetKnownFolderPath`, `GetDiskFreeSpaceExW`. All `unsafe` lives here; a `std::fs` fallback exists for Linux development only. Integration tests in `tests/windows.rs` run on CI. |
-| `crates/explorer-core` | No OS calls: sorting, natural order, filtering, size/date/type text, name validation, back/forward history. Unit-tested. |
-| `apps/explorer` | egui app. Listing, watching and file operations each run on their own thread, so the window never waits on the disk. The table is virtualised (only visible rows are laid out) and the sorted view is cached until the listing, sort or search changes. |
+| `crates/explorer-sys` | Talks to Windows. A folder is read with one `FindFirstFileExW(FindExInfoBasic, FIND_FIRST_EX_LARGE_FETCH)` pass: no per-file stat, no 8.3 names, results stream in batches of 2048. The shell does the rest: `SHFileOperationW` / `IFileOperation` for copy, move and delete, `IContextMenu3` menus, `IShellItem` for phones, Control Panel and network devices, `IShellItemImageFactory` thumbnails, preview handlers, search folders, `NetShareEnum` and `WNetAddConnection2W` for SMB, Wi-Fi Direct and firewall rules for sharing. All `unsafe` lives here; a `std::fs` fallback exists for Linux development only. Integration tests in `tests/windows.rs` run on CI (including a real SMB share on localhost). |
+| `crates/explorer-core` | No OS calls: sorting, natural order, filtering, the search query language, size/date/type text, name validation, back/forward history. Unit-tested. |
+| `crates/oxi-share` | The LocalSend v2 protocol on plain threads (no async runtime). |
+| `apps/explorer` | egui app. Listing, watching, thumbnails and file operations each run on their own thread, so the window never waits on the disk. Views are virtualised (only visible rows are laid out) and the sorted view is cached until the listing, sort or search changes. |
 
 ## Build
 
@@ -50,9 +59,6 @@ cargo build --release -p oxi-explorer                                  # on Wind
 cargo build --release -p oxi-explorer --target x86_64-pc-windows-gnu   # cross from Linux (needs mingw-w64)
 ```
 
-`oxi-explorer.exe <folder>` opens that folder. `OXI_EXPLORER_TIMING=1` prints how long the first listing took.
-
-## Not yet
-
-Icons from the system, thumbnails, tabs, Large icons view, recursive search, drag out of the window,
-the shell's own right-click menu, Recycle Bin / Network / This PC pages.
+`oxi-explorer.exe <folder>` opens that folder. `OXI_EXPLORER_TIMING=1` prints how long the first listing took,
+`OXI_EXPLORER_NEARBY=1` opens the Nearby sharing window at start.
+`cargo run -p oxi-share --example peer -- "Name" [files]` runs a stand-in LocalSend device for testing.
