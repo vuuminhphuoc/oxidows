@@ -11,6 +11,9 @@ use crate::{Palette, theme};
 /// Height of a sortable header row: room for the chevron above the title.
 pub const SORT_HEADER_HEIGHT: f32 = 28.0;
 
+/// Height of a header row whose columns show a total above the title (Processes, Users).
+pub const SORT_HEADER_TOTAL_HEIGHT: f32 = 46.0;
+
 /// The column a table is sorted by and in which direction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SortBy<K> {
@@ -63,6 +66,13 @@ pub fn cmp_text(a: &str, b: &str) -> Ordering {
 /// A table header cell that sorts: fills the cell, highlights on hover, and with `sorted` set
 /// (`Some(descending)`) draws the chevron above the title. Click it to sort.
 pub fn sort_header(ui: &mut Ui, title: &str, sorted: Option<bool>) -> Response {
+    sort_header_total(ui, title, None, sorted)
+}
+
+/// [`sort_header`] with the column's total ("37%") in a larger font above the title, as Task
+/// Manager heads its CPU, Memory, Disk, Network and GPU columns. Use a row
+/// [`SORT_HEADER_TOTAL_HEIGHT`] high.
+pub fn sort_header_total(ui: &mut Ui, title: &str, total: Option<&str>, sorted: Option<bool>) -> Response {
     let size = vec2(ui.available_width().max(1.0), ui.available_height().max(1.0));
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     if !ui.is_rect_visible(rect) {
@@ -79,11 +89,19 @@ pub fn sort_header(ui: &mut Ui, title: &str, sorted: Option<bool>) -> Response {
         let (y0, y1) = if descending { (top, top + 3.5) } else { (top + 3.5, top) };
         painter.line(vec![pos2(cx - 4.0, y0), pos2(cx, y1), pos2(cx + 4.0, y0)], Stroke::new(1.2, p.text_secondary));
     }
-    let font = egui::FontId::proportional(theme::BODY);
-    let mut job = egui::text::LayoutJob::simple_singleline(title.to_string(), font, color);
-    job.wrap = egui::text::TextWrapping::truncate_at_width((rect.width() - 8.0).max(0.0));
-    let g = ui.painter().layout_job(job);
+    let width = (rect.width() - 8.0).max(0.0);
+    let line = |text: &str, size: f32, color| {
+        let mut job =
+            egui::text::LayoutJob::simple_singleline(text.to_string(), egui::FontId::proportional(size), color);
+        job.wrap = egui::text::TextWrapping::truncate_at_width(width);
+        ui.painter().layout_job(job)
+    };
+    let g = line(title, theme::BODY, color);
     let y = rect.bottom() - g.size().y - 3.0;
+    if let Some(total) = total {
+        let t = line(total, theme::BODY + 4.0, p.text);
+        painter.galley(pos2(rect.left() + 4.0, y - t.size().y + 2.0), t, p.text);
+    }
     painter.galley(pos2(rect.left() + 4.0, y), g, color);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
