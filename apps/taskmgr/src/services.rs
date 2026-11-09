@@ -148,7 +148,6 @@ impl State {
         let mut action = None;
         let mut clicked = None;
         TableBuilder::new(ui)
-            .striped(true)
             .resizable(true)
             .sense(egui::Sense::click())
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))

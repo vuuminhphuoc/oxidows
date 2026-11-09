@@ -478,6 +478,12 @@ pub fn clipboard_get_files() -> Option<(Vec<PathBuf>, bool)> {
     imp::clipboard_get_files()
 }
 
+/// Whether the clipboard holds something the shell can paste as files: files, or shell items
+/// (copied from a phone, say). Cheap: only looks at the formats, reads no data.
+pub fn clipboard_has_data() -> bool {
+    imp::clipboard_has_data()
+}
+
 /// A small (16 px at 100 % scaling) icon as straight RGBA, row-major, top row first.
 #[derive(Clone, Debug)]
 pub struct IconImage {
@@ -737,4 +743,23 @@ mod tests {
         assert_eq!(p.to_string_lossy(), "C:\\Users\\a\\x.txt");
         assert!(super::parse_bin_info(&b[..10]).is_none());
     }
+}
+
+/// One entry of File Explorer's New menu besides Folder: a file type with a ShellNew handler.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewItem {
+    pub ext: String,
+    pub name: String,
+}
+
+/// The types Windows lists under New, in Windows' order. (Placeholder until the ShellNew reader
+/// lands: nothing listed yet.)
+pub fn new_items() -> Vec<NewItem> {
+    Vec::new()
+}
+
+/// Creates "New <name><ext>" in `dir` the way Windows does and returns its path.
+pub fn create_new(dir: &Path, item: &NewItem) -> io::Result<PathBuf> {
+    let _ = (dir, item);
+    Err(io::Error::new(io::ErrorKind::Unsupported, "not yet"))
 }

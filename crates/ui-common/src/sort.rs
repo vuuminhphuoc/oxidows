@@ -103,7 +103,8 @@ pub fn sort_header_total(ui: &mut Ui, title: &str, total: Option<&str>, sorted: 
         painter.galley(pos2(rect.left() + 4.0, y - t.size().y + 2.0), t, p.text);
     }
     painter.galley(pos2(rect.left() + 4.0, y), g, color);
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+    // Windows keeps the arrow pointer over headers.
+    resp
 }
 
 #[cfg(test)]

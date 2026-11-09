@@ -365,7 +365,6 @@ impl State {
         let mut toggle_group = None;
         let mut toggle_app = None;
         TableBuilder::new(ui)
-            .striped(true)
             .resizable(true)
             .sense(egui::Sense::click())
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))

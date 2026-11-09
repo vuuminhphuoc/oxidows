@@ -140,6 +140,10 @@ pub fn clipboard_set_files(paths: &[PathBuf], cut: bool) -> io::Result<()> {
     Ok(())
 }
 
+pub fn clipboard_has_data() -> bool {
+    clipboard_get_files().is_some_and(|(f, _)| !f.is_empty())
+}
+
 pub fn clipboard_get_files() -> Option<(Vec<PathBuf>, bool)> {
     CLIPBOARD.lock().unwrap().clone()
 }

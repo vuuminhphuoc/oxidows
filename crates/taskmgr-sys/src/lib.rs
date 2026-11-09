@@ -164,7 +164,7 @@ pub mod fps {
                 out.push(t);
                 i += 1;
                 let jitter = (f64::from(i) * 0.7 + now).sin() * wobble;
-                t += (1.0 + jitter) / fps + if i % 300 == 0 { 0.03 } else { 0.0 };
+                t += (1.0 + jitter) / fps + if i.is_multiple_of(300) { 0.03 } else { 0.0 };
             }
             out
         };

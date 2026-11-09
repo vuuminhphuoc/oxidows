@@ -184,7 +184,6 @@ impl State {
             ui.label("No startup apps found.");
         }
         TableBuilder::new(ui)
-            .striped(true)
             .resizable(true)
             .sense(egui::Sense::click())
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))

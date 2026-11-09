@@ -167,7 +167,8 @@ fn visuals(p: &Palette, dark: bool) -> Visuals {
     v.warn_fg_color = p.warning;
     v.selection.bg_fill = p.selected;
     v.selection.stroke = Stroke::new(1.0, p.text);
-    v.striped = true;
+    // Windows 11 lists and tables have no zebra stripes: hover and selection carry the rows.
+    v.striped = false;
 
     let button = if dark { Color32::from_rgb(0x2d, 0x2d, 0x2d) } else { Color32::from_rgb(0xfb, 0xfb, 0xfb) };
     let border = if dark { Color32::from_rgb(0x3a, 0x3a, 0x3a) } else { Color32::from_rgb(0xdc, 0xdc, 0xdc) };

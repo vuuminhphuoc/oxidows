@@ -153,27 +153,7 @@ pub fn tab_bar(app: &mut App, ui: &mut Ui) {
 /// The "See more" (…) menu: each row has an icon, and shortcut keys sit at the right of the row
 /// as in Windows 11's menus. The View rows show a picture of each layout.
 fn more_menu(app: &mut App, ui: &mut Ui) {
-    use ui_common::{MenuItem, ViewIcon, menu_check, menu_heading, menu_item};
-    if menu_item(ui, Icon::NewFolder, "New folder", Some("Ctrl+Shift+N")).clicked() {
-        app.begin_new_folder();
-        ui.close();
-    }
-    if app.in_recycle_bin() {
-        if MenuItem::new("Restore selected items")
-            .icon(Icon::Restore)
-            .enabled(!app.selected.is_empty())
-            .ui(ui)
-            .clicked()
-        {
-            app.restore_selection();
-            ui.close();
-        }
-        if menu_item(ui, Icon::RecycleBin, "Empty Recycle Bin", None).clicked() {
-            app.empty_bin();
-            ui.close();
-        }
-    }
-    ui.separator();
+    use ui_common::{MenuItem, menu_item};
     if menu_item(ui, Icon::NetworkDrive, "Map network drive…", None).clicked() {
         app.begin_map_drive();
         ui.close();
@@ -246,59 +226,6 @@ fn more_menu(app: &mut App, ui: &mut Ui) {
         ui.close();
     }
     ui.separator();
-    menu_heading(ui, "View");
-    for (m, label, keys) in ViewMode::ALL {
-        if MenuItem::new(label).icon(m.icon()).shortcut(keys).selected(app.view_mode == m).ui(ui).clicked() {
-            app.view_mode = m;
-            ui.close();
-        }
-    }
-    if menu_check(ui, ViewIcon::Compact, "Compact view", &mut app.compact).clicked() {
-        ui.close();
-    }
-    MenuItem::new("Show").icon(Icon::Show).submenu(ui, |ui| {
-        use crate::pane::Pane;
-        for (p, icon, label, keys) in [
-            (Pane::Details, ViewIcon::DetailsPane, "Details pane", "Alt+Shift+P"),
-            (Pane::Preview, ViewIcon::PreviewPane, "Preview pane", "Alt+P"),
-        ] {
-            if MenuItem::new(label).icon(icon).shortcut(keys).checked(app.pane == p).ui(ui).clicked() {
-                app.toggle_pane(p);
-                ui.close();
-            }
-        }
-        ui.separator();
-        let none = ui_common::MenuIcon::None;
-        menu_check(ui, none, "Item check boxes", &mut app.item_checkboxes);
-        menu_check(ui, none, "File name extensions", &mut app.show_extensions);
-        menu_check(ui, none, "Hidden items", &mut app.show_hidden);
-        let protected = MenuItem::new("Protected operating system files").checked(app.show_protected);
-        if protected.enabled(app.show_hidden).ui(ui).clicked() {
-            app.show_protected = !app.show_protected;
-        }
-    });
-    MenuItem::new("Group by").icon(Icon::GroupBy).submenu(ui, |ui| {
-        use explorer_core::GroupBy;
-        for (g, label) in [
-            (GroupBy::Name, "Name"),
-            (GroupBy::Modified, "Date modified"),
-            (GroupBy::Type, "Type"),
-            (GroupBy::Size, "Size"),
-            (GroupBy::None, "(None)"),
-        ] {
-            if MenuItem::new(label).selected(app.group_by == g).ui(ui).clicked() {
-                app.group_by = g;
-                ui.close();
-            }
-        }
-        ui.separator();
-        for (asc, label) in [(true, "Ascending"), (false, "Descending")] {
-            if MenuItem::new(label).selected(app.group_ascending == asc).ui(ui).clicked() {
-                app.group_ascending = asc;
-                ui.close();
-            }
-        }
-    });
     MenuItem::new("Theme").icon(Icon::Theme).submenu(ui, |ui| {
         use crate::settings::Theme;
         for (t, label) in Theme::ALL {
@@ -329,49 +256,173 @@ fn more_menu(app: &mut App, ui: &mut Ui) {
     }
 }
 
+/// The command bar's New menu: Folder, then the file types Windows registers for New.
+fn new_menu(app: &mut App, ui: &mut Ui) {
+    use ui_common::menu_item;
+    if menu_item(ui, Icon::NewFolder, "Folder", Some("Ctrl+Shift+N")).clicked() {
+        app.begin_new_folder();
+        ui.close();
+    }
+    let items = app.new_items.get_or_insert_with(explorer_sys::new_items).clone();
+    // Shortcut sits with Folder, the other types follow under a line, as in Explorer.
+    let (links, others): (Vec<_>, Vec<_>) = items.into_iter().partition(|i| i.ext.eq_ignore_ascii_case(".lnk"));
+    for (k, it) in links.iter().chain(&others).enumerate() {
+        if k == links.len() && !others.is_empty() {
+            ui.separator();
+        }
+        if menu_item(ui, Icon::Document, &it.name, None).clicked() {
+            app.create_new_item(it);
+            ui.close();
+        }
+    }
+}
+
+/// The command bar's Sort menu: sort key, direction, and Group by.
+fn sort_menu(app: &mut App, ui: &mut Ui) {
+    use ui_common::MenuItem;
+    let bin = app.in_recycle_bin();
+    for (k, label) in [
+        (SortKey::Name, "Name"),
+        (SortKey::Modified, if bin { "Date deleted" } else { "Date modified" }),
+        (SortKey::Type, if bin { "Original location" } else { "Type" }),
+        (SortKey::Size, "Size"),
+    ] {
+        if MenuItem::new(label).selected(app.sort == k).ui(ui).clicked() {
+            if app.sort != k {
+                app.set_sort(k);
+            }
+            ui.close();
+        }
+    }
+    MenuItem::new("More").submenu(ui, |ui| {
+        for (k, label) in [(SortKey::Created, "Date created"), (SortKey::Attributes, "Attributes")] {
+            if MenuItem::new(label).selected(app.sort == k).ui(ui).clicked() {
+                if app.sort != k {
+                    app.set_sort(k);
+                }
+                ui.close();
+            }
+        }
+    });
+    ui.separator();
+    for (asc, label) in [(true, "Ascending"), (false, "Descending")] {
+        if MenuItem::new(label).selected(app.ascending == asc).ui(ui).clicked() {
+            app.ascending = asc;
+            ui.close();
+        }
+    }
+    ui.separator();
+    MenuItem::new("Group by").icon(Icon::GroupBy).submenu(ui, |ui| {
+        use explorer_core::GroupBy;
+        for (g, label) in [
+            (GroupBy::Name, "Name"),
+            (GroupBy::Modified, "Date modified"),
+            (GroupBy::Type, "Type"),
+            (GroupBy::Size, "Size"),
+            (GroupBy::None, "(None)"),
+        ] {
+            if MenuItem::new(label).selected(app.group_by == g).ui(ui).clicked() {
+                app.group_by = g;
+                ui.close();
+            }
+        }
+        ui.separator();
+        for (asc, label) in [(true, "Ascending"), (false, "Descending")] {
+            if MenuItem::new(label).selected(app.group_ascending == asc).ui(ui).clicked() {
+                app.group_ascending = asc;
+                ui.close();
+            }
+        }
+    });
+}
+
+/// The command bar's View menu: layouts, Compact view, and Show.
+fn view_menu(app: &mut App, ui: &mut Ui) {
+    use ui_common::{MenuItem, ViewIcon, menu_check};
+    for (m, label, keys) in ViewMode::ALL {
+        if MenuItem::new(label).icon(m.icon()).shortcut(keys).selected(app.view_mode == m).ui(ui).clicked() {
+            app.view_mode = m;
+            ui.close();
+        }
+    }
+    if menu_check(ui, ViewIcon::Compact, "Compact view", &mut app.compact).clicked() {
+        ui.close();
+    }
+    MenuItem::new("Show").icon(Icon::Show).submenu(ui, |ui| {
+        use crate::pane::Pane;
+        for (p, icon, label, keys) in [
+            (Pane::Details, ViewIcon::DetailsPane, "Details pane", "Alt+Shift+P"),
+            (Pane::Preview, ViewIcon::PreviewPane, "Preview pane", "Alt+P"),
+        ] {
+            if MenuItem::new(label).icon(icon).shortcut(keys).checked(app.pane == p).ui(ui).clicked() {
+                app.toggle_pane(p);
+                ui.close();
+            }
+        }
+        ui.separator();
+        let none = ui_common::MenuIcon::None;
+        menu_check(ui, none, "Item check boxes", &mut app.item_checkboxes);
+        menu_check(ui, none, "File name extensions", &mut app.show_extensions);
+        menu_check(ui, none, "Hidden items", &mut app.show_hidden);
+        let protected = MenuItem::new("Protected operating system files").checked(app.show_protected);
+        if protected.enabled(app.show_hidden).ui(ui).clicked() {
+            app.show_protected = !app.show_protected;
+        }
+    });
+}
+
 pub fn toolbar(app: &mut App, ui: &mut Ui) {
     egui::Panel::top("toolbar").show(ui, |ui| {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            if ui_common::tool_button(ui, Icon::Back, app.history.can_back(), "Back (Alt+Left)").clicked() {
-                app.back();
-            }
-            if ui_common::tool_button(ui, Icon::Forward, app.history.can_forward(), "Forward (Alt+Right)").clicked() {
-                app.forward();
-            }
-            // Recent locations.
+            // Right-click Back or Forward for the recent locations, as in Explorer.
             let recent = app.history.recent(&app.cur);
-            ui.add_enabled_ui(recent.len() > 1, |ui| {
-                ui_common::tool_menu(ui, Icon::ChevronDown, "Recent locations", |ui| {
-                    for (steps, p) in recent {
-                        let label = app.crumbs(&p).last().map_or_else(|| p.display().to_string(), |c| c.0.clone());
-                        let text = if steps == 0 { RichText::new(label).strong() } else { RichText::new(label) };
+            let mut jump = None;
+            let history_menu = |r: &egui::Response, jump: &mut Option<isize>| {
+                r.context_menu(|ui| {
+                    for (steps, p) in &recent {
+                        let label = app.crumbs(p).last().map_or_else(|| p.display().to_string(), |c| c.0.clone());
+                        let text = if *steps == 0 { RichText::new(label).strong() } else { RichText::new(label) };
                         if ui.button(text).on_hover_text(p.display().to_string()).clicked() {
-                            app.jump_history(steps);
+                            *jump = Some(*steps);
                             ui.close();
                         }
                     }
                 });
-            });
-            if ui_common::tool_button(ui, Icon::Up, parent_path(&app.cur).is_some(), "Up (Alt+Up)").clicked() {
+            };
+            let back = ui_common::tool_button(ui, Icon::Back, app.history.can_back(), "Back (Alt+Left Arrow)");
+            history_menu(&back, &mut jump);
+            let forward =
+                ui_common::tool_button(ui, Icon::Forward, app.history.can_forward(), "Forward (Alt+Right Arrow)");
+            history_menu(&forward, &mut jump);
+            if back.clicked() {
+                app.back();
+            } else if forward.clicked() {
+                app.forward();
+            } else if let Some(steps) = jump {
+                app.jump_history(steps);
+            }
+            if ui_common::tool_button(
+                ui,
+                Icon::Up,
+                parent_path(&app.cur).is_some(),
+                "Up to the parent folder (Alt+Up Arrow)",
+            )
+            .clicked()
+            {
                 app.up();
             }
             if ui_common::tool_button(ui, Icon::Refresh, true, "Refresh (F5)").clicked() {
                 app.refresh();
                 app.load_drives();
             }
-            if ui_common::tool_button(ui, Icon::Share, true, "Share with a nearby device (LocalSend)").clicked() {
-                app.nearby.queue = app.selected_paths();
-                app.nearby.open = true;
-            }
-            ui_common::tool_menu(ui, Icon::More, "See more", |ui| more_menu(app, ui));
 
             // Search box on the right, address bar takes the rest.
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                // "Search Downloads", as Explorer names the box after the folder.
+                let hint = format!("Search {}", app.tab_title(app.active_tab));
                 let search = ui.add(
-                    egui::TextEdit::singleline(&mut app.filter)
-                        .hint_text(Icon::Search.with("Search (Enter: subfolders)"))
-                        .desired_width(200.0),
+                    egui::TextEdit::singleline(&mut app.filter).hint_text(Icon::Search.with(hint)).desired_width(200.0),
                 );
                 if std::mem::take(&mut app.focus_search) {
                     search.request_focus();
@@ -389,6 +440,77 @@ pub fn toolbar(app: &mut App, ui: &mut Ui) {
                     app.end_deep_search();
                 }
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| address_bar(app, ui));
+            });
+        });
+        ui.add_space(2.0);
+    });
+}
+
+/// The command bar under the address bar, as in Windows 11: New, clipboard and file commands,
+/// Sort, View, "See more", and the Details pane switch on the right.
+pub fn command_bar(app: &mut App, ui: &mut Ui) {
+    use ui_common::{command_button, command_menu, command_separator};
+    egui::Panel::top("commands").show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            let virt = app.in_virtual_place();
+            let in_bin = app.in_recycle_bin();
+            let has_sel = !app.selected.is_empty();
+            if in_bin {
+                if command_button(ui, Icon::RecycleBin, "Empty Recycle Bin", true, "").clicked() {
+                    app.empty_bin();
+                }
+                if command_button(ui, Icon::Restore, "Restore the selected items", has_sel, "").clicked() {
+                    app.restore_selection();
+                }
+            } else {
+                ui.add_enabled_ui(!virt, |ui| {
+                    command_menu(ui, Icon::Add, "New", "Create a new item in the current location", |ui| {
+                        new_menu(app, ui)
+                    });
+                });
+            }
+            command_separator(ui);
+            let files = has_sel && !in_bin;
+            if command_button(ui, Icon::Cut, "", files, "Cut (Ctrl+X)").clicked() {
+                app.copy_selection(true);
+            }
+            if command_button(ui, Icon::Copy, "", files, "Copy (Ctrl+C)").clicked() {
+                app.copy_selection(false);
+            }
+            let paste = !virt && !in_bin && app.can_paste();
+            if command_button(ui, Icon::Paste, "", paste, "Paste (Ctrl+V)").clicked() {
+                let c = app.cur.clone();
+                app.paste_into(c);
+            }
+            if command_button(ui, Icon::Rename, "", has_sel && !virt, "Rename (F2)").clicked() {
+                app.begin_rename();
+            }
+            if command_button(ui, Icon::Share, "", !in_bin, "Share with a nearby device (LocalSend)").clicked() {
+                app.nearby.queue = app.selected_paths();
+                app.nearby.open = true;
+            }
+            if command_button(ui, Icon::Delete, "", has_sel, "Delete (Delete)").clicked() {
+                app.delete_selection(false);
+            }
+            command_separator(ui);
+            command_menu(ui, Icon::Sort, "Sort", "Sort and group the items", |ui| sort_menu(app, ui));
+            command_menu(ui, Icon::View, "View", "Layout and which items and panes to show", |ui| view_menu(app, ui));
+            command_separator(ui);
+            ui_common::tool_menu(ui, Icon::More, "See more", |ui| more_menu(app, ui));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                use crate::pane::Pane;
+                let on = app.pane == Pane::Details;
+                let r = ui_common::view_toggle(
+                    ui,
+                    ui_common::ViewIcon::DetailsPane,
+                    "Details",
+                    on,
+                    "Show the details pane (Alt+Shift+P)",
+                );
+                if r.clicked() {
+                    app.toggle_pane(Pane::Details);
+                }
             });
         });
         ui.add_space(2.0);
@@ -476,18 +598,44 @@ fn address_bar(app: &mut App, ui: &mut Ui) {
             Sense::click(),
         );
         ui.spacing_mut().item_spacing.x = 0.0;
+        // Nothing may spill over the search box, however long the path.
+        ui.shrink_clip_rect(ui.max_rect());
         let crumbs = app.crumbs(&app.cur);
-        // Long paths: show the last segments that fit, like Explorer.
-        let skip = crumbs.len().saturating_sub(((width / 90.0) as usize).max(2));
+        let local = classify(&app.cur) == explorer_core::Place::Local;
+        // Long paths: show the last segments that fit, like Explorer; the hidden ones are in
+        // the "…" menu at the left.
+        let pad = ui.spacing().button_padding.x * 2.0;
+        let font = egui::TextStyle::Button.resolve(ui.style());
+        let text_w = |t: &str| ui.painter().layout_no_wrap(t.to_string(), font.clone(), egui::Color32::WHITE).size().x;
+        let arrow_w = text_w(" › ") + pad;
+        let widths: Vec<f32> = crumbs.iter().map(|(label, _)| text_w(label) + pad + arrow_w).collect();
+        let room = width - 16.0 - 8.0 - (text_w(" … ") + pad);
+        let mut skip = crumbs.len().saturating_sub(1);
+        let mut used = widths.last().copied().unwrap_or(0.0);
+        while skip > 0 && used + widths[skip - 1] <= room {
+            skip -= 1;
+            used += widths[skip];
+        }
         let mut go = None;
         let mut load = None;
         let mut over_child = false;
         if skip > 0 {
-            ui.label(" … ");
+            let (r, _) = egui::containers::menu::MenuButton::from_button(
+                egui::Button::new(RichText::new(" … ").weak()).frame_when_inactive(false),
+            )
+            .ui(ui, |ui| {
+                for (label, path) in crumbs[..skip].iter().rev() {
+                    if ui.button(label).clicked() {
+                        go = Some(path.clone());
+                        ui.close();
+                    }
+                }
+            });
+            over_child |= r.hovered();
         }
-        let local = classify(&app.cur) == explorer_core::Place::Local;
         for (i, (label, path)) in crumbs.iter().enumerate().skip(skip) {
-            let b = ui.add(egui::Button::new(label).frame(false));
+            // Each segment and each arrow lights up on its own under the pointer, as in Explorer.
+            let b = ui.add(egui::Button::new(label).frame_when_inactive(false));
             over_child |= b.hovered();
             if b.clicked() {
                 go = Some(path.clone());
@@ -496,7 +644,7 @@ fn address_bar(app: &mut App, ui: &mut Ui) {
             if local && classify(path) == explorer_core::Place::Local {
                 let next = crumbs.get(i + 1).map(|c| &c.1);
                 let (arrow, _) = egui::containers::menu::MenuButton::from_button(
-                    egui::Button::new(RichText::new(" › ").weak()).frame(false),
+                    egui::Button::new(RichText::new(" › ").weak()).frame_when_inactive(false),
                 )
                 .ui(ui, |ui| {
                     egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| match app.tree.get(path) {
@@ -537,9 +685,22 @@ fn address_bar(app: &mut App, ui: &mut Ui) {
     }
 }
 
+/// The expand arrow of a navigation-pane folder: a thin chevron that turns from › to ⌄ as the
+/// folder opens.
+fn tree_chevron(ui: &mut Ui, openness: f32, r: &egui::Response, color: egui::Color32) {
+    let c = r.rect.center();
+    let angle = openness * std::f32::consts::FRAC_PI_2;
+    let rot = egui::emath::Rot2::from_angle(angle);
+    let pts = [egui::vec2(-1.5, -4.0), egui::vec2(2.5, 0.0), egui::vec2(-1.5, 4.0)].map(|v| c + rot * v);
+    let color = if r.hovered() { ui.visuals().strong_text_color() } else { color };
+    ui.painter().add(egui::Shape::line(pts.to_vec(), egui::Stroke::new(1.2, color)));
+}
+
 /// Requests and clicks collected while drawing the folder tree (it can't borrow `App` mutably).
 #[derive(Default)]
 struct TreeOut {
+    /// The pointer is over the navigation pane (the expand chevrons show).
+    pane_hovered: bool,
     go: Option<PathBuf>,
     load: Vec<PathBuf>,
     /// A drag is in progress: folders under the pointer are drop targets.
@@ -573,28 +734,39 @@ fn tree_node(
     depth: usize,
 ) -> egui::Response {
     let id = ui.make_persistent_id(("tree", path));
-    let state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
+    let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
     let open = state.is_open();
-    let (_, header, _) =
-        state.show_header(ui, |ui| ui_common::nav_item(ui, Some(icon), label, path == cur)).body(|ui| {
-            match tree.get(path) {
-                Some(children) if depth < 32 => {
-                    for name in children {
-                        let child = path.join(name);
-                        // A phone's folders are named by ID; show their display names.
-                        let shown = labels.get(&child).map_or(name.as_str(), String::as_str);
-                        tree_node(ui, tree, labels, cur, &child, (Icon::FolderFilled, shown), out, depth + 1);
-                    }
-                    if children.is_empty() {
-                        ui.label(RichText::new("(empty)").small().weak());
-                    }
-                }
-                Some(_) => {}
-                None => {
-                    ui.spinner();
-                }
+    // Windows 11 shows the expand chevrons only while the pointer is over the pane.
+    let (show, color) = (out.pane_hovered, ui_common::Palette::of(ui).text_secondary);
+    let row = ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        state.show_toggle_button(ui, move |ui, openness, r| {
+            if show || r.hovered() {
+                tree_chevron(ui, openness, r, color);
             }
         });
+        ui_common::nav_item(ui, Some(icon), label, path == cur)
+    });
+    let header = egui::InnerResponse { inner: row.inner, response: row.response.clone() };
+    state.show_body_indented(&row.response, ui, |ui| {
+        match tree.get(path) {
+            Some(children) if depth < 32 => {
+                for name in children {
+                    let child = path.join(name);
+                    // A phone's folders are named by ID; show their display names.
+                    let shown = labels.get(&child).map_or(name.as_str(), String::as_str);
+                    tree_node(ui, tree, labels, cur, &child, (Icon::FolderFilled, shown), out, depth + 1);
+                }
+                if children.is_empty() {
+                    ui.label(RichText::new("(empty)").small().weak());
+                }
+            }
+            Some(_) => {}
+            None => {
+                ui.spinner();
+            }
+        }
+    });
     if open && !tree.contains_key(path) {
         out.load.push(path.clone());
     }
@@ -665,7 +837,8 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
             let mut unmap: Option<char> = None;
             let dragging = app.drag.is_some();
             let pinned = app.persist.settings.pinned.iter().map(|p| crate::settings::folder_key(p)).collect();
-            let mut tree_out = TreeOut { dragging, pinned, ..Default::default() };
+            let pane_hovered = ui.rect_contains_pointer(ui.clip_rect());
+            let mut tree_out = TreeOut { dragging, pinned, pane_hovered, ..Default::default() };
             let mut place_drop: Option<PathBuf> = None;
             let mut place = |ui: &mut Ui, icon: Icon, name: &str, path: &PathBuf, cur: &PathBuf| {
                 let r = ui_common::nav_item(ui, Some(icon), name, path == cur);
@@ -802,10 +975,15 @@ pub fn status_bar(app: &mut App, ui: &mut Ui) {
                 ui.separator();
                 let sel = app.selected_entries();
                 let bytes: u64 = sel.iter().filter(|e| !e.is_dir).map(|e| e.size).sum();
-                if sel.iter().all(|e| !e.is_dir) {
-                    ui.label(format!("{} selected  {}", sel.len(), format_bytes(bytes)));
+                let what = if sel.len() == 1 {
+                    "1 item selected".to_string()
                 } else {
-                    ui.label(format!("{} selected", sel.len()));
+                    format!("{} items selected", sel.len())
+                };
+                if sel.iter().all(|e| !e.is_dir) {
+                    ui.label(format!("{what}  {}", format_bytes(bytes)));
+                } else {
+                    ui.label(what);
                 }
             }
             if let Some(q) = &app.deep_search {
@@ -816,7 +994,8 @@ pub fn status_bar(app: &mut App, ui: &mut Ui) {
                 ui.separator();
                 ui.spinner();
                 ui.label(if app.deep_search.is_some() { "Searching…" } else { "Loading…" });
-            } else if let Some(t) = app.list_time {
+            } else if let Some(t) = app.list_time.filter(|_| std::env::var_os("OXI_EXPLORER_TIMING").is_some()) {
+                // Listing time, for measuring only (Explorer shows nothing like it).
                 ui.separator();
                 ui.label(RichText::new(format!("read in {:.1} ms", t.as_secs_f64() * 1000.0)).weak());
             }
@@ -832,11 +1011,49 @@ pub fn status_bar(app: &mut App, ui: &mut Ui) {
                 ui.separator();
                 ui.label(m);
             }
+            // The two layout switches at the right end, as in Explorer.
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.checkbox(&mut app.show_hidden, "Hidden items");
+                use ui_common::ViewIcon;
+                ui.spacing_mut().item_spacing.x = 2.0;
+                for (mode, icon, tip) in [
+                    (ViewMode::Large, ViewIcon::Large, "Display items by using large thumbnails"),
+                    (ViewMode::Details, ViewIcon::Details, "Display information about each item in the window"),
+                ] {
+                    if ui_common::view_toggle(ui, icon, "", app.view_mode == mode, tip).clicked() {
+                        app.view_mode = mode;
+                    }
+                }
             });
         });
     });
+}
+
+/// The tip Explorer shows when the pointer rests on an item: type, size and date for a file,
+/// the creation date for a folder. Empty when there is nothing to say.
+pub fn info_tip(e: &explorer_core::Entry, utc_offset: i64) -> String {
+    if e.is_dir {
+        return if e.created > 0 {
+            format!("Date created: {}", format_time(e.created, utc_offset))
+        } else {
+            String::new()
+        };
+    }
+    let mut tip = format!("Type: {}", e.type_name());
+    tip += &format!("\nSize: {}", format_bytes(e.size));
+    if e.modified > 0 {
+        tip += &format!("\nDate modified: {}", format_time(e.modified, utc_offset));
+    }
+    tip
+}
+
+/// Adds [`info_tip`] to an item's response; it shows once the pointer stays still on it.
+pub fn with_info_tip(resp: egui::Response, e: &explorer_core::Entry, utc_offset: i64) -> egui::Response {
+    if e.is_dir && e.created <= 0 {
+        return resp;
+    }
+    resp.on_hover_ui(|ui| {
+        ui.label(info_tip(e, utc_offset));
+    })
 }
 
 /// What a row click or menu asked for; applied after the table so `app` is not borrowed twice.
@@ -954,15 +1171,10 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
     let mut header =
         |h: &mut egui_extras::TableRow, key: Option<SortKey>, title: &str, app: &App, out: &mut Option<SortKey>| {
             h.col(|ui| {
-                let sorted = key.is_some_and(|k| app.sort == k);
-                let arrow = if sorted { if app.ascending { " ⏶" } else { " ⏷" } } else { "" };
-                // The whole cell is the button, as in Explorer, not just its text.
-                let rect = ui.max_rect();
-                let resp = ui.interact(rect, ui.id().with(("col-header", title)), Sense::click());
-                if resp.hovered() && key.is_some() {
-                    ui.painter().rect_filled(rect, 2.0, ui.visuals().widgets.hovered.weak_bg_fill);
-                }
-                ui.add(egui::Label::new(RichText::new(format!("{title}{arrow}")).strong()).selectable(false));
+                // The whole cell is the button, with the sort chevron above the title, as in
+                // Explorer (and Task Manager).
+                let sorted = key.filter(|&k| app.sort == k).map(|_| !app.ascending);
+                let resp = ui_common::sort_header(ui, title, sorted);
                 if resp.clicked() && key.is_some() {
                     *out = key;
                 }
@@ -1000,7 +1212,6 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
     } else {
         let band_active = ui.data(|d| d.get_temp::<[f32; 2]>(egui::Id::new(DETAILS_BAND)).is_some());
         let mut table = TableBuilder::new(ui)
-            .striped(true)
             .resizable(true)
             .sense(Sense::click_and_drag())
             .cell_layout(Layout::left_to_right(Align::Center))
@@ -1037,7 +1248,7 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
         let mut drawn: Vec<(usize, egui::Rect)> = Vec::new();
         let mut band_start: Option<[f32; 2]> = None;
         table
-            .header(row_h, |mut h| {
+            .header(ui_common::SORT_HEADER_HEIGHT, |mut h| {
                 header(&mut h, Some(SortKey::Name), "Name", app, &mut sort_click);
                 let bin = app.in_recycle_bin();
                 header(
@@ -1195,6 +1406,7 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                         }
                     }
                     let resp = row.response();
+                    let resp = if dragging || band_active { resp } else { with_info_tip(resp, e, app.utc_offset) };
                     drawn.push((row.index(), resp.rect));
                     if resp.drag_started() {
                         // As in Explorer: dragging the name moves the item, dragging anywhere
