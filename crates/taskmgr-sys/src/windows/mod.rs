@@ -2,6 +2,7 @@
 //! PDH for disk and GPU rates.
 
 mod adapters;
+mod admin_task;
 mod gpu;
 mod hw;
 mod icon;
@@ -16,6 +17,7 @@ pub mod tray;
 mod waitchain;
 
 pub use adapters::adapter_info;
+pub use admin_task::{admin_task_exists, run_admin_task, set_admin_task};
 pub use gpu::gpu_temperature;
 pub use hw::{cpu_info, disk_info, disk_temperature, memory_info};
 pub use icon::exe_icon;
@@ -26,7 +28,8 @@ pub fn app_history() -> io::Result<taskmgr_core::AppHistory> {
 }
 pub use procinfo::{
     affinity, create_dump, efficiency_mode, file_properties, is_elevated, is_running, open_url, restart_elevated,
-    run_new_task, run_self_elevated, set_affinity, set_efficiency_mode, set_priority, static_info, switch_to,
+    run_new_task, run_self_elevated, set_affinity, set_efficiency_mode, set_priority, start_elevated, static_info,
+    switch_to,
 };
 pub use services::{list_services, service_control};
 pub use sessions::{disconnect_session, list_sessions, logoff_session};

@@ -334,6 +334,97 @@ pub fn restart_elevated() -> io::Result<()> {
     imp::restart_elevated()
 }
 
+/// Starts this exe with `params` through the administrator prompt, without waiting for it.
+pub fn start_elevated(params: &str) -> io::Result<()> {
+    imp::start_elevated(params)
+}
+
+// ---- "Always run as administrator" ----
+
+/// True when this exe's run-as-administrator task exists (Settings > Run as administrator).
+pub fn admin_task_exists() -> bool {
+    imp::admin_task_exists()
+}
+
+/// Registers or removes this exe's run-as-administrator task. Needs admin; see
+/// [`set_admin_task_as_admin`].
+pub fn set_admin_task(on: bool) -> io::Result<()> {
+    imp::set_admin_task(on)
+}
+
+/// [`set_admin_task`], through the administrator prompt when this process is not elevated (it
+/// runs this exe again as `--admin-task-on` / `--admin-task-off`, hidden, and waits for it).
+pub fn set_admin_task_as_admin(on: bool) -> io::Result<()> {
+    if imp::is_elevated() {
+        return set_admin_task(on);
+    }
+    match imp::run_self_elevated(if on { "--admin-task-on" } else { "--admin-task-off" })? {
+        0 => Ok(()),
+        code => Err(io::Error::other(format!("the elevated helper failed (exit code {code})"))),
+    }
+}
+
+/// Starts this exe elevated through its task, with no prompt. The new instance gets
+/// `--from-task` and nothing else on its command line. An error: there is no such task.
+pub fn run_admin_task() -> io::Result<()> {
+    imp::run_admin_task()
+}
+
+/// The task's name: a folder of its own in Task Scheduler, and a hash of the exe's path, so a
+/// moved or second copy never starts another copy's exe.
+pub fn admin_task_name(exe: &str) -> String {
+    // FNV-1a: stable across builds and Rust versions (unlike `DefaultHasher`).
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in exe.to_lowercase().bytes() {
+        h = (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3);
+    }
+    format!(r"oxidows\Task Manager as administrator {:08x}", h as u32)
+}
+
+/// The task definition (Task Scheduler XML): start `exe --from-task` as `user`, in their
+/// session, with their full token. No triggers (it only runs on request), no time limit (the
+/// default stops a task after 72 hours) and normal priority (the default, 7, is below normal).
+pub fn admin_task_xml(exe: &str, user: &str) -> String {
+    let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
+    let dir = exe.rsplit_once(['\\', '/']).map(|(d, _)| d).unwrap_or_default();
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Author>oxidows</Author>
+    <Description>Starts Task Manager (oxidows) as administrator without a UAC prompt. Made by its Settings page (Run as administrator); choosing another option there removes it.</Description>
+  </RegistrationInfo>
+  <Principals>
+    <Principal id="Author">
+      <UserId>{user}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>Parallel</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>4</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>"{exe}"</Command>
+      <Arguments>--from-task</Arguments>
+      <WorkingDirectory>{dir}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+"#,
+        user = esc(user),
+        exe = esc(exe),
+        dir = esc(dir),
+    )
+}
+
 pub fn affinity(pid: u32) -> io::Result<(u64, u64)> {
     imp::affinity(pid)
 }
@@ -406,7 +497,20 @@ pub fn open_file_location(path: &str) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{TaskmgrHandler, classify_debugger, split_command};
+    use super::{TaskmgrHandler, admin_task_name, admin_task_xml, classify_debugger, split_command};
+
+    #[test]
+    fn admin_task_per_exe() {
+        let a = admin_task_name(r"C:\Users\A\AppData\Local\Programs\oxidows\oxi-taskmgr.exe");
+        assert!(a.starts_with(r"oxidows\Task Manager as administrator "), "{a}");
+        // Windows paths are case-insensitive; another folder is another task.
+        assert_eq!(a, admin_task_name(r"c:\users\a\appdata\local\programs\oxidows\OXI-TASKMGR.EXE"));
+        assert_ne!(a, admin_task_name(r"D:\Tools\oxi-taskmgr.exe"));
+        let x = admin_task_xml(r"D:\R&D <x>\oxi-taskmgr.exe", r"PC\Phuoc");
+        assert!(x.contains(r#"<Command>"D:\R&amp;D &lt;x&gt;\oxi-taskmgr.exe"</Command>"#), "{x}");
+        assert!(x.contains(r"<WorkingDirectory>D:\R&amp;D &lt;x&gt;</WorkingDirectory>"), "{x}");
+        assert!(x.contains(r"<UserId>PC\Phuoc</UserId>") && x.contains("<RunLevel>HighestAvailable</RunLevel>"));
+    }
 
     #[test]
     fn classifies_debugger() {

@@ -11,6 +11,7 @@ as the feature.
 | Pages: Processes, Performance, App history, Startup apps, Users, Details, Services, Settings | done | |
 | Real-time update speed (High / Normal / Low / Paused) | done | 0.5 s / 1 s / 2 s / paused |
 | Run as administrator | done | relaunch through UAC |
+| Starts elevated without a prompt for an administrator (Windows' Task Manager auto-elevates) | done | Settings > Run as administrator: "Always, without a prompt" adds a scheduled task (`HighestAvailable`, interactive token) that a normal start hands over to; "Always, with a UAC prompt" relaunches through `runas`; a missing task falls back to the prompt and is put back |
 | Run new task (with "create with administrative privileges") | done | `ShellExecuteW`, `runas` verb |
 | Search box | done | per page |
 | Status bar (process count, CPU, memory) | done | |
