@@ -528,6 +528,34 @@ fn default_file_manager_round_trip() {
         !reg(r"HKCU\Software\Classes\CLSID\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}\shell\opennewwindow\command")
             .contains("oxi")
     );
+    assert_eq!(explorer_sys::folder_handler(), explorer_sys::FolderHandler::BuiltIn);
+    // Nothing we made is left: not even the empty keys.
+    let exists = |key: &str| std::process::Command::new("reg").args(["query", key]).output().unwrap().status.success();
+    assert!(!exists(r"HKCU\Software\Classes\CLSID\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}"));
+    assert!(!exists(r"HKCU\Software\Classes\Directory\shell\oxi-explorer"));
+
+    // A renamed exe is still ours, and the state says which copy.
+    let renamed = Path::new(r"C:\Tools\files-rs.exe");
+    explorer_sys::set_default_file_manager(Some(renamed)).unwrap();
+    assert_eq!(explorer_sys::folder_handler(), explorer_sys::FolderHandler::Ours(renamed.display().to_string()));
+    explorer_sys::set_default_file_manager(None).unwrap();
+    assert!(!exists(r"HKCU\Software\Classes\CLSID\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}"));
+
+    // Another file manager's Win+E comes back on undo.
+    let win_e = r"HKCU\Software\Classes\CLSID\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}\shell\opennewwindow\command";
+    let add = std::process::Command::new("reg")
+        .args(["add", win_e, "/ve", "/d", r"C:\Files\files.exe", "/f"])
+        .output()
+        .unwrap();
+    assert!(add.status.success());
+    explorer_sys::set_default_file_manager(Some(exe)).unwrap();
+    assert!(reg(win_e).contains("oxi-explorer.exe"));
+    explorer_sys::set_default_file_manager(None).unwrap();
+    let back = reg(win_e);
+    assert!(back.contains(r"C:\Files\files.exe") && !back.contains("oxi"), "{back}");
+    let _ = std::process::Command::new("reg")
+        .args(["delete", r"HKCU\Software\Classes\CLSID\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}", "/f"])
+        .output();
 }
 
 #[test]

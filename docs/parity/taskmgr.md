@@ -11,6 +11,7 @@ as the feature.
 | Pages: Processes, Performance, App history, Startup apps, Users, Details, Services, Settings | done | |
 | Real-time update speed (High / Normal / Low / Paused) | done | 0.5 s / 1 s / 2 s / paused |
 | Run as administrator | done | relaunch through UAC |
+| Starts elevated without a prompt for an administrator (Windows' Task Manager auto-elevates) | done | Settings > Run as administrator: "Always, without a prompt" adds a scheduled task (`HighestAvailable`, interactive token) that a normal start hands over to; "Always, with a UAC prompt" relaunches through `runas`; a missing task falls back to the prompt and is put back |
 | Run new task (with "create with administrative privileges") | done | `ShellExecuteW`, `runas` verb |
 | Search box | done | per page |
 | Status bar (process count, CPU, memory) | done | |
@@ -19,9 +20,11 @@ as the feature.
 | Settings: hide when minimized | done | the tray icon brings the window back |
 | Settings: minimize on use | done | after Switch to |
 | Settings persisted between runs | done | `%APPDATA%\oxidows\taskmgr.ini` |
-| Replace Ctrl+Shift+Esc / taskmgr.exe | done | opt-in on Settings, IFEO `Debugger`, needs admin |
+| Replace Ctrl+Shift+Esc / taskmgr.exe | done | Settings > Default app: IFEO `Debugger`, asks for admin (UAC) itself; restore gives back Task Manager or the tool that had it; `--restore-default`; `taskmgr /startup` opens Startup |
+| One instance: starting it again brings the open window forward | done | named mutex; also from a non-elevated start to an elevated window, and out of the tray; Run as administrator waits for the old one |
 | Notification-area icon with CPU usage | done | left click shows, right click Show / Exit |
 | Keyboard: Delete = End task, Ctrl+Tab / Ctrl+Shift+Tab between pages | done | |
+| Sort every table by any column: click a header, click again to reverse, chevron above the sorted column | done | Processes, App history, Startup apps, Users, Details, Services; each page's sort is saved between runs |
 
 ## Processes
 
@@ -33,6 +36,8 @@ as the feature.
 | End task | done | button, Delete key, right-click |
 | Groups: Apps / Background processes / Windows processes | done | collapsible, can be turned off |
 | Friendly names (file description) | done | hover shows the image name |
+| Program icon left of each name | done | shell small icon of the exe, read on a background thread and cached by path; generic program icon when there is no path (System, Registry) |
+| Machine totals above CPU, Memory, Disk, Network, GPU headers | done | Network total = all adapters' throughput over their link speed, shown even when per-process network is off |
 | Expand an app to its child processes | done | children fold into the app row; windows are not listed |
 | Network column | done | ETW Microsoft-Windows-Kernel-Network; needs administrator (Task Manager uses a system service) |
 | GPU engine column | done | busiest engine per process, from PDH `GPU Engine(*)` |
@@ -52,10 +57,10 @@ as the feature.
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| CPU graph 60 s, per-logical-processor view | done | |
+| CPU graph 60 s, per-logical-processor view | done | choice saved in taskmgr.ini (`cpu_logical`) |
 | CPU utilization, speed, processes, threads, handles, up time | done | |
 | CPU name, base speed, sockets, cores, logical processors, L1/L2/L3 cache, virtualization | done | |
-| Kernel times overlay | done | checkbox on the CPU page, also per processor |
+| Kernel times overlay | done | checkbox on the CPU page, also per processor; saved (`cpu_kernel`) |
 | Memory graph, in use, available, committed | done | |
 | Memory cached, paged / non-paged pool, composition bar, hardware reserved | done | `GetPerformanceInfo` |
 | Memory speed, slots, form factor | done | SMBIOS type 17 |
@@ -102,7 +107,8 @@ as the feature.
 | --- | --- | --- |
 | Signed-in sessions with status, CPU, memory, disk, process count | done | |
 | Network per user | done | needs administrator, like the Network column |
-| Expand a user to their processes | done | |
+| Expand a user to their processes | done | with program icons |
+| Totals above CPU, Memory, Disk, Network headers | done | |
 | Disconnect, Sign off | done | asks first |
 
 ## Details
@@ -111,6 +117,7 @@ as the feature.
 | --- | --- | --- |
 | Name, PID, user, session, CPU, memory, threads, handles, priority, path, command line | done | |
 | Choose columns | done | 34 columns, saved between runs |
+| Program icon left of the name | done | same cache as Processes |
 | Same right-click actions as Processes | done | end, tree, efficiency, priority, affinity, dump, search |
 | Go to service(s) | done | svchost.exe rows |
 | UAC virtualization (column and toggle), Analyze wait chain | done | Wait Chain Traversal; offers to end the blocking process |

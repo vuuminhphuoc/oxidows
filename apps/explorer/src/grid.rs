@@ -47,12 +47,77 @@ fn spec(mode: ViewMode) -> Spec {
     }
 }
 
+/// How the items of an icon view are laid out, for the arrow keys.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GridNav {
+    /// Items in a row (in List: in a column).
+    pub per_line: usize,
+    /// List: items flow down columns.
+    pub column_major: bool,
+    /// Each group's first position and item count (one group when not grouped).
+    pub groups: Vec<(usize, usize)>,
+}
+
+/// An arrow key in an icon view moves to the item drawn next to `pos` in that direction, as in
+/// Explorer: Left/Right along the row, Up/Down to the row above or below (into the next or the
+/// previous group too). `None` when there is nothing that way.
+pub fn arrow_step(nav: &GridNav, pos: usize, dir: egui::Key) -> Option<usize> {
+    use egui::Key;
+    let per = nav.per_line.max(1);
+    let n: usize = nav.groups.iter().map(|g| g.1).sum();
+    if n == 0 || pos >= n {
+        return None;
+    }
+    // In List the columns are the lines: Up/Down move by one, Left/Right by a column.
+    let (along, across_back, across_fwd) = if nav.column_major {
+        (matches!(dir, Key::ArrowUp | Key::ArrowDown), Key::ArrowLeft, Key::ArrowRight)
+    } else {
+        (matches!(dir, Key::ArrowLeft | Key::ArrowRight), Key::ArrowUp, Key::ArrowDown)
+    };
+    if along {
+        let back = matches!(dir, Key::ArrowLeft | Key::ArrowUp);
+        return if back { pos.checked_sub(1) } else { Some(pos + 1).filter(|&p| p < n) };
+    }
+    if nav.column_major {
+        return match dir {
+            d if d == across_back => pos.checked_sub(per),
+            d if d == across_fwd => Some((pos + per).min(n - 1)).filter(|&p| p != pos),
+            _ => None,
+        };
+    }
+    let k = nav.groups.iter().rposition(|g| g.0 <= pos)?;
+    let (start, len) = nav.groups[k];
+    let (row, col) = ((pos - start) / per, (pos - start) % per);
+    let rows = |len: usize| len.div_ceil(per);
+    match dir {
+        d if d == across_fwd => {
+            if row + 1 < rows(len) {
+                Some((start + (row + 1) * per + col).min(start + len - 1))
+            } else {
+                let &(s2, l2) = nav.groups[k + 1..].iter().find(|g| g.1 > 0)?;
+                Some(s2 + col.min(l2 - 1))
+            }
+        }
+        d if d == across_back => {
+            if row > 0 {
+                Some(pos - per)
+            } else {
+                let &(s2, l2) = nav.groups[..k].iter().rev().find(|g| g.1 > 0)?;
+                Some((s2 + (rows(l2) - 1) * per + col).min(s2 + l2 - 1))
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Height of a group heading in the icon views.
 const HEADING: f32 = 32.0;
 
-/// Thumbnail size the view asks the shell for.
-pub fn thumb_px(mode: ViewMode) -> u32 {
-    if mode == ViewMode::ExtraLarge { 256 } else { 96 }
+/// Thumbnail size the view asks the shell for: the size the picture is drawn at, in pixels of
+/// this display. The shell scales it smoothly; scaling a bigger one down here would leave jagged
+/// edges, and a smaller one up would blur it (at 125 % or 150 % display scaling).
+pub fn thumb_px(mode: ViewMode, pixels_per_point: f32) -> u32 {
+    (spec(mode).img * pixels_per_point.max(0.5)).round().clamp(16.0, 1024.0) as u32
 }
 
 /// Whether the view draws shell thumbnails (otherwise small system icons).
@@ -114,6 +179,11 @@ pub fn show(
         let j = pos - start;
         egui::vec2((j % per_line) as f32 * sp.tile.x, y + head + (j / per_line) as f32 * sp.tile.y)
     };
+    app.grid_nav = Some(GridNav {
+        per_line,
+        column_major: sp.column_major,
+        groups: if grouped { glayout.iter().map(|g| (g.0, g.1)).collect() } else { vec![(0, n)] },
+    });
     let content = if sp.column_major {
         egui::vec2(lines as f32 * sp.tile.x, per_line as f32 * sp.tile.y)
     } else {
@@ -256,7 +326,8 @@ pub fn show(
             let thumb = if thumbs { app.thumbs.get(&path) } else { None };
             let painted = match thumb {
                 Some(IconState::Ready(tex)) => {
-                    let s = tex.size_vec2();
+                    // Texture pixels to points: drawn at most at its own size on this display.
+                    let s = tex.size_vec2() / ui.ctx().pixels_per_point();
                     let k = (sp.img / s.x.max(s.y)).min(1.0);
                     let r = Rect::from_center_size(img_rect.center(), s * k);
                     ui.painter().image(
@@ -414,5 +485,49 @@ pub fn show(
     }
     if let Some(t) = hover_target {
         app.drop_target = Some(t);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GridNav, arrow_step};
+    use eframe::egui::Key::{ArrowDown as D, ArrowLeft as L, ArrowRight as R, ArrowUp as U};
+
+    #[test]
+    fn arrows_in_rows() {
+        // 10 items, 4 per row: 0 1 2 3 / 4 5 6 7 / 8 9
+        let nav = GridNav { per_line: 4, column_major: false, groups: vec![(0, 10)] };
+        assert_eq!(arrow_step(&nav, 0, R), Some(1));
+        assert_eq!(arrow_step(&nav, 3, R), Some(4));
+        assert_eq!(arrow_step(&nav, 0, L), None);
+        assert_eq!(arrow_step(&nav, 9, R), None);
+        assert_eq!(arrow_step(&nav, 1, D), Some(5));
+        assert_eq!(arrow_step(&nav, 7, D), Some(9));
+        assert_eq!(arrow_step(&nav, 9, D), None);
+        assert_eq!(arrow_step(&nav, 6, U), Some(2));
+        assert_eq!(arrow_step(&nav, 2, U), None);
+    }
+
+    #[test]
+    fn arrows_across_groups() {
+        // Group A: 0 1 2 / 3 4 ; group B: 5 6 7 / 8
+        let nav = GridNav { per_line: 3, column_major: false, groups: vec![(0, 5), (5, 4)] };
+        assert_eq!(arrow_step(&nav, 4, D), Some(6));
+        assert_eq!(arrow_step(&nav, 2, D), Some(4));
+        assert_eq!(arrow_step(&nav, 7, U), Some(4));
+        assert_eq!(arrow_step(&nav, 5, U), Some(3));
+        assert_eq!(arrow_step(&nav, 8, U), Some(5));
+    }
+
+    #[test]
+    fn arrows_in_list_columns() {
+        // List, 3 per column: 0 3 6 / 1 4 7 / 2 5
+        let nav = GridNav { per_line: 3, column_major: true, groups: vec![(0, 8)] };
+        assert_eq!(arrow_step(&nav, 1, D), Some(2));
+        assert_eq!(arrow_step(&nav, 1, R), Some(4));
+        assert_eq!(arrow_step(&nav, 5, R), Some(7));
+        assert_eq!(arrow_step(&nav, 7, R), None);
+        assert_eq!(arrow_step(&nav, 4, L), Some(1));
+        assert_eq!(arrow_step(&nav, 1, L), None);
     }
 }

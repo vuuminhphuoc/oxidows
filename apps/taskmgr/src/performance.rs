@@ -36,9 +36,10 @@ pub struct State {
     selected: Res,
     /// Only the resource list, without tabs or details (double-click to leave).
     pub summary: bool,
-    per_core: bool,
-    /// Draw kernel-mode time over the CPU graphs.
-    kernel: bool,
+    /// One graph per logical processor (saved as `cpu_logical`).
+    pub per_core: bool,
+    /// Draw kernel-mode time over the CPU graphs (saved as `cpu_kernel`).
+    pub kernel: bool,
     cpu: CpuInfo,
     /// Addresses of the shown adapter, re-read every few seconds.
     adapter: Option<(String, Instant, AdapterInfo)>,
@@ -52,6 +53,11 @@ pub struct State {
 }
 
 impl State {
+    /// Starts with the CPU page's "Logical processors" / "Show kernel times" checkboxes as saved.
+    pub fn with_cpu_view(per_core: bool, kernel: bool) -> Self {
+        Self { per_core, kernel, ..Self::default() }
+    }
+
     fn temp(&mut self, key: String, read: impl FnOnce() -> Option<f32>) -> Option<f32> {
         match self.temps.get(&key) {
             Some((at, t)) if at.elapsed() < Duration::from_secs(2) => *t,
@@ -122,15 +128,16 @@ impl State {
     fn list(&mut self, ui: &mut Ui, entries: &[Entry]) {
         let spark =
             if self.summary { Vec2::new((ui.available_width() * 0.45).max(70.0), 44.0) } else { Vec2::new(70.0, 44.0) };
+        let pal = ui_common::Palette::of(ui);
         for e in entries {
-            let sel = self.selected == e.res;
-            let frame = egui::Frame::new().inner_margin(6).fill(if sel && !self.summary {
-                ui.visuals().selection.bg_fill.gamma_multiply(0.35)
-            } else {
-                Color32::TRANSPARENT
-            });
-            let r = frame
+            let sel = self.selected == e.res && !self.summary;
+            // Each item spans the whole column (as in Windows 11), so the full row is the click
+            // target; its fill is painted behind the content once the hover state is known.
+            let bg = ui.painter().add(egui::Shape::Noop);
+            let r = egui::Frame::new()
+                .inner_margin(6)
                 .show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
                     ui.horizontal(|ui| {
                         graph::area(ui, spark, e.ring, e.max, e.color, false);
                         ui.vertical(|ui| {
@@ -141,6 +148,17 @@ impl State {
                 })
                 .response
                 .interact(egui::Sense::click());
+            let fill = if sel {
+                Some(pal.selected)
+            } else if r.hovered() {
+                Some(pal.hover)
+            } else {
+                None
+            };
+            if let Some(f) = fill {
+                ui.painter().set(bg, egui::Shape::rect_filled(r.rect, 4.0, f));
+            }
+            let r = r.on_hover_text(format!("{}\n{}", e.title, e.value));
             if r.clicked() {
                 self.selected = e.res;
             }
@@ -310,7 +328,8 @@ impl State {
                         .clone();
                     header(ui, "Memory", &format_bytes(s.mem_total as f64));
                     ui.label(RichText::new("Memory usage over 60 seconds").small().weak());
-                    graph::area(ui, big, &h.mem_pct, 100.0, MEM, true);
+                    let g = graph::area(ui, big, &h.mem_pct, 100.0, MEM, true);
+                    graph::hover(ui, &g, "Memory", &[("In use", &h.mem_pct)], pct_text);
                     composition(ui, snap);
                     stats(
                         ui,
@@ -365,7 +384,8 @@ impl State {
                         header(ui, &disk_title(&d.name), &info.model);
                         ui.label(RichText::new("Active time over 60 seconds").small().weak());
                         if let Some(ring) = h.disks.get(i) {
-                            graph::area(ui, Vec2::new(big.x, big.y * 0.6), ring, 100.0, DISK, true);
+                            let g = graph::area(ui, Vec2::new(big.x, big.y * 0.6), ring, 100.0, DISK, true);
+                            graph::hover(ui, &g, "", &[("Active time", ring)], pct_text);
                         }
                         // Task Manager's second graph: read (solid) and write on one scale.
                         if let Some((r, w)) = h.disk_io.get(i) {
@@ -375,47 +395,47 @@ impl State {
                                     .small()
                                     .weak(),
                             );
-                            graph::multi(ui, Vec2::new(big.x, big.y * 0.4), &[(r, DISK), (w, DISK_WRITE)], max);
+                            let g = graph::multi(ui, Vec2::new(big.x, big.y * 0.4), &[(r, DISK), (w, DISK_WRITE)], max);
+                            graph::hover(ui, &g, "", &[("Read", r), ("Write", w)], bytes_per_sec);
                         }
                         let sys = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into()).to_uppercase();
                         let is_sys = letters.contains(&sys);
                         let pagefile =
                             letters.iter().any(|l| std::path::Path::new(&format!("{l}\\pagefile.sys")).exists());
                         let yes_no = |b: bool| if b { "Yes" } else { "No" }.to_string();
-                        stats(
-                            ui,
-                            &[
-                                ("Active time", format!("{:.0}%", d.active_pct)),
-                                ("Average response time", format!("{:.1} ms", d.response_ms)),
-                                ("Read speed", format!("{}/s", format_bytes(d.read_bps))),
-                                ("Write speed", format!("{}/s", format_bytes(d.write_bps))),
-                                (
-                                    "Capacity",
-                                    if info.capacity == 0 { "-".into() } else { format_bytes(info.capacity as f64) },
-                                ),
-                                (
-                                    "Type",
-                                    match (info.kind.is_empty(), info.bus.is_empty()) {
-                                        (true, true) => "-".into(),
-                                        (false, true) => info.kind.clone(),
-                                        (true, false) => info.bus.clone(),
-                                        (false, false) => format!("{} ({})", info.kind, info.bus),
-                                    },
-                                ),
-                                ("System disk", yes_no(is_sys)),
-                                ("Page file", yes_no(pagefile)),
-                                (
-                                    "Temperature",
-                                    celsius(number.and_then(|n| {
-                                        self.temp(format!("disk {n}"), || taskmgr_sys::disk_temperature(n))
-                                    })),
-                                ),
-                            ],
-                        )
+                        let temp =
+                            number.and_then(|n| self.temp(format!("disk {n}"), || taskmgr_sys::disk_temperature(n)));
+                        let mut items = vec![
+                            ("Active time", format!("{:.0}%", d.active_pct)),
+                            ("Average response time", format!("{:.1} ms", d.response_ms)),
+                            ("Read speed", format!("{}/s", format_bytes(d.read_bps))),
+                            ("Write speed", format!("{}/s", format_bytes(d.write_bps))),
+                            (
+                                "Capacity",
+                                if info.capacity == 0 { "-".into() } else { format_bytes(info.capacity as f64) },
+                            ),
+                            (
+                                "Type",
+                                match (info.kind.is_empty(), info.bus.is_empty()) {
+                                    (true, true) => "-".into(),
+                                    (false, true) => info.kind.clone(),
+                                    (true, false) => info.bus.clone(),
+                                    (false, false) => format!("{} ({})", info.kind, info.bus),
+                                },
+                            ),
+                            ("System disk", yes_no(is_sys)),
+                            ("Page file", yes_no(pagefile)),
+                        ];
+                        // Task Manager lists the temperature only for drives that report one.
+                        if temp.is_some() {
+                            items.push(("Temperature", celsius(temp)));
+                        }
+                        stats(ui, &items)
                     }
                     None => {
                         header(ui, "Disk", "");
-                        graph::area(ui, big, &h.disk_bps, disk_max, DISK, true);
+                        let g = graph::area(ui, big, &h.disk_bps, disk_max, DISK, true);
+                        graph::hover(ui, &g, "", &[("Transfer rate", &h.disk_bps)], bytes_per_sec);
                         stats(
                             ui,
                             &[
@@ -461,7 +481,8 @@ impl State {
                                 .small()
                                 .weak(),
                         );
-                        graph::multi(ui, big, &[(r, NET), (t, NET_TX)], max);
+                        let g = graph::multi(ui, big, &[(r, NET), (t, NET_TX)], max);
+                        graph::hover(ui, &g, "", &[("Send", t), ("Receive", r)], bits_per_sec);
                     }
                     let mut items = vec![
                         ("Send", format_bits_per_sec(tx)),
@@ -495,7 +516,8 @@ impl State {
                     };
                     header(ui, &title, one.map_or("", |g| g.name.as_str()));
                     ui.label(RichText::new("Busiest engine over 60 seconds").small().weak());
-                    graph::area(ui, big, ring, 100.0, GPU, true);
+                    let g = graph::area(ui, big, ring, 100.0, GPU, true);
+                    graph::hover(ui, &g, "", &[("Utilization", ring)], pct_text);
                     let of_total = |used: Option<u64>, total: u64| match (used, total) {
                         (Some(u), t) if t > 0 => format!("{} / {}", format_bytes(u as f64), format_bytes(t as f64)),
                         (u, _) => opt_bytes(u),
@@ -577,19 +599,28 @@ impl State {
                 Vec2::new((w - gap * (cols - 1) as f32) / cols as f32, (big.y - gap * (rows - 1) as f32) / rows as f32);
             egui::Grid::new("cores").spacing([gap, gap]).show(ui, |ui| {
                 for (i, ring) in h.cores.iter().enumerate() {
+                    let title = format!("CPU {i}");
                     match h.cores_kernel.get(i).filter(|_| self.kernel) {
-                        Some(k) => graph::with_kernel(ui, cell, ring, k, CPU, false),
-                        None => graph::area(ui, cell, ring, 100.0, CPU, false),
-                    };
+                        Some(k) => {
+                            let g = graph::with_kernel(ui, cell, ring, k, CPU, false);
+                            graph::hover(ui, &g, &title, &[("Utilization", ring), ("Kernel", k)], pct_text);
+                        }
+                        None => {
+                            let g = graph::area(ui, cell, ring, 100.0, CPU, false);
+                            graph::hover(ui, &g, &title, &[("Utilization", ring)], pct_text);
+                        }
+                    }
                     if (i + 1) % cols == 0 {
                         ui.end_row();
                     }
                 }
             });
         } else if self.kernel {
-            graph::with_kernel(ui, big, &h.cpu, &h.cpu_kernel, CPU, true);
+            let g = graph::with_kernel(ui, big, &h.cpu, &h.cpu_kernel, CPU, true);
+            graph::hover(ui, &g, "", &[("Utilization", &h.cpu), ("Kernel", &h.cpu_kernel)], pct_text);
         } else {
-            graph::area(ui, big, &h.cpu, 100.0, CPU, true);
+            let g = graph::area(ui, big, &h.cpu, 100.0, CPU, true);
+            graph::hover(ui, &g, "", &[("Utilization", &h.cpu)], pct_text);
         }
         let c = &self.cpu;
         stats(
@@ -618,6 +649,18 @@ impl State {
             ],
         )
     }
+}
+
+fn pct_text(v: f32) -> String {
+    format!("{v:.0}%")
+}
+
+fn bytes_per_sec(v: f32) -> String {
+    format!("{}/s", format_bytes(v as f64))
+}
+
+fn bits_per_sec(v: f32) -> String {
+    format_bits_per_sec(v as f64)
 }
 
 pub fn header(ui: &mut Ui, title: &str, right: &str) {

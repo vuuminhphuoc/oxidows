@@ -531,6 +531,37 @@ pub struct SystemRates {
     pub handle_count: u64,
 }
 
+/// The machine-wide figures Task Manager prints above its CPU, Memory, Disk, Network and GPU
+/// columns, in percent.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ColumnTotals {
+    pub cpu: f32,
+    pub memory: f32,
+    pub disk: f32,
+    pub network: f32,
+    pub gpu: f32,
+}
+
+impl ColumnTotals {
+    pub fn of(s: &SystemRates) -> Self {
+        let link: f64 = s.adapters.iter().map(|a| a.link_bps as f64).sum();
+        let moved: f64 = s.adapters.iter().map(|a| a.rx_bps + a.tx_bps).sum();
+        let pct = |v: f64| (v as f32).clamp(0.0, 100.0);
+        Self {
+            cpu: pct(f64::from(s.cpu_pct)),
+            memory: if s.mem_total == 0 { 0.0 } else { pct(s.mem_used as f64 * 100.0 / s.mem_total as f64) },
+            disk: pct(f64::from(s.disk_active_pct.unwrap_or(0.0))),
+            network: if link <= 0.0 { 0.0 } else { pct(moved * 8.0 * 100.0 / link) },
+            gpu: pct(f64::from(s.gpu_pct.unwrap_or(0.0))),
+        }
+    }
+
+    /// "37%", as the header shows it.
+    pub fn label(v: f32) -> String {
+        format!("{:.0}%", v)
+    }
+}
+
 /// Everything the UI needs for one frame. Sent from the sampler thread as an `Arc`.
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
@@ -1036,6 +1067,53 @@ pub enum SortKey {
     Threads,
     Power,
     PowerTrend,
+    /// Running, then Efficiency mode, then Suspended.
+    Status,
+    Publisher,
+}
+
+impl SortKey {
+    pub const ALL: [SortKey; 12] = [
+        SortKey::Name,
+        SortKey::Pid,
+        SortKey::Cpu,
+        SortKey::Memory,
+        SortKey::Disk,
+        SortKey::Network,
+        SortKey::Gpu,
+        SortKey::Threads,
+        SortKey::Power,
+        SortKey::PowerTrend,
+        SortKey::Status,
+        SortKey::Publisher,
+    ];
+
+    /// Name in the settings file.
+    pub fn key(self) -> &'static str {
+        match self {
+            SortKey::Name => "name",
+            SortKey::Pid => "pid",
+            SortKey::Cpu => "cpu",
+            SortKey::Memory => "memory",
+            SortKey::Disk => "disk",
+            SortKey::Network => "network",
+            SortKey::Gpu => "gpu",
+            SortKey::Threads => "threads",
+            SortKey::Power => "power",
+            SortKey::PowerTrend => "powertrend",
+            SortKey::Status => "status",
+            SortKey::Publisher => "publisher",
+        }
+    }
+
+    pub fn from_key(k: &str) -> Option<SortKey> {
+        SortKey::ALL.into_iter().find(|s| s.key() == k)
+    }
+
+    /// Text reads best A to Z; numbers biggest first, as Task Manager does.
+    pub fn descending_first(self) -> bool {
+        !matches!(self, SortKey::Name | SortKey::Pid | SortKey::Status | SortKey::Publisher)
+    }
 }
 
 /// The three sections of the Processes tab.
@@ -1108,8 +1186,10 @@ pub fn sorted_view(rows: &[ProcessRow], filter: &str, key: SortKey, descending: 
     idx.sort_by(|&a, &b| {
         let (a, b) = (&rows[a], &rows[b]);
         let ord = match key {
-            SortKey::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+            SortKey::Name => display_name(a).to_lowercase().cmp(&display_name(b).to_lowercase()),
             SortKey::Pid => a.pid.cmp(&b.pid),
+            SortKey::Status => (a.suspended, a.efficiency).cmp(&(b.suspended, b.efficiency)),
+            SortKey::Publisher => a.info.publisher.to_lowercase().cmp(&b.info.publisher.to_lowercase()),
             SortKey::Cpu => a.cpu_pct.total_cmp(&b.cpu_pct),
             SortKey::Memory => a.memory.cmp(&b.memory),
             SortKey::Disk => a.disk_bps.total_cmp(&b.disk_bps),
@@ -1156,6 +1236,29 @@ pub fn format_uptime(d: Duration) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn column_totals() {
+        let s = SystemRates {
+            cpu_pct: 12.4,
+            mem_used: 3,
+            mem_total: 8,
+            disk_active_pct: Some(140.0),
+            gpu_pct: None,
+            adapters: vec![
+                AdapterRates { rx_bps: 1_000_000.0, tx_bps: 250_000.0, link_bps: 100_000_000, ..Default::default() },
+                AdapterRates { link_bps: 0, ..Default::default() },
+            ],
+            ..Default::default()
+        };
+        let t = ColumnTotals::of(&s);
+        assert_eq!(ColumnTotals::label(t.cpu), "12%");
+        assert_eq!(ColumnTotals::label(t.memory), "38%");
+        assert_eq!(t.disk, 100.0);
+        assert_eq!(t.network, 10.0);
+        assert_eq!(t.gpu, 0.0);
+        assert_eq!(ColumnTotals::of(&SystemRates::default()), ColumnTotals::default());
+    }
     use super::*;
 
     #[test]

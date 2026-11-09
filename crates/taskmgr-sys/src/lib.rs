@@ -182,6 +182,29 @@ pub mod fps {
 
 /// App history from Windows' resource usage database (SRUM). Needs administrator; takes seconds
 /// (it reads a shadow copy), so call it off the UI thread.
+/// A small icon as straight-alpha RGBA pixels, top row first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IconImage {
+    pub width: usize,
+    pub height: usize,
+    pub rgba: Vec<u8>,
+}
+
+/// The program icon shown next to a process (the shell's small icon of its exe). An empty
+/// `path` gives the generic program icon. None off Windows. Slow (reads the file): call it
+/// off the UI thread.
+pub fn exe_icon(path: &str) -> Option<IconImage> {
+    #[cfg(windows)]
+    {
+        imp::exe_icon(path)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        None
+    }
+}
+
 pub fn app_history() -> io::Result<taskmgr_core::AppHistory> {
     imp::app_history()
 }
@@ -292,13 +315,49 @@ pub fn startup_exe(command: &str) -> String {
     }
 }
 
-/// True when Ctrl+Shift+Esc / taskmgr.exe currently opens this exe.
-pub fn replaces_taskmgr() -> bool {
-    let me = std::env::current_exe().map(|p| p.display().to_string().to_lowercase()).unwrap_or_default();
-    imp::taskmgr_replacement().is_some_and(|v| !me.is_empty() && v.to_lowercase().contains(&me))
+/// Who Ctrl+Shift+Esc / taskmgr.exe starts now, from the IFEO `Debugger` value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TaskmgrHandler {
+    /// No replacement: Windows Task Manager.
+    BuiltIn,
+    /// This exe.
+    ThisExe,
+    /// Another copy of oxi-taskmgr, by path.
+    OtherCopy(String),
+    /// Some other tool (Process Explorer, System Informer), by its command.
+    OtherTool(String),
 }
 
-/// Makes Ctrl+Shift+Esc open this exe (`true`) or the built-in Task Manager (`false`). Needs admin.
+/// Whether an IFEO `Debugger` value starts one of our exes (this copy or another).
+pub fn is_oxidows_debugger(debugger: &str) -> bool {
+    debugger.to_ascii_lowercase().contains("oxi-taskmgr")
+}
+
+/// Sorts a `Debugger` value (`None`: there is none) relative to `me`, this exe's path.
+pub fn classify_debugger(debugger: Option<&str>, me: &str) -> TaskmgrHandler {
+    let Some(d) = debugger.map(str::trim).filter(|d| !d.is_empty()) else { return TaskmgrHandler::BuiltIn };
+    let path = d.trim_matches('"').to_string();
+    if !me.is_empty() && d.to_lowercase().contains(&me.to_lowercase()) {
+        TaskmgrHandler::ThisExe
+    } else if is_oxidows_debugger(d) {
+        TaskmgrHandler::OtherCopy(path)
+    } else {
+        TaskmgrHandler::OtherTool(path)
+    }
+}
+
+pub fn taskmgr_handler() -> TaskmgrHandler {
+    let me = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
+    classify_debugger(imp::taskmgr_replacement().as_deref(), &me)
+}
+
+/// True when Ctrl+Shift+Esc / taskmgr.exe currently opens this exe.
+pub fn replaces_taskmgr() -> bool {
+    taskmgr_handler() == TaskmgrHandler::ThisExe
+}
+
+/// Makes Ctrl+Shift+Esc open this exe (`true`) or gives it back (`false`): to Windows Task
+/// Manager, or to the tool that had it before. Needs admin; see [`set_replaces_taskmgr_as_admin`].
 pub fn set_replaces_taskmgr(on: bool) -> io::Result<()> {
     if on {
         let me = std::env::current_exe()?;
@@ -308,6 +367,27 @@ pub fn set_replaces_taskmgr(on: bool) -> io::Result<()> {
     }
 }
 
+/// [`set_replaces_taskmgr`], through the administrator prompt when this process is not
+/// elevated: it runs this exe again as `--set-default` / `--restore-default --quiet` elevated
+/// and waits for it. Blocks until the prompt is answered.
+pub fn set_replaces_taskmgr_as_admin(on: bool) -> io::Result<()> {
+    if imp::is_elevated() {
+        return set_replaces_taskmgr(on);
+    }
+    let args = if on { "--set-default --quiet" } else { "--restore-default --quiet" };
+    match imp::run_self_elevated(args)? {
+        0 => Ok(()),
+        code => Err(io::Error::other(format!("the elevated helper failed (exit code {code})"))),
+    }
+}
+
+/// One Task Manager at a time: true when this process should go on, false when another
+/// instance is running (its window was brought to the front; exit). `wait_for_previous` is for
+/// a restart (`--restarted`), which waits for the instance that started it to exit.
+pub fn single_instance(wait_for_previous: bool) -> bool {
+    imp::single_instance(wait_for_previous)
+}
+
 pub fn is_elevated() -> bool {
     imp::is_elevated()
 }
@@ -315,6 +395,97 @@ pub fn is_elevated() -> bool {
 /// Relaunches the app through the administrator prompt; the caller should exit on `Ok`.
 pub fn restart_elevated() -> io::Result<()> {
     imp::restart_elevated()
+}
+
+/// Starts this exe with `params` through the administrator prompt, without waiting for it.
+pub fn start_elevated(params: &str) -> io::Result<()> {
+    imp::start_elevated(params)
+}
+
+// ---- "Always run as administrator" ----
+
+/// True when this exe's run-as-administrator task exists (Settings > Run as administrator).
+pub fn admin_task_exists() -> bool {
+    imp::admin_task_exists()
+}
+
+/// Registers or removes this exe's run-as-administrator task. Needs admin; see
+/// [`set_admin_task_as_admin`].
+pub fn set_admin_task(on: bool) -> io::Result<()> {
+    imp::set_admin_task(on)
+}
+
+/// [`set_admin_task`], through the administrator prompt when this process is not elevated (it
+/// runs this exe again as `--admin-task-on` / `--admin-task-off`, hidden, and waits for it).
+pub fn set_admin_task_as_admin(on: bool) -> io::Result<()> {
+    if imp::is_elevated() {
+        return set_admin_task(on);
+    }
+    match imp::run_self_elevated(if on { "--admin-task-on" } else { "--admin-task-off" })? {
+        0 => Ok(()),
+        code => Err(io::Error::other(format!("the elevated helper failed (exit code {code})"))),
+    }
+}
+
+/// Starts this exe elevated through its task, with no prompt. The new instance gets
+/// `--from-task` and nothing else on its command line. An error: there is no such task.
+pub fn run_admin_task() -> io::Result<()> {
+    imp::run_admin_task()
+}
+
+/// The task's name: a folder of its own in Task Scheduler, and a hash of the exe's path, so a
+/// moved or second copy never starts another copy's exe.
+pub fn admin_task_name(exe: &str) -> String {
+    // FNV-1a: stable across builds and Rust versions (unlike `DefaultHasher`).
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in exe.to_lowercase().bytes() {
+        h = (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3);
+    }
+    format!(r"oxidows\Task Manager as administrator {:08x}", h as u32)
+}
+
+/// The task definition (Task Scheduler XML): start `exe --from-task` as `user`, in their
+/// session, with their full token. No triggers (it only runs on request), no time limit (the
+/// default stops a task after 72 hours) and normal priority (the default, 7, is below normal).
+pub fn admin_task_xml(exe: &str, user: &str) -> String {
+    let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
+    let dir = exe.rsplit_once(['\\', '/']).map(|(d, _)| d).unwrap_or_default();
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Author>oxidows</Author>
+    <Description>Starts Task Manager (oxidows) as administrator without a UAC prompt. Made by its Settings page (Run as administrator); choosing another option there removes it.</Description>
+  </RegistrationInfo>
+  <Principals>
+    <Principal id="Author">
+      <UserId>{user}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>Parallel</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>4</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>"{exe}"</Command>
+      <Arguments>--from-task</Arguments>
+      <WorkingDirectory>{dir}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+"#,
+        user = esc(user),
+        exe = esc(exe),
+        dir = esc(dir),
+    )
 }
 
 pub fn affinity(pid: u32) -> io::Result<(u64, u64)> {
@@ -389,7 +560,36 @@ pub fn open_file_location(path: &str) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::split_command;
+    use super::{TaskmgrHandler, admin_task_name, admin_task_xml, classify_debugger, split_command};
+
+    #[test]
+    fn admin_task_per_exe() {
+        let a = admin_task_name(r"C:\Users\A\AppData\Local\Programs\oxidows\oxi-taskmgr.exe");
+        assert!(a.starts_with(r"oxidows\Task Manager as administrator "), "{a}");
+        // Windows paths are case-insensitive; another folder is another task.
+        assert_eq!(a, admin_task_name(r"c:\users\a\appdata\local\programs\oxidows\OXI-TASKMGR.EXE"));
+        assert_ne!(a, admin_task_name(r"D:\Tools\oxi-taskmgr.exe"));
+        let x = admin_task_xml(r"D:\R&D <x>\oxi-taskmgr.exe", r"PC\Phuoc");
+        assert!(x.contains(r#"<Command>"D:\R&amp;D &lt;x&gt;\oxi-taskmgr.exe"</Command>"#), "{x}");
+        assert!(x.contains(r"<WorkingDirectory>D:\R&amp;D &lt;x&gt;</WorkingDirectory>"), "{x}");
+        assert!(x.contains(r"<UserId>PC\Phuoc</UserId>") && x.contains("<RunLevel>HighestAvailable</RunLevel>"));
+    }
+
+    #[test]
+    fn classifies_debugger() {
+        let me = r"C:\Tools\oxi-taskmgr.exe";
+        assert_eq!(classify_debugger(None, me), TaskmgrHandler::BuiltIn);
+        assert_eq!(classify_debugger(Some("  "), me), TaskmgrHandler::BuiltIn);
+        assert_eq!(classify_debugger(Some(r#""c:\tools\OXI-TASKMGR.exe""#), me), TaskmgrHandler::ThisExe);
+        assert_eq!(
+            classify_debugger(Some(r#""D:\old\oxi-taskmgr.exe""#), me),
+            TaskmgrHandler::OtherCopy(r"D:\old\oxi-taskmgr.exe".into())
+        );
+        assert_eq!(
+            classify_debugger(Some(r#""C:\Sys\procexp64.exe""#), me),
+            TaskmgrHandler::OtherTool(r"C:\Sys\procexp64.exe".into())
+        );
+    }
 
     #[test]
     fn splits_commands() {

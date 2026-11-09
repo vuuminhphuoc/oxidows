@@ -6,8 +6,10 @@ use std::cmp::Ordering;
 use egui::{RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 use taskmgr_core::{ProcessRow, Snapshot, format_bits_per_sec, format_bytes, priority_label};
+use ui_common::{SORT_HEADER_HEIGHT, SortBy, sort_header};
 
 use crate::Status;
+use crate::icons::Icons;
 use crate::processes::{NET_HINT, end_task, process_menu};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -204,7 +206,7 @@ impl Col {
     }
 
     /// Numbers read best biggest first; text A to Z.
-    fn descending_first(self) -> bool {
+    pub fn descending_first(self) -> bool {
         matches!(
             self,
             Col::Cpu
@@ -269,10 +271,13 @@ impl Col {
         }
     }
 
-    fn cell(self, ui: &mut Ui, p: &ProcessRow, net_on: bool) {
+    fn cell(self, ui: &mut Ui, p: &ProcessRow, net_on: bool, icons: &Icons) {
         let dash = |s: &str| if s.is_empty() { "-".to_string() } else { s.to_string() };
         let text = match self {
-            Col::Name => p.name.clone(),
+            Col::Name => {
+                icons.show(ui, p);
+                p.name.clone()
+            }
             Col::Pid => p.pid.to_string(),
             Col::Status => (if p.suspended {
                 "Suspended"
@@ -354,24 +359,24 @@ pub fn columns_text(cols: &[Col]) -> String {
 
 pub struct State {
     filter: String,
-    sort: Col,
-    descending: bool,
+    pub sort: SortBy<Col>,
     selected: Option<(u32, String)>,
     scroll_to: Option<u32>,
     status: Status,
+    icons: Icons,
     pub columns: Vec<Col>,
     picking: bool,
 }
 
 impl State {
-    pub fn new(status: Status, columns: Vec<Col>) -> Self {
+    pub fn new(status: Status, icons: Icons, columns: Vec<Col>, sort: Option<SortBy<Col>>) -> Self {
         Self {
             filter: String::new(),
-            sort: Col::Name,
-            descending: false,
+            sort: sort.unwrap_or(SortBy::new(Col::Name, false)),
             selected: None,
             scroll_to: None,
             status,
+            icons,
             columns,
             picking: false,
         }
@@ -419,11 +424,7 @@ impl State {
             })
             .collect();
         let sort = self.sort;
-        view.sort_by(|a, b| {
-            let o = sort.cmp(a, b);
-            let o = if self.descending { o.reverse() } else { o };
-            o.then(a.pid.cmp(&b.pid))
-        });
+        view.sort_by(|a, b| sort.apply(sort.key.cmp(a, b)).then(a.pid.cmp(&b.pid)));
 
         let net_on = snap.system.per_process_net;
         let cols = self.columns.clone();
@@ -444,11 +445,10 @@ impl State {
             table = table.column(if i + 1 == cols.len() { Column::remainder().clip(true) } else { c.column() });
         }
         table
-            .header(row_h, |mut h| {
+            .header(SORT_HEADER_HEIGHT, |mut h| {
                 for &c in &cols {
                     h.col(|ui| {
-                        let arrow = if self.sort == c { if self.descending { " v" } else { " ^" } } else { "" };
-                        let resp = ui.button(RichText::new(format!("{}{arrow}", c.header())).strong());
+                        let resp = sort_header(ui, c.header(), self.sort.arrow(c));
                         if resp.clicked() {
                             clicked = Some(c);
                         }
@@ -470,7 +470,7 @@ impl State {
                     let p = view[row.index()];
                     row.set_selected(self.selected.as_ref().is_some_and(|(pid, _)| *pid == p.pid));
                     for &c in &cols {
-                        row.col(|ui| c.cell(ui, p, net_on));
+                        row.col(|ui| c.cell(ui, p, net_on, &self.icons));
                     }
                     let resp = row.response();
                     if resp.clicked() {
@@ -480,15 +480,10 @@ impl State {
                 });
             });
         if let Some(k) = clicked {
-            if self.sort == k {
-                self.descending = !self.descending;
-            } else {
-                self.sort = k;
-                self.descending = k.descending_first();
-            }
+            self.sort.click(k, k.descending_first());
         }
-        if !self.columns.contains(&self.sort) {
-            self.sort = Col::Name;
+        if !self.columns.contains(&self.sort.key) {
+            self.sort = SortBy::new(Col::Name, false);
         }
         self.columns != before
     }

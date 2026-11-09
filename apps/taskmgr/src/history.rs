@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use egui::{RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 use taskmgr_core::{AppHistory, AppUsage, format_bytes, format_ole_date};
+use ui_common::{SORT_HEADER_HEIGHT, SortBy, cmp_text, sort_header};
 
 use crate::details::format_cpu_time;
 
@@ -20,14 +21,33 @@ enum Load {
     Failed(String),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Sort {
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Sort {
     Name,
     Cpu,
     Network,
     Upload,
     Download,
     Metered,
+}
+
+impl Sort {
+    const ALL: [Sort; 6] = [Sort::Name, Sort::Cpu, Sort::Network, Sort::Metered, Sort::Upload, Sort::Download];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Sort::Name => "name",
+            Sort::Cpu => "cpu",
+            Sort::Network => "network",
+            Sort::Upload => "upload",
+            Sort::Download => "download",
+            Sort::Metered => "metered",
+        }
+    }
+
+    pub fn from_key(k: &str) -> Option<Sort> {
+        Sort::ALL.into_iter().find(|s| s.key() == k)
+    }
 }
 
 #[derive(Default, Clone)]
@@ -87,20 +107,18 @@ pub struct State {
     load: Arc<Mutex<Load>>,
     ctx: egui::Context,
     filter: String,
-    sort: Sort,
-    descending: bool,
+    pub sort: SortBy<Sort>,
     baseline: Option<Baseline>,
     message: Option<String>,
 }
 
 impl State {
-    pub fn new(ctx: egui::Context) -> Self {
+    pub fn new(ctx: egui::Context, sort: Option<SortBy<Sort>>) -> Self {
         Self {
             load: Arc::new(Mutex::new(Load::Idle)),
             ctx,
             filter: String::new(),
-            sort: Sort::Cpu,
-            descending: true,
+            sort: sort.unwrap_or(SortBy::new(Sort::Cpu, true)),
             baseline: Baseline::load(),
             message: None,
         }
@@ -212,7 +230,7 @@ impl State {
                     .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                     .column(Column::remainder().at_least(220.0).clip(true))
                     .columns(Column::exact(110.0), 5)
-                    .header(22.0, |mut hd| {
+                    .header(SORT_HEADER_HEIGHT, |mut hd| {
                         for (k, t) in [
                             (Sort::Name, "Name"),
                             (Sort::Cpu, "CPU time"),
@@ -222,8 +240,7 @@ impl State {
                             (Sort::Download, "Downloads"),
                         ] {
                             hd.col(|ui| {
-                                let arrow = if self.sort == k { if self.descending { " v" } else { " ^" } } else { "" };
-                                if ui.button(RichText::new(format!("{t}{arrow}")).strong()).clicked() {
+                                if sort_header(ui, t, self.sort.arrow(k)).clicked() {
                                     clicked = Some(k);
                                 }
                             });
@@ -253,12 +270,7 @@ impl State {
                         });
                     });
                 if let Some(k) = clicked {
-                    if self.sort == k {
-                        self.descending = !self.descending;
-                    } else {
-                        self.sort = k;
-                        self.descending = k != Sort::Name;
-                    }
+                    self.sort.click(k, k != Sort::Name);
                 }
             }
         }
@@ -308,15 +320,15 @@ impl State {
             .filter(|a| f.is_empty() || a.name.to_lowercase().contains(&f))
             .collect();
         v.sort_by(|a, b| {
-            let o = match self.sort {
-                Sort::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+            let o = match self.sort.key {
+                Sort::Name => cmp_text(&a.name, &b.name),
                 Sort::Cpu => a.cpu_cycles.cmp(&b.cpu_cycles),
                 Sort::Network => (a.bytes_sent + a.bytes_received).cmp(&(b.bytes_sent + b.bytes_received)),
                 Sort::Upload => a.bytes_sent.cmp(&b.bytes_sent),
                 Sort::Download => a.bytes_received.cmp(&b.bytes_received),
                 Sort::Metered => a.metered_bytes.cmp(&b.metered_bytes),
             };
-            if self.descending { o.reverse() } else { o }
+            self.sort.apply(o).then_with(|| cmp_text(&a.name, &b.name))
         });
         v
     }

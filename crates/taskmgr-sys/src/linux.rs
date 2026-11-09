@@ -296,6 +296,24 @@ pub fn taskmgr_replacement() -> Option<String> {
 pub fn set_taskmgr_replacement(_exe: Option<&str>) -> io::Result<()> {
     unsupported()
 }
+pub fn single_instance(_wait_for_previous: bool) -> bool {
+    true
+}
+pub fn start_elevated(_params: &str) -> io::Result<()> {
+    unsupported()
+}
+pub fn admin_task_exists() -> bool {
+    false
+}
+pub fn set_admin_task(_on: bool) -> io::Result<()> {
+    unsupported()
+}
+pub fn run_admin_task() -> io::Result<()> {
+    unsupported()
+}
+pub fn run_self_elevated(_args: &str) -> io::Result<u32> {
+    unsupported()
+}
 pub fn is_running(name: &str) -> bool {
     std::fs::read_dir("/proc")
         .into_iter()

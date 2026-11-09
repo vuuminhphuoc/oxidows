@@ -6,6 +6,7 @@ mod details;
 mod fps;
 mod graph;
 mod history;
+mod icons;
 mod performance;
 mod processes;
 mod services;
@@ -20,12 +21,32 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use taskmgr_core::{Extras, Sampler, Snapshot};
+use ui_common::SortBy;
+
+/// The sort of every table, in tab order.
+type Sorts = (
+    SortBy<taskmgr_core::SortKey>,
+    SortBy<history::Sort>,
+    SortBy<startup::Col>,
+    SortBy<users::Col>,
+    SortBy<details::Col>,
+    SortBy<services::Col>,
+);
 
 /// Shared with the sampler thread. 0 = paused.
 static INTERVAL_MS: AtomicU64 = AtomicU64::new(1000);
 /// The sampler reads services / sessions only while their tab is open.
 static WANT_SERVICES: AtomicBool = AtomicBool::new(false);
 static WANT_SESSIONS: AtomicBool = AtomicBool::new(false);
+/// Started by the run-as-administrator task: the window must take the foreground itself.
+static FOCUS_ON_START: AtomicBool = AtomicBool::new(false);
+/// The command line of the start that handed over to the task (it can't pass one on).
+static HANDED_ARGS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+/// This start's command line, after the program name: the one handed over, if any.
+fn launch_args() -> Vec<String> {
+    HANDED_ARGS.get().cloned().unwrap_or_else(|| std::env::args().skip(1).collect())
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Tab {
@@ -88,8 +109,42 @@ impl Tab {
         std::env::var("OXI_TASKMGR_TAB")
             .ok()
             .and_then(|v| Tab::find(&v))
+            .or_else(|| tab_from_args(launch_args()))
             .or_else(|| Tab::find(default_tab))
             .unwrap_or(Tab::Processes)
+    }
+}
+
+/// The page Windows asks for. Started in place of taskmgr.exe (IFEO), we get its command line:
+/// `oxi-taskmgr.exe C:\Windows\system32\taskmgr.exe /0 /startup` from Settings > Apps >
+/// Startup, for example.
+fn tab_from_args(args: impl IntoIterator<Item = String>) -> Option<Tab> {
+    args.into_iter().find_map(|a| match a.to_ascii_lowercase().as_str() {
+        "/startup" | "-startup" => Some(Tab::Startup),
+        _ => None,
+    })
+}
+
+/// Default-app section texts (Settings > Default app).
+pub const DEFAULT_APP: ui_common::default_app::Texts = ui_common::default_app::Texts {
+    what: "Ctrl+Shift+Esc",
+    builtin: "Windows Task Manager",
+    covers: "Covers Ctrl+Shift+Esc, Ctrl+Alt+Del > Task Manager, the taskbar's right-click menu, and every \
+             program that starts taskmgr.exe.",
+    needs_admin: true,
+    exe: "oxi-taskmgr.exe",
+    now_default: "Ctrl+Shift+Esc now opens oxidows",
+    now_builtin: "Ctrl+Shift+Esc opens Windows Task Manager again",
+    failed: "Could not change the default Task Manager",
+};
+
+pub fn taskmgr_handler() -> ui_common::default_app::Handler {
+    use ui_common::default_app::Handler;
+    match taskmgr_sys::taskmgr_handler() {
+        taskmgr_sys::TaskmgrHandler::BuiltIn => Handler::BuiltIn,
+        taskmgr_sys::TaskmgrHandler::ThisExe => Handler::ThisApp,
+        taskmgr_sys::TaskmgrHandler::OtherCopy(p) => Handler::OtherCopy(p),
+        taskmgr_sys::TaskmgrHandler::OtherTool(p) => Handler::Other(p),
     }
 }
 
@@ -179,9 +234,13 @@ struct App {
     services: services::State,
     startup: startup::State,
     users: users::State,
+    /// Program icons, shared by Processes, Details and Users.
+    icons: icons::Icons,
     settings: settings::Settings,
+    /// The About section at the bottom of Settings, with "Check for updates".
+    updater: ui_common::Updater,
     /// Whether Ctrl+Shift+Esc opens this exe; None where that cannot be changed.
-    replaces_taskmgr: Option<bool>,
+    default_app: ui_common::default_app::DefaultApp,
     tray: bool,
     /// Navigation pane expanded (icons and labels) or collapsed to icons.
     nav_open: bool,
@@ -335,21 +394,50 @@ impl App {
         let (tx, rx) = channel();
         spawn_sampler(cc.egui_ctx.clone(), tx);
         let status = Status::default();
+        let icons = icons::Icons::new(&cc.egui_ctx);
         Self {
             rx,
             snapshot: Arc::default(),
             error: None,
             tab,
             elevated: taskmgr_sys::is_elevated(),
-            processes: processes::State::new(status.clone(), settings.group_by_type, settings.values_pct),
-            performance: performance::State::default(),
-            history: history::State::new(cc.egui_ctx.clone()),
-            details: details::State::new(status.clone(), details::parse_columns(&settings.details_columns)),
-            services: services::State::new(status.clone(), cc.egui_ctx.clone()),
-            startup: startup::State::new(status.clone()),
-            users: users::State::new(status.clone()),
+            processes: processes::State::new(
+                status.clone(),
+                icons.clone(),
+                settings.group_by_type,
+                settings.values_pct,
+                SortBy::parse(&settings.sort_processes, taskmgr_core::SortKey::from_key),
+            ),
+            performance: performance::State::with_cpu_view(settings.cpu_logical, settings.cpu_kernel),
+            history: history::State::new(
+                cc.egui_ctx.clone(),
+                SortBy::parse(&settings.sort_history, history::Sort::from_key),
+            ),
+            details: details::State::new(
+                status.clone(),
+                icons.clone(),
+                details::parse_columns(&settings.details_columns),
+                SortBy::parse(&settings.sort_details, details::Col::from_key),
+            ),
+            services: services::State::new(
+                status.clone(),
+                cc.egui_ctx.clone(),
+                SortBy::parse(&settings.sort_services, services::Col::from_key),
+            ),
+            startup: startup::State::new(status.clone(), SortBy::parse(&settings.sort_startup, startup::Col::from_key)),
+            users: users::State::new(
+                status.clone(),
+                icons.clone(),
+                SortBy::parse(&settings.sort_users, users::Col::from_key),
+            ),
+            icons,
             settings,
-            replaces_taskmgr: cfg!(windows).then(taskmgr_sys::replaces_taskmgr),
+            updater: ui_common::Updater::new(ui_common::AppInfo {
+                name: "Task Manager",
+                asset: "oxi-taskmgr.exe",
+                version: env!("CARGO_PKG_VERSION"),
+            }),
+            default_app: ui_common::default_app::DefaultApp::new(cfg!(windows).then(taskmgr_handler)),
             tray: false,
             nav_open: true,
             status,
@@ -359,6 +447,18 @@ impl App {
             frame_cpu: 0.0,
             frames_since: Instant::now(),
         }
+    }
+
+    /// Every table's sort, to notice a header click (each one is saved, as Task Manager does).
+    fn sorts(&self) -> Sorts {
+        (
+            self.processes.sort,
+            self.history.sort,
+            self.startup.sort,
+            self.users.sort,
+            self.details.sort,
+            self.services.sort,
+        )
     }
 
     fn save_settings(&self) {
@@ -613,6 +713,12 @@ impl eframe::App for App {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.drain();
+        self.icons.poll(ui.ctx());
+        // Started by the run-as-administrator task: take the foreground once the window shows
+        // (the start that handed over allowed it).
+        if ui.ctx().cumulative_pass_nr() >= 2 && FOCUS_ON_START.swap(false, Ordering::Relaxed) {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
         if !self.tray
             && let Ok(h) = raw_window_handle::HasWindowHandle::window_handle(frame)
         {
@@ -631,11 +737,14 @@ impl eframe::App for App {
             self.frames += 1;
             self.frame_cpu += frame.info().cpu_usage.unwrap_or(0.0);
             if self.frames_since.elapsed() >= Duration::from_secs(5) {
+                let (icons_ready, icons_asked) = self.icons.counts();
                 eprintln!(
-                    "ui: {} frames in {:.1} s, {:.1} ms app time each",
+                    "ui: {} frames in {:.1} s, {:.1} ms app time each; icons {icons_ready} of {icons_asked} loaded; \
+                     per-process network {}",
                     self.frames,
                     self.frames_since.elapsed().as_secs_f64(),
-                    self.frame_cpu * 1000.0 / self.frames as f32
+                    self.frame_cpu * 1000.0 / self.frames as f32,
+                    if self.snapshot.system.per_process_net { "on" } else { "off" },
                 );
                 (self.frames, self.frame_cpu, self.frames_since) = (0, 0.0, Instant::now());
             }
@@ -694,9 +803,18 @@ impl eframe::App for App {
         }
 
         let content = ui_common::content_frame(ui.style());
+        let sorts = self.sorts();
         egui::CentralPanel::default().frame(content).show(ui, |ui| match self.tab {
             Tab::Processes => self.processes.show(ui, &snap),
-            Tab::Performance => self.performance.show(ui, &snap),
+            Tab::Performance => {
+                self.performance.show(ui, &snap);
+                let p = &self.performance;
+                if (p.per_core, p.kernel) != (self.settings.cpu_logical, self.settings.cpu_kernel) {
+                    self.settings.cpu_logical = p.per_core;
+                    self.settings.cpu_kernel = p.kernel;
+                    self.save_settings();
+                }
+            }
             Tab::AppHistory => self.history.show(ui, self.elevated),
             Tab::Startup => self.startup.show(ui, &snap),
             Tab::Users => self.users.show(ui, &snap),
@@ -708,27 +826,93 @@ impl eframe::App for App {
             }
             Tab::Services => self.services.show(ui, &snap),
             Tab::Settings => {
-                let tabs: Vec<&str> = Tab::ALL.iter().filter(|t| **t != Tab::Settings).map(|t| t.label()).collect();
-                let before = self.settings.clone();
-                if settings::show(ui, &mut self.settings, &tabs, &self.status, &mut self.replaces_taskmgr) {
-                    let s = &self.settings;
-                    if s.theme != before.theme {
-                        s.apply_theme(ui.ctx());
+                egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+                    let tabs: Vec<&str> = Tab::ALL.iter().filter(|t| **t != Tab::Settings).map(|t| t.label()).collect();
+                    let before = self.settings.clone();
+                    if settings::show(ui, &mut self.settings, &tabs, &self.status, &mut self.default_app) {
+                        let s = &self.settings;
+                        if s.theme != before.theme {
+                            s.apply_theme(ui.ctx());
+                        }
+                        if s.always_on_top != before.always_on_top {
+                            s.apply_on_top(ui.ctx());
+                        }
+                        INTERVAL_MS.store(s.interval_ms, Ordering::Relaxed);
+                        self.processes.set_group(s.group_by_type);
+                        self.processes.percent = s.values_pct;
+                        // "Reset" also clears the Performance checkboxes.
+                        self.performance.per_core = s.cpu_logical;
+                        self.performance.kernel = s.cpu_kernel;
+                        self.save_settings();
                     }
-                    if s.always_on_top != before.always_on_top {
-                        s.apply_on_top(ui.ctx());
-                    }
-                    INTERVAL_MS.store(s.interval_ms, Ordering::Relaxed);
-                    self.processes.set_group(s.group_by_type);
-                    self.processes.percent = s.values_pct;
-                    self.save_settings();
-                }
+                    // As in Windows 11's Task Manager, About closes the Settings page.
+                    ui.add_space(20.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new("About").strong().size(16.0));
+                    self.updater.ui(ui);
+                });
             }
         });
+        if self.sorts() != sorts {
+            let s = &mut self.settings;
+            s.sort_processes = self.processes.sort.to_text(taskmgr_core::SortKey::key);
+            s.sort_history = self.history.sort.to_text(history::Sort::key);
+            s.sort_startup = self.startup.sort.to_text(startup::Col::key);
+            s.sort_users = self.users.sort.to_text(users::Col::key);
+            s.sort_details = self.details.sort.to_text(details::Col::key);
+            s.sort_services = self.services.sort.to_text(services::Col::key);
+            self.save_settings();
+        }
     }
 }
 
 fn main() -> eframe::Result {
+    // After an in-app update: wait for the replaced exe to exit, clear its leftovers.
+    ui_common::update::startup();
+    // `--set-default` / `--restore-default`: change Ctrl+Shift+Esc without opening the window
+    // (the settings page runs this elevated, and it is the way back if the window won't open).
+    if let Some((cmd, quiet)) = ui_common::default_app::command_from_args(std::env::args().skip(1)) {
+        let code = ui_common::default_app::run_command(
+            "Task Manager (oxidows)",
+            cmd,
+            quiet,
+            taskmgr_sys::set_replaces_taskmgr_as_admin,
+            &DEFAULT_APP,
+        );
+        std::process::exit(code);
+    }
+    // Helpers the Settings page runs elevated to add or remove the run-as-administrator task.
+    if let Some(on) = std::env::args().skip(1).find_map(|a| match a.as_str() {
+        "--admin-task-on" => Some(true),
+        "--admin-task-off" => Some(false),
+        _ => None,
+    }) {
+        std::process::exit(match taskmgr_sys::set_admin_task(on) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        });
+    }
+    // One Task Manager at a time, like Windows': a second start brings the open window forward.
+    let restarted = std::env::args().any(|a| a == "--restarted");
+    let from_task = std::env::args().any(|a| a == "--from-task");
+    if !taskmgr_sys::single_instance(restarted || from_task) {
+        return Ok(());
+    }
+    if from_task {
+        take_handed_args();
+        FOCUS_ON_START.store(true, Ordering::Relaxed);
+    } else if !restarted && !taskmgr_sys::is_elevated() {
+        start_as_admin_if_set();
+    }
+    if std::env::args().any(|a| a == "--fix-admin-task") && taskmgr_sys::is_elevated() {
+        // The task was missing (removed, or this exe moved) and the UAC prompt stood in for it:
+        // put it back, so the next start needs no prompt again.
+        thread::spawn(|| taskmgr_sys::set_admin_task(true));
+    }
     // OpenGL where there is a GPU driver, wgpu (WARP) otherwise; see `ui_common::choose_renderer`.
     let (renderer, auto) = ui_common::choose_renderer();
     let r = run(renderer);
@@ -742,6 +926,51 @@ fn main() -> eframe::Result {
         }
     }
     r
+}
+
+/// Settings > Run as administrator: hands this start over to an elevated instance (which waits
+/// for this one to exit) and exits. Goes on, not elevated, if that is off or was refused.
+fn start_as_admin_if_set() {
+    let mode = settings::Settings::load().run_as_admin;
+    if mode == settings::AdminMode::Off {
+        return;
+    }
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if mode == settings::AdminMode::Task {
+        let handoff = settings::handoff_path();
+        if let Some(p) = &handoff {
+            let _ = std::fs::write(p, args.join("\n"));
+        }
+        if taskmgr_sys::run_admin_task().is_ok() {
+            std::process::exit(0);
+        }
+        if let Some(p) = &handoff {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+    let quoted = args.iter().map(|a| if a.contains(' ') { format!("\"{a}\"") } else { a.clone() });
+    let mut params = vec!["--restarted".to_string()];
+    if mode == settings::AdminMode::Task {
+        params.push("--fix-admin-task".into());
+    }
+    params.extend(quoted);
+    if taskmgr_sys::start_elevated(&params.join(" ")).is_ok() {
+        std::process::exit(0);
+    }
+}
+
+/// Reads (and removes) the command line [`start_as_admin_if_set`] left for the task's instance.
+/// Only a fresh one: an old file is from a start whose task never ran.
+fn take_handed_args() {
+    let Some(p) = settings::handoff_path() else { return };
+    let fresh = std::fs::metadata(&p)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age < Duration::from_secs(30));
+    let text = if fresh { std::fs::read_to_string(&p).unwrap_or_default() } else { String::new() };
+    let _ = std::fs::remove_file(&p);
+    let _ = HANDED_ARGS.set(text.lines().filter(|l| !l.is_empty()).map(str::to_string).collect());
 }
 
 fn run(renderer: ui_common::Renderer) -> eframe::Result {
@@ -771,4 +1000,16 @@ fn run(renderer: ui_common::Renderer) -> eframe::Result {
         options.wgpu_options.surface.present_mode = mode;
     }
     eframe::run_native("oxi-taskmgr", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn page_from_taskmgr_command_line() {
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(tab_from_args(args(&[r"C:\Windows\system32\taskmgr.exe", "/0", "/startup"])), Some(Tab::Startup));
+        assert_eq!(tab_from_args(args(&[r"C:\Windows\system32\taskmgr.exe"])), None);
+    }
 }
