@@ -88,6 +88,11 @@ pub enum ViewMode {
     Content,
 }
 
+/// Thumbnails and icons are often drawn smaller than they are (a 96 px thumbnail in Medium
+/// icons): mipmaps keep their edges smooth instead of jagged.
+const SMOOTH: egui::TextureOptions =
+    egui::TextureOptions { mipmap_mode: Some(egui::TextureFilter::Linear), ..egui::TextureOptions::LINEAR };
+
 impl ViewMode {
     /// In Explorer's order, with their Ctrl+Shift+number shortcuts.
     pub const ALL: [(ViewMode, &'static str, &'static str); 8] = [
@@ -100,6 +105,21 @@ impl ViewMode {
         (ViewMode::Tiles, "Tiles", "Ctrl+Shift+7"),
         (ViewMode::Content, "Content", "Ctrl+Shift+8"),
     ];
+
+    /// The picture of this layout in the View menu.
+    pub fn icon(self) -> ui_common::ViewIcon {
+        use ui_common::ViewIcon as V;
+        match self {
+            ViewMode::ExtraLarge => V::ExtraLarge,
+            ViewMode::Large => V::Large,
+            ViewMode::Medium => V::Medium,
+            ViewMode::Small => V::Small,
+            ViewMode::List => V::List,
+            ViewMode::Details => V::Details,
+            ViewMode::Tiles => V::Tiles,
+            ViewMode::Content => V::Content,
+        }
+    }
 
     pub fn name(self) -> &'static str {
         match self {
@@ -283,6 +303,10 @@ struct App {
     pub updater: ui_common::Updater,
     /// The Options window (default file manager).
     pub options_open: bool,
+    /// Layout of the icon view drawn last frame (None in Details), for the arrow keys.
+    pub grid_nav: Option<grid::GridNav>,
+    /// Options ▸ Folder views: the button waiting for "Yes" (Apply to all folders, Reset folders).
+    folder_confirm: Option<FolderAction>,
     default_app: ui_common::default_app::DefaultApp,
 }
 
@@ -378,6 +402,8 @@ impl App {
             }),
             // OXI_EXPLORER_OPTIONS=1 opens it at start, for screenshots.
             options_open: std::env::var_os("OXI_EXPLORER_OPTIONS").is_some(),
+            folder_confirm: None,
+            grid_nav: None,
             default_app: ui_common::default_app::DefaultApp::new(cfg!(windows).then(folder_handler)),
         };
         let s = app.persist.settings.clone();
@@ -774,7 +800,7 @@ impl App {
     }
 
     pub fn request_thumbs(&mut self) {
-        let px = grid::thumb_px(self.view_mode);
+        let px = grid::thumb_px(self.view_mode, self.ctx.pixels_per_point());
         if px != self.thumb_px {
             self.thumbs.clear();
             self.thumb_px = px;
@@ -950,7 +976,7 @@ impl App {
                             Some(i) => IconState::Ready(self.ctx.load_texture(
                                 format!("thumb-{}", p.display()),
                                 egui::ColorImage::from_rgba_premultiplied([i.width, i.height], &i.rgba),
-                                egui::TextureOptions::LINEAR,
+                                SMOOTH,
                             )),
                             None => IconState::Failed,
                         };
@@ -976,7 +1002,7 @@ impl App {
                         Some(i) => IconState::Ready(self.ctx.load_texture(
                             format!("icon-{key:?}"),
                             egui::ColorImage::from_rgba_unmultiplied([i.width, i.height], &i.rgba),
-                            egui::TextureOptions::LINEAR,
+                            SMOOTH,
                         )),
                         None => IconState::Failed,
                     };
@@ -1982,7 +2008,29 @@ impl App {
         let mut events = Vec::new();
         ui.input_mut(|i| {
             let shift = i.modifiers.shift;
-            for (key, step) in [(Key::ArrowDown, 1isize), (Key::ArrowUp, -1), (Key::PageDown, 20), (Key::PageUp, -20)] {
+            // In the icon views the arrows follow the grid (Left/Right too); in Details they
+            // move up and down the list.
+            let grid = self.grid_nav.as_ref().filter(|_| self.view_mode != ViewMode::Details);
+            for key in [Key::ArrowLeft, Key::ArrowRight, Key::ArrowUp, Key::ArrowDown] {
+                if !i.key_pressed(key) || n == 0 || i.modifiers.alt {
+                    continue;
+                }
+                let back = matches!(key, Key::ArrowLeft | Key::ArrowUp);
+                let to = match (self.cursor.filter(|&c| c < n), grid) {
+                    // Nothing focused yet: the first item (the last going back).
+                    (None, _) => Some(if back { n - 1 } else { 0 }),
+                    (Some(c), Some(g)) => grid::arrow_step(g, c, key),
+                    (Some(c), None) => match key {
+                        Key::ArrowUp => c.checked_sub(1),
+                        Key::ArrowDown => Some(c + 1).filter(|&p| p < n),
+                        _ => None,
+                    },
+                };
+                if let Some(to) = to {
+                    moved = Some((to, shift));
+                }
+            }
+            for (key, step) in [(Key::PageDown, 20isize), (Key::PageUp, -20)] {
                 if i.key_pressed(key) && n > 0 && !i.modifiers.alt {
                     let c = self.cursor.map_or(if step > 0 { -1 } else { n as isize }, |c| c as isize);
                     moved = Some(((c + step).clamp(0, n as isize - 1) as usize, shift));
@@ -2392,8 +2440,72 @@ fn set_default(on: bool) -> std::io::Result<()> {
     explorer_sys::set_default_file_manager(exe.as_deref())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FolderAction {
+    Apply,
+    Reset,
+}
+
 impl App {
-    /// Options: which program opens folders and Win+E.
+    /// Options ▸ Folder views, as on the View tab of Windows' Folder Options.
+    fn folder_views_ui(&mut self, ui: &mut egui::Ui) {
+        use settings::{FolderKind, folder_key};
+        let kind = FolderKind::of(&folder_key(&self.cur), &self.places);
+        let virtual_place = self.in_virtual_place();
+        ui.label(egui::RichText::new("Folder views").strong());
+        ui.add_space(2.0);
+        ui.label(format!(
+            "Each folder keeps its own view. You can apply the view of this folder (such as Details or \
+             Large icons) to all folders of this type ({}).",
+            kind.name()
+        ));
+        ui.add_space(4.0);
+        match self.folder_confirm {
+            None => {
+                ui.horizontal(|ui| {
+                    let apply = ui.add_enabled(!virtual_place, egui::Button::new("Apply to all folders"));
+                    let apply = if virtual_place { apply.on_disabled_hover_text("Open a folder first") } else { apply };
+                    if apply.clicked() {
+                        self.folder_confirm = Some(FolderAction::Apply);
+                    }
+                    if ui.button("Reset folders").clicked() {
+                        self.folder_confirm = Some(FolderAction::Reset);
+                    }
+                });
+            }
+            Some(action) => {
+                ui.label(match action {
+                    FolderAction::Apply => {
+                        format!("Make all {} folders match this folder's view settings?", kind.name())
+                    }
+                    FolderAction::Reset => "Reset all folders to their default view settings?".to_string(),
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("Yes").clicked() {
+                        let view = self.folder_view();
+                        let s = &mut self.persist.settings;
+                        match action {
+                            FolderAction::Apply => {
+                                s.apply_to_kind(kind, view, &self.places);
+                                self.status = Some(format!("All {} folders now use this view", kind.name()));
+                            }
+                            FolderAction::Reset => {
+                                s.reset_folders();
+                                self.reload_folder_view();
+                                self.status = Some("Folder views reset".into());
+                            }
+                        }
+                        self.folder_confirm = None;
+                    }
+                    if ui.button("No").clicked() {
+                        self.folder_confirm = None;
+                    }
+                });
+            }
+        }
+    }
+
+    /// Options: which program opens folders and Win+E, and folder views.
     fn options(&mut self, ctx: &egui::Context) {
         if !self.options_open {
             return;
@@ -2404,11 +2516,18 @@ impl App {
             ui.label(egui::RichText::new("Default file manager").strong());
             ui.add_space(4.0);
             msg = self.default_app.show(ui, &DEFAULT_APP, folder_handler, set_default);
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(4.0);
+            self.folder_views_ui(ui);
         });
         if msg.is_some() {
             self.status = msg;
         }
         self.options_open = open;
+        if !open {
+            self.folder_confirm = None;
+        }
     }
 }
 

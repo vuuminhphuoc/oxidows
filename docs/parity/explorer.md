@@ -43,7 +43,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Resize columns | ✅ | |
 | More columns (Date created, Attributes), choose columns | ✅ | right-click a column header |
 | Other columns (Owner, Dimensions, Authors, …) | ✅ | Authors, Title, Tags, Rating, Dimensions, Length, Date taken, Owner from the property system; not sortable yet |
-| Group by (name, date modified, type, size) | ✅ | Details and icon views (not List) |
+| Group by (name, date modified, type, size) | ✅ | Details and icon views (not List); remembered per folder |
 | Extra large / Large / Medium / Small icons, List, Details, Tiles (Ctrl+Shift+1…7) | ✅ | |
 | Content view (Ctrl+Shift+8) | ✅ | name + type, date modified + size, thumbnails |
 | Thumbnails for images and videos | ✅ | the shell's thumbnail cache (`IShellItemImageFactory`), Large icons view |
@@ -62,7 +62,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Feature | Status | Notes |
 | --- | --- | --- |
 | Click, Ctrl+click, Shift+click, Ctrl+A, Esc | ✅ | |
-| Arrows, Home/End, PageUp/PageDown, Shift to extend | ✅ | |
+| Arrows, Home/End, PageUp/PageDown, Shift to extend | ✅ | in the icon views Left/Right move along the row and Up/Down to the row above/below (across groups); in List Left/Right move a column |
 | Type-ahead to jump to a name | ✅ | |
 | Rubber-band (drag rectangle) selection | ✅ | every view; in Details it starts outside the name, as in Explorer, and scrolls
 | Item check boxes | ✅ | shown on hover or when selected; every view |
@@ -121,7 +121,10 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Folder refreshes itself when others change it | ✅ | `FindFirstChangeNotificationW` |
 | Large folders stay responsive | ✅ | streamed listing, virtual table |
 | Long paths (> 260 chars) | ✅ | `\\?\` prefix |
-| Remembers window size, view and sort per folder | ✅ | `%APPDATA%\oxidows\explorer.ini` |
+| Remembers window size, view and sort per folder | ✅ | `%APPDATA%\oxidows\explorer.ini`; a change applies to that folder only |
+| Folder type defaults (Pictures/Videos large icons, Downloads grouped by date) | ✅ | by known folder and its subfolders |
+| Folder Options: Apply to Folders / Reset Folders | ✅ | … ▸ Options ▸ Folder views |
+| Menu icons and shortcut keys in menu rows | ✅ | View rows show a picture of each layout; Show, Group by, Theme submenus |
 | Dark / light theme follows Windows | ✅ | System / Light / Dark in the … menu |
 | Replace Win+E / default folder handler | ✅ | … > Options > Set as default; per user (HKCU) folders, drives and Win+E; restore gives back File Explorer or the file manager that had Win+E, removes every key; `--restore-default` |
 

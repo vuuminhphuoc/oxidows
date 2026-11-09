@@ -56,6 +56,22 @@ icons! {
     Message = '\u{E8BD}', "✉";
     Phone = '\u{E8EA}', "📱";
     Wifi = '\u{E701}', "📶";
+    CheckMark = '\u{E73E}', "✔";
+    NewFolder = '\u{E8F4}', "📁";
+    Undo = '\u{E7A7}', "↶";
+    Redo = '\u{E7A6}', "↷";
+    Restore = '\u{E777}', "↺";
+    Paste = '\u{E77F}', "📋";
+    SelectAll = '\u{E8B3}', "▣";
+    SelectNone = '\u{E8E6}', "□";
+    InvertSelection = '\u{E8B4}', "◩";
+    Unpin = '\u{E77A}', "📌";
+    Terminal = '\u{E756}', "⌨";
+    Properties = '\u{E90F}', "🔧";
+    GroupBy = '\u{F168}', "☰";
+    Theme = '\u{E790}', "🎨";
+    Show = '\u{E7B3}', "👁";
+    DisconnectDrive = '\u{E8CD}', "⏏";
     // Places and files.
     Home = '\u{E80F}', "🏠";
     Gallery = '\u{E8B9}', "🖼";
