@@ -202,7 +202,35 @@ impl State {
         let totals = ColumnTotals::of(&snap.system);
         let mut toggle = None;
         let mut clicked = None;
-        TableBuilder::new(ui)
+        let selectable: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, line)| match line {
+                Line::User(..) => Some(idx),
+                _ => None,
+            })
+            .collect();
+        let cursor = self.selected.and_then(|id| {
+            selectable.iter().position(|&line_idx| match lines[line_idx] {
+                Line::User(i) => users[i].u.session_id == id,
+                _ => false,
+            })
+        });
+        let mut scroll_to = None;
+        if let Some(new_k) = crate::keys::list_keys(ui, selectable.len(), cursor, |k| match lines[selectable[k]] {
+            Line::User(i) => {
+                let name = &users[i].u.user;
+                if name.is_empty() { "(system)".to_string() } else { name.clone() }
+            }
+            _ => String::new(),
+        }) {
+            let line_idx = selectable[new_k];
+            if let Line::User(i) = lines[line_idx] {
+                self.selected = Some(users[i].u.session_id);
+            }
+            scroll_to = Some(line_idx);
+        }
+        let mut table = TableBuilder::new(ui)
             .resizable(true)
             .sense(egui::Sense::click())
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
@@ -213,7 +241,11 @@ impl State {
             .column(Column::exact(70.0))
             .column(Column::exact(130.0))
             .column(Column::exact(90.0))
-            .column(Column::remainder())
+            .column(Column::remainder());
+        if let Some(idx) = scroll_to {
+            table = table.scroll_to_row(idx, Some(egui::Align::Center));
+        }
+        table
             .header(SORT_HEADER_TOTAL_HEIGHT, |mut h| {
                 for c in Col::ALL {
                     let total = match c {

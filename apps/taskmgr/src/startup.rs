@@ -221,7 +221,13 @@ impl State {
         if items.is_empty() {
             ui.label("No startup apps found.");
         }
-        TableBuilder::new(ui)
+        let cursor = self.selected.and_then(|sel| view.iter().position(|&i| i == sel));
+        let mut scroll_to = None;
+        if let Some(new_k) = crate::keys::list_keys(ui, view.len(), cursor, |k| items[view[k]].name.clone()) {
+            self.selected = Some(view[new_k]);
+            scroll_to = Some(new_k);
+        }
+        let mut table = TableBuilder::new(ui)
             .resizable(true)
             .sense(egui::Sense::click())
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
@@ -230,7 +236,11 @@ impl State {
             .column(Column::exact(80.0))
             .columns(Column::exact(100.0), 3)
             .column(Column::initial(300.0).clip(true))
-            .column(Column::remainder().clip(true))
+            .column(Column::remainder().clip(true));
+        if let Some(pos) = scroll_to {
+            table = table.scroll_to_row(pos, Some(egui::Align::Center));
+        }
+        table
             .header(SORT_HEADER_HEIGHT, |mut h| {
                 for c in Col::ALL {
                     h.col(|ui| {
