@@ -115,9 +115,17 @@ pub(crate) fn com_init() {
     });
 }
 
+pub(crate) fn entry_flags(a: u32) -> (bool, bool, bool) {
+    let hidden = a & FILE_ATTRIBUTE_HIDDEN != 0;
+    let system = a & FILE_ATTRIBUTE_SYSTEM != 0 && hidden;
+    let link = a & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+    (hidden, system, link)
+}
+
 fn entry_from(fd: &WIN32_FIND_DATAW) -> Entry {
     let a = fd.dwFileAttributes;
     let is_dir = a & FILE_ATTRIBUTE_DIRECTORY != 0;
+    let (hidden, system, link) = entry_flags(a);
     Entry {
         name: from_wide(&fd.cFileName).to_string_lossy().into_owned(),
         is_dir,
@@ -125,9 +133,9 @@ fn entry_from(fd: &WIN32_FIND_DATAW) -> Entry {
         modified: filetime_to_unix(fd.ftLastWriteTime),
         created: filetime_to_unix(fd.ftCreationTime),
         attrs: a,
-        hidden: a & FILE_ATTRIBUTE_HIDDEN != 0,
-        system: a & FILE_ATTRIBUTE_SYSTEM != 0 && a & FILE_ATTRIBUTE_HIDDEN != 0,
-        link: a & FILE_ATTRIBUTE_REPARSE_POINT != 0,
+        hidden,
+        system,
+        link,
         label: None,
         note: None,
     }

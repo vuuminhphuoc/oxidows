@@ -129,6 +129,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Filter the current folder as you type | ✅ | |
 | Search subfolders (Enter) | ✅ | name match, streamed, skips links |
 | Windows Search index, file contents, `kind:` / `date:` filters | ✅ | AQS parsed by `IQueryParser`, run by a shell search folder (`ISearchFolderItemFactory`), so the index answers where available; without it: own walk with kind:, date:, size:, ext:, name:, content:, wildcards |
+| Search: Everything when it runs, multi-threaded walk fallback | ✅ | Instant name search via Everything WM_COPYDATA IPC, parallel directory walk (up to 8 threads) as fallback (beyond Windows' own Explorer) |
 
 ## Special locations
 

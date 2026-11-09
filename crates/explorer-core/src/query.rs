@@ -290,6 +290,17 @@ impl Query {
         *self == Query::default()
     }
 
+    /// True when only name patterns (`words`) are set (no `kind:`, `ext:`, dates, `size:`, `content:`).
+    pub fn name_only(&self) -> bool {
+        !self.words.is_empty()
+            && self.kind.is_none()
+            && self.exts.is_empty()
+            && self.modified.is_none()
+            && self.created.is_none()
+            && self.size.is_none()
+            && self.content.is_none()
+    }
+
     /// Everything except `content:`, which needs the file read.
     pub fn matches(&self, e: &Entry, utc_offset: i64) -> bool {
         let name = e.display().to_lowercase();
@@ -354,5 +365,19 @@ mod tests {
         assert!(!q("size:empty").matches(&dir, 0));
         assert!(!q("content:x").matches(&dir, 0));
         assert!(q("").is_empty());
+    }
+
+    #[test]
+    fn name_only_queries() {
+        let today = days_from_civil(2026, 11, 6);
+        assert!(Query::parse("report", today).name_only());
+        assert!(Query::parse("report config", today).name_only());
+        assert!(!Query::parse("", today).name_only());
+        assert!(!Query::parse("kind:document", today).name_only());
+        assert!(!Query::parse("report kind:document", today).name_only());
+        assert!(!Query::parse("report ext:pdf", today).name_only());
+        assert!(!Query::parse("report date:today", today).name_only());
+        assert!(!Query::parse("report size:>10mb", today).name_only());
+        assert!(!Query::parse("report content:hello", today).name_only());
     }
 }
