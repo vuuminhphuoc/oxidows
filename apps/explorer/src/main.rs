@@ -101,6 +101,21 @@ impl ViewMode {
         (ViewMode::Content, "Content", "Ctrl+Shift+8"),
     ];
 
+    /// The picture of this layout in the View menu.
+    pub fn icon(self) -> ui_common::ViewIcon {
+        use ui_common::ViewIcon as V;
+        match self {
+            ViewMode::ExtraLarge => V::ExtraLarge,
+            ViewMode::Large => V::Large,
+            ViewMode::Medium => V::Medium,
+            ViewMode::Small => V::Small,
+            ViewMode::List => V::List,
+            ViewMode::Details => V::Details,
+            ViewMode::Tiles => V::Tiles,
+            ViewMode::Content => V::Content,
+        }
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             ViewMode::ExtraLarge => "extralarge",

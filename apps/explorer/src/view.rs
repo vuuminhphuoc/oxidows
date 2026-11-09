@@ -150,6 +150,180 @@ pub fn tab_bar(app: &mut App, ui: &mut Ui) {
     });
 }
 
+/// The "See more" (…) menu: each row has an icon, and shortcut keys sit at the right of the row
+/// as in Windows 11's menus. The View rows show a picture of each layout.
+fn more_menu(app: &mut App, ui: &mut Ui) {
+    use ui_common::{MenuItem, ViewIcon, menu_check, menu_heading, menu_item};
+    if menu_item(ui, Icon::NewFolder, "New folder", Some("Ctrl+Shift+N")).clicked() {
+        app.begin_new_folder();
+        ui.close();
+    }
+    if app.in_recycle_bin() {
+        if MenuItem::new("Restore selected items")
+            .icon(Icon::Restore)
+            .enabled(!app.selected.is_empty())
+            .ui(ui)
+            .clicked()
+        {
+            app.restore_selection();
+            ui.close();
+        }
+        if menu_item(ui, Icon::RecycleBin, "Empty Recycle Bin", None).clicked() {
+            app.empty_bin();
+            ui.close();
+        }
+    }
+    ui.separator();
+    if menu_item(ui, Icon::NetworkDrive, "Map network drive…", None).clicked() {
+        app.begin_map_drive();
+        ui.close();
+    }
+    let mapped: Vec<char> = app
+        .drives
+        .iter()
+        .filter(|d| d.kind == DriveKind::Network)
+        .filter_map(|d| d.root.to_string_lossy().chars().next())
+        .collect();
+    if !mapped.is_empty() {
+        MenuItem::new("Disconnect network drive").icon(Icon::DisconnectDrive).submenu(ui, |ui| {
+            for l in mapped {
+                if menu_item(ui, Icon::NetworkDrive, &format!("{l}:"), None).clicked() {
+                    app.unmap(l);
+                    ui.close();
+                }
+            }
+        });
+    }
+    ui.separator();
+    let undo = app.undo_stack.last().map(|u| format!("Undo {}", u.label()));
+    let undo_item = MenuItem::new(undo.as_deref().unwrap_or("Undo")).icon(Icon::Undo).shortcut("Ctrl+Z");
+    if undo_item.enabled(undo.is_some()).ui(ui).clicked() {
+        app.undo();
+        ui.close();
+    }
+    let redo = app.redo_stack.last().map(|u| format!("Redo {}", u.label()));
+    let redo_item = MenuItem::new(redo.as_deref().unwrap_or("Redo")).icon(Icon::Redo).shortcut("Ctrl+Y");
+    if redo_item.enabled(redo.is_some()).ui(ui).clicked() {
+        app.redo();
+        ui.close();
+    }
+    if menu_item(ui, Icon::SelectAll, "Select all", Some("Ctrl+A")).clicked() {
+        app.selected = app.view.iter().map(|&i| app.entries[i].name.clone()).collect();
+        ui.close();
+    }
+    if menu_item(ui, Icon::SelectNone, "Select none", None).clicked() {
+        app.selected.clear();
+        ui.close();
+    }
+    if menu_item(ui, Icon::InvertSelection, "Invert selection", None).clicked() {
+        app.invert_selection();
+        ui.close();
+    }
+    ui.separator();
+    if !app.in_virtual_place() {
+        let cur = app.cur.clone();
+        let pinned = app.is_pinned(&cur);
+        let (icon, label) =
+            if pinned { (Icon::Unpin, "Unpin from Quick access") } else { (Icon::Pin, "Pin to Quick access") };
+        if menu_item(ui, icon, label, None).clicked() {
+            if pinned {
+                app.unpin(&cur);
+            } else {
+                app.pin(cur);
+            }
+            ui.close();
+        }
+    }
+    if menu_item(ui, Icon::NewWindow, "New window", Some("Ctrl+N")).clicked() {
+        app.new_window();
+        ui.close();
+    }
+    if menu_item(ui, Icon::Settings, "Options", None)
+        .on_hover_text("Default file manager (Win+E, opening folders)")
+        .clicked()
+    {
+        app.options_open = true;
+        ui.close();
+    }
+    ui.separator();
+    menu_heading(ui, "View");
+    for (m, label, keys) in ViewMode::ALL {
+        if MenuItem::new(label).icon(m.icon()).shortcut(keys).selected(app.view_mode == m).ui(ui).clicked() {
+            app.view_mode = m;
+            ui.close();
+        }
+    }
+    if menu_check(ui, ViewIcon::Compact, "Compact view", &mut app.compact).clicked() {
+        ui.close();
+    }
+    MenuItem::new("Show").icon(Icon::Show).submenu(ui, |ui| {
+        use crate::pane::Pane;
+        for (p, icon, label, keys) in [
+            (Pane::Details, ViewIcon::DetailsPane, "Details pane", "Alt+Shift+P"),
+            (Pane::Preview, ViewIcon::PreviewPane, "Preview pane", "Alt+P"),
+        ] {
+            if MenuItem::new(label).icon(icon).shortcut(keys).checked(app.pane == p).ui(ui).clicked() {
+                app.toggle_pane(p);
+                ui.close();
+            }
+        }
+        ui.separator();
+        let none = ui_common::MenuIcon::None;
+        menu_check(ui, none, "Item check boxes", &mut app.item_checkboxes);
+        menu_check(ui, none, "File name extensions", &mut app.show_extensions);
+        menu_check(ui, none, "Hidden items", &mut app.show_hidden);
+        let protected = MenuItem::new("Protected operating system files").checked(app.show_protected);
+        if protected.enabled(app.show_hidden).ui(ui).clicked() {
+            app.show_protected = !app.show_protected;
+        }
+    });
+    MenuItem::new("Group by").icon(Icon::GroupBy).submenu(ui, |ui| {
+        use explorer_core::GroupBy;
+        for (g, label) in [
+            (GroupBy::Name, "Name"),
+            (GroupBy::Modified, "Date modified"),
+            (GroupBy::Type, "Type"),
+            (GroupBy::Size, "Size"),
+            (GroupBy::None, "(None)"),
+        ] {
+            if MenuItem::new(label).selected(app.group_by == g).ui(ui).clicked() {
+                app.group_by = g;
+                ui.close();
+            }
+        }
+        ui.separator();
+        for (asc, label) in [(true, "Ascending"), (false, "Descending")] {
+            if MenuItem::new(label).selected(app.group_ascending == asc).ui(ui).clicked() {
+                app.group_ascending = asc;
+                ui.close();
+            }
+        }
+    });
+    MenuItem::new("Theme").icon(Icon::Theme).submenu(ui, |ui| {
+        use crate::settings::Theme;
+        for (t, label) in Theme::ALL {
+            let label = if t == Theme::System { "Use system setting" } else { label };
+            if MenuItem::new(label).selected(app.persist.settings.theme == t).ui(ui).clicked() {
+                app.persist.settings.theme = t;
+                app.persist.settings.apply_theme(ui.ctx());
+                ui.close();
+            }
+        }
+    });
+    ui.separator();
+    if menu_item(ui, Icon::Terminal, "Open in Terminal", None).clicked() {
+        if let Err(e) = explorer_sys::open_terminal(&app.cur) {
+            app.status = Some(format!("Terminal: {e}"));
+        }
+        ui.close();
+    }
+    if menu_item(ui, Icon::Properties, "Properties", Some("Alt+Enter")).clicked() {
+        let c = app.cur.clone();
+        app.show_properties(&c);
+        ui.close();
+    }
+}
+
 pub fn toolbar(app: &mut App, ui: &mut Ui) {
     egui::Panel::top("toolbar").show(ui, |ui| {
         ui.add_space(4.0);
@@ -185,163 +359,7 @@ pub fn toolbar(app: &mut App, ui: &mut Ui) {
                 app.nearby.queue = app.selected_paths();
                 app.nearby.open = true;
             }
-            ui_common::tool_menu(ui, Icon::More, "See more", |ui| {
-                if ui.button("New folder").clicked() {
-                    app.begin_new_folder();
-                    ui.close();
-                }
-                if app.in_recycle_bin() {
-                    if ui.add_enabled(!app.selected.is_empty(), egui::Button::new("Restore selected items")).clicked() {
-                        app.restore_selection();
-                        ui.close();
-                    }
-                    if ui.button("Empty Recycle Bin").clicked() {
-                        app.empty_bin();
-                        ui.close();
-                    }
-                }
-                ui.separator();
-                if ui.button("Map network drive…").clicked() {
-                    app.begin_map_drive();
-                    ui.close();
-                }
-                let mapped: Vec<char> = app
-                    .drives
-                    .iter()
-                    .filter(|d| d.kind == DriveKind::Network)
-                    .filter_map(|d| d.root.to_string_lossy().chars().next())
-                    .collect();
-                if !mapped.is_empty() {
-                    ui.menu_button("Disconnect network drive", |ui| {
-                        for l in mapped {
-                            if ui.button(format!("{l}:")).clicked() {
-                                app.unmap(l);
-                                ui.close();
-                            }
-                        }
-                    });
-                }
-                ui.separator();
-                ui.horizontal(|ui| {
-                    let undo = app.undo_stack.last().map(|u| u.label());
-                    if ui
-                        .add_enabled(undo.is_some(), egui::Button::new(format!("Undo {}", undo.unwrap_or_default())))
-                        .on_hover_text("Ctrl+Z")
-                        .clicked()
-                    {
-                        app.undo();
-                        ui.close();
-                    }
-                    let redo = app.redo_stack.last().map(|u| u.label());
-                    if ui
-                        .add_enabled(redo.is_some(), egui::Button::new(format!("Redo {}", redo.unwrap_or_default())))
-                        .on_hover_text("Ctrl+Y")
-                        .clicked()
-                    {
-                        app.redo();
-                        ui.close();
-                    }
-                });
-                ui.horizontal(|ui| {
-                    if ui.button("Select all").on_hover_text("Ctrl+A").clicked() {
-                        app.selected = app.view.iter().map(|&i| app.entries[i].name.clone()).collect();
-                        ui.close();
-                    }
-                    if ui.button("Select none").clicked() {
-                        app.selected.clear();
-                        ui.close();
-                    }
-                    if ui.button("Invert selection").clicked() {
-                        app.invert_selection();
-                        ui.close();
-                    }
-                });
-                if !app.in_virtual_place() {
-                    let cur = app.cur.clone();
-                    let pinned = app.is_pinned(&cur);
-                    if ui.button(if pinned { "Unpin from Quick access" } else { "Pin to Quick access" }).clicked() {
-                        if pinned {
-                            app.unpin(&cur);
-                        } else {
-                            app.pin(cur);
-                        }
-                        ui.close();
-                    }
-                }
-                if ui.button("New window").on_hover_text("Ctrl+N").clicked() {
-                    app.new_window();
-                    ui.close();
-                }
-                if ui.button("Options").on_hover_text("Default file manager (Win+E, opening folders)").clicked() {
-                    app.options_open = true;
-                    ui.close();
-                }
-                ui.separator();
-                ui.label("View:");
-                for (m, label, keys) in ViewMode::ALL {
-                    if ui.selectable_label(app.view_mode == m, label).on_hover_text(keys).clicked() {
-                        app.view_mode = m;
-                    }
-                }
-                ui.menu_button("Group by", |ui| {
-                    use explorer_core::GroupBy;
-                    for (g, label) in [
-                        (GroupBy::Name, "Name"),
-                        (GroupBy::Modified, "Date modified"),
-                        (GroupBy::Type, "Type"),
-                        (GroupBy::Size, "Size"),
-                        (GroupBy::None, "(None)"),
-                    ] {
-                        if ui.selectable_label(app.group_by == g, label).clicked() {
-                            app.group_by = g;
-                            ui.close();
-                        }
-                    }
-                    ui.separator();
-                    ui.selectable_value(&mut app.group_ascending, true, "Ascending");
-                    ui.selectable_value(&mut app.group_ascending, false, "Descending");
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Pane:");
-                    for (p, label) in [(crate::pane::Pane::Preview, "Preview"), (crate::pane::Pane::Details, "Details")]
-                    {
-                        if ui.selectable_label(app.pane == p, label).clicked() {
-                            app.toggle_pane(p);
-                        }
-                    }
-                });
-                ui.horizontal(|ui| {
-                    use crate::settings::Theme;
-                    ui.label("Theme:");
-                    let before = app.persist.settings.theme;
-                    for (t, label) in Theme::ALL {
-                        let label = if t == Theme::System { "System" } else { label };
-                        ui.selectable_value(&mut app.persist.settings.theme, t, label);
-                    }
-                    if app.persist.settings.theme != before {
-                        app.persist.settings.apply_theme(ui.ctx());
-                    }
-                });
-                ui.checkbox(&mut app.show_hidden, "Hidden items");
-                ui.add_enabled(
-                    app.show_hidden,
-                    egui::Checkbox::new(&mut app.show_protected, "Protected operating system files"),
-                );
-                ui.checkbox(&mut app.show_extensions, "File name extensions");
-                ui.checkbox(&mut app.item_checkboxes, "Item check boxes");
-                ui.checkbox(&mut app.compact, "Compact view");
-                if ui.button("Open in Terminal").clicked() {
-                    if let Err(e) = explorer_sys::open_terminal(&app.cur) {
-                        app.status = Some(format!("Terminal: {e}"));
-                    }
-                    ui.close();
-                }
-                if ui.button("Properties").clicked() {
-                    let c = app.cur.clone();
-                    app.show_properties(&c);
-                    ui.close();
-                }
-            });
+            ui_common::tool_menu(ui, Icon::More, "See more", |ui| more_menu(app, ui));
 
             // Search box on the right, address bar takes the rest.
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
