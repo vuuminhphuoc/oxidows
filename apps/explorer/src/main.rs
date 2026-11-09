@@ -4,6 +4,7 @@
 
 mod dnd;
 mod grid;
+mod menus;
 mod nearby;
 mod pane;
 mod settings;
@@ -1133,6 +1134,51 @@ impl App {
         }
     }
 
+    /// Duplicates tab `i`: creates a new tab right of `i` on the same folder and focuses it.
+    pub fn duplicate_tab(&mut self, i: usize) {
+        if i >= self.tabs.len() {
+            return;
+        }
+        let folder = if i == self.active_tab { self.cur.clone() } else { self.tabs[i].cur.clone() };
+        let t = TabSnap {
+            cur: folder,
+            history: History::default(),
+            selected: HashSet::new(),
+            filter: String::new(),
+            sort: self.sort,
+            ascending: self.ascending,
+        };
+        let at = i + 1;
+        self.tabs.insert(at, t);
+        if self.active_tab >= at {
+            self.active_tab += 1;
+        }
+        self.switch_tab(at);
+    }
+
+    /// Closes all tabs other than `i`, keeping tab `i` active.
+    pub fn close_other_tabs(&mut self, i: usize) {
+        if i >= self.tabs.len() || self.tabs.len() <= 1 {
+            return;
+        }
+        self.switch_tab(i);
+        let tab = self.tabs.remove(i);
+        self.tabs.clear();
+        self.tabs.push(tab);
+        self.active_tab = 0;
+    }
+
+    /// Closes all tabs to the right of `i`, keeping `active_tab` valid.
+    pub fn close_tabs_right(&mut self, i: usize) {
+        if i + 1 >= self.tabs.len() {
+            return;
+        }
+        if self.active_tab > i {
+            self.switch_tab(i);
+        }
+        self.tabs.truncate(i + 1);
+    }
+
     pub fn tab_title(&self, i: usize) -> String {
         let p = if i == self.active_tab { &self.cur } else { &self.tabs[i].cur };
         self.crumbs(p).last().map_or_else(|| p.to_string_lossy().into_owned(), |(l, _)| l.clone())
@@ -1639,6 +1685,13 @@ impl App {
         });
     }
 
+    /// Copies the selected items' paths formatted for the clipboard, one quoted path per line.
+    pub fn copy_as_path(&self, ctx: &egui::Context) {
+        let text =
+            self.selected_paths().iter().map(|p| format!("\"{}\"", p.display())).collect::<Vec<_>>().join("\r\n");
+        ctx.copy_text(text);
+    }
+
     /// Runs a shell copy, move or delete (to or from a phone) off the UI thread; the shell
     /// shows its own progress and confirmation dialogs.
     fn run_shell_op(&mut self, desc: String, f: impl FnOnce(isize) -> std::io::Result<bool> + Send + 'static) {
@@ -1926,7 +1979,7 @@ impl App {
         self.open_window(&cur);
     }
 
-    fn open_window(&mut self, folder: &Path) -> bool {
+    pub fn open_window(&mut self, folder: &Path) -> bool {
         let r = std::env::current_exe().and_then(|exe| std::process::Command::new(exe).arg(folder).spawn());
         if let Err(e) = &r {
             self.status = Some(format!("Could not open a new window: {e}"));
@@ -2101,6 +2154,8 @@ impl App {
                 moved = Some((n - 1, shift));
             }
             for (m, k, tag) in [
+                (ctrl | Modifiers::SHIFT, Key::C, "copypath"),
+                (Modifiers::SHIFT, Key::F10, "shellmenu"),
                 (Modifiers::NONE, Key::Enter, "open"),
                 (Modifiers::NONE, Key::Backspace, "back"),
                 (Modifiers::NONE, Key::F2, "rename"),
@@ -2188,6 +2243,12 @@ impl App {
                 "paste" => {
                     let c = self.cur.clone();
                     self.paste_into(c);
+                }
+                "copypath" => self.copy_as_path(ui.ctx()),
+                "shellmenu" => {
+                    if cfg!(windows) {
+                        self.shell_menu(!self.selected.is_empty(), false);
+                    }
                 }
                 "typeahead" => {
                     let prefix = self.type_ahead.0.to_lowercase();

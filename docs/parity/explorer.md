@@ -19,6 +19,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Pin / unpin to Quick access | ✅ | own list, mirrors the shell's Pin to Quick access verb |
 | This PC page (drives as tiles) | ✅ | known folders and drives with free space; Up from a drive root |
 | Tabs (Ctrl+T, Ctrl+W, Ctrl+Tab, drag tab out) | ✅ | new/close/switch, middle-click; drag along the bar reorders, drag away opens the tab in a new window |
+| Tab menu: Duplicate, Move to new window, Close other tabs, Close tabs to the right | ✅ | right-click on any tab |
 | Open in new window (Ctrl+N) | ✅ | |
 | Command-line argument opens a folder | ✅ | `oxi-explorer.exe <folder>` |
 
@@ -46,7 +47,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Address bar fits long paths (hidden segments in the “…” menu) | ✅ | |
 | Sort chevron above the column title, plain header text | ✅ | shared with Task Manager |
 | Tabs in the title bar, Mica background | ❌ | own row under the system title bar |
-| Windows 11 context menu with “Show more options” | ❌ | the classic shell menu opens directly |
+| Windows 11 context menu with “Show more options” | ✅ | top icon row (Cut, Copy, Rename, Share, Delete), common verbs; Shift+right-click opens classic shell menu |
 | Rename in place (not in a dialog) | ✅ | the name turns into a text box in every view; Enter or clicking elsewhere keeps it, Esc cancels; a bad name shows a tip and stays editable |
 | Header filter drop-downs, More… column chooser | ❌ | |
 

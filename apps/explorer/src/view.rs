@@ -73,7 +73,15 @@ pub fn tab_bar(app: &mut App, ui: &mut Ui) {
         ui.add_space(3.0);
         let bar = ui.max_rect();
         ui.horizontal(|ui| {
-            let (mut switch, mut close) = (None, None);
+            enum TabAction {
+                New,
+                Duplicate(usize),
+                MoveToNewWindow(usize),
+                Close(usize),
+                CloseOthers(usize),
+                CloseRight(usize),
+            }
+            let (mut switch, mut close, mut tab_choice) = (None, None, None);
             // Dragging a tab: along the bar reorders, away from it opens it in a new window.
             let (mut rects, mut dragged, mut released) = (Vec::new(), None, None);
             for i in 0..app.tabs.len() {
@@ -111,6 +119,37 @@ pub fn tab_bar(app: &mut App, ui: &mut Ui) {
                 {
                     close = Some(i);
                 }
+                r.context_menu(|ui| {
+                    if ui_common::MenuItem::new("New tab").shortcut("Ctrl+T").ui(ui).clicked() {
+                        tab_choice = Some(TabAction::New);
+                        ui.close();
+                    }
+                    if ui_common::MenuItem::new("Duplicate tab").ui(ui).clicked() {
+                        tab_choice = Some(TabAction::Duplicate(i));
+                        ui.close();
+                    }
+                    if ui_common::MenuItem::new("Move tab to new window").enabled(app.tabs.len() > 1).ui(ui).clicked() {
+                        tab_choice = Some(TabAction::MoveToNewWindow(i));
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui_common::MenuItem::new("Close tab").shortcut("Ctrl+W").ui(ui).clicked() {
+                        tab_choice = Some(TabAction::Close(i));
+                        ui.close();
+                    }
+                    if ui_common::MenuItem::new("Close other tabs").enabled(app.tabs.len() > 1).ui(ui).clicked() {
+                        tab_choice = Some(TabAction::CloseOthers(i));
+                        ui.close();
+                    }
+                    if ui_common::MenuItem::new("Close tabs to the right")
+                        .enabled(i + 1 < app.tabs.len())
+                        .ui(ui)
+                        .clicked()
+                    {
+                        tab_choice = Some(TabAction::CloseRight(i));
+                        ui.close();
+                    }
+                });
                 ui.add_space(4.0);
             }
             if ui_common::tool_button(ui, Icon::Add, true, "New tab (Ctrl+T)").clicked() {
@@ -135,7 +174,16 @@ pub fn tab_bar(app: &mut App, ui: &mut Ui) {
                     app.move_tab(i, j);
                 }
             }
-            if let (Some(i), Some(p)) = (released, pointer)
+            if let Some(choice) = tab_choice {
+                match choice {
+                    TabAction::New => app.new_tab(PathBuf::from(explorer_core::HOME), true),
+                    TabAction::Duplicate(i) => app.duplicate_tab(i),
+                    TabAction::MoveToNewWindow(i) => app.tear_off_tab(i),
+                    TabAction::Close(i) => app.close_tab(i),
+                    TabAction::CloseOthers(i) => app.close_other_tabs(i),
+                    TabAction::CloseRight(i) => app.close_tabs_right(i),
+                }
+            } else if let (Some(i), Some(p)) = (released, pointer)
                 && torn(p)
                 && app.tabs.len() > 1
             {
@@ -257,7 +305,7 @@ fn more_menu(app: &mut App, ui: &mut Ui) {
 }
 
 /// The command bar's New menu: Folder, then the file types Windows registers for New.
-fn new_menu(app: &mut App, ui: &mut Ui) {
+pub(crate) fn new_menu(app: &mut App, ui: &mut Ui) {
     use ui_common::menu_item;
     if menu_item(ui, Icon::NewFolder, "Folder", Some("Ctrl+Shift+N")).clicked() {
         app.begin_new_folder();
@@ -277,8 +325,8 @@ fn new_menu(app: &mut App, ui: &mut Ui) {
     }
 }
 
-/// The command bar's Sort menu: sort key, direction, and Group by.
-fn sort_menu(app: &mut App, ui: &mut Ui) {
+/// The sort keys and direction part of the Sort menu.
+pub(crate) fn sort_keys_menu(app: &mut App, ui: &mut Ui) {
     use ui_common::MenuItem;
     let bin = app.in_recycle_bin();
     for (k, label) in [
@@ -311,33 +359,45 @@ fn sort_menu(app: &mut App, ui: &mut Ui) {
             ui.close();
         }
     }
+}
+
+/// The grouping options part of the Sort menu.
+pub(crate) fn group_menu(app: &mut App, ui: &mut Ui) {
+    use explorer_core::GroupBy;
+    use ui_common::MenuItem;
+    for (g, label) in [
+        (GroupBy::Name, "Name"),
+        (GroupBy::Modified, "Date modified"),
+        (GroupBy::Type, "Type"),
+        (GroupBy::Size, "Size"),
+        (GroupBy::None, "(None)"),
+    ] {
+        if MenuItem::new(label).selected(app.group_by == g).ui(ui).clicked() {
+            app.group_by = g;
+            ui.close();
+        }
+    }
+    ui.separator();
+    for (asc, label) in [(true, "Ascending"), (false, "Descending")] {
+        if MenuItem::new(label).selected(app.group_ascending == asc).ui(ui).clicked() {
+            app.group_ascending = asc;
+            ui.close();
+        }
+    }
+}
+
+/// The command bar's Sort menu: sort key, direction, and Group by.
+fn sort_menu(app: &mut App, ui: &mut Ui) {
+    use ui_common::MenuItem;
+    sort_keys_menu(app, ui);
     ui.separator();
     MenuItem::new("Group by").icon(Icon::GroupBy).submenu(ui, |ui| {
-        use explorer_core::GroupBy;
-        for (g, label) in [
-            (GroupBy::Name, "Name"),
-            (GroupBy::Modified, "Date modified"),
-            (GroupBy::Type, "Type"),
-            (GroupBy::Size, "Size"),
-            (GroupBy::None, "(None)"),
-        ] {
-            if MenuItem::new(label).selected(app.group_by == g).ui(ui).clicked() {
-                app.group_by = g;
-                ui.close();
-            }
-        }
-        ui.separator();
-        for (asc, label) in [(true, "Ascending"), (false, "Descending")] {
-            if MenuItem::new(label).selected(app.group_ascending == asc).ui(ui).clicked() {
-                app.group_ascending = asc;
-                ui.close();
-            }
-        }
+        group_menu(app, ui);
     });
 }
 
 /// The command bar's View menu: layouts, Compact view, and Show.
-fn view_menu(app: &mut App, ui: &mut Ui) {
+pub(crate) fn view_menu(app: &mut App, ui: &mut Ui) {
     use ui_common::{MenuItem, ViewIcon, menu_check};
     for (m, label, keys) in ViewMode::ALL {
         if MenuItem::new(label).icon(m.icon()).shortcut(keys).selected(app.view_mode == m).ui(ui).clicked() {
@@ -1072,10 +1132,14 @@ pub enum Action {
     Rename,
     Delete(bool),
     Properties(PathBuf),
-    NewFolder,
     Refresh,
     Terminal,
     ClearSelection,
+    Verb(&'static str),
+    NewWindow(PathBuf),
+    Pin(PathBuf, bool),
+    TerminalAt(PathBuf),
+    Share,
 }
 
 pub fn file_list(app: &mut App, ui: &mut Ui) {
@@ -1088,53 +1152,16 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
     if bg.clicked() {
         action = Some(Action::ClearSelection);
     }
-    let cur = app.cur.clone();
-    // On Windows the shell's own menus are used (all installed handlers); egui menus are the
-    // fallback for the virtual Network page and for non-Windows builds.
     let place = explorer_core::classify(&app.cur);
     let shell_menus = app.hwnd != 0
         && (!place.is_page() || matches!(place, explorer_core::Place::Server(_) | explorer_core::Place::Shell(_)));
     let in_bin = app.in_recycle_bin();
-    if shell_menus && bg.secondary_clicked() {
+    let shift = ui.input(|i| i.modifiers.shift);
+    if shell_menus && shift && bg.secondary_clicked() {
         action = Some(Action::ShellMenu(None));
     }
-    if in_bin {
-        bg.context_menu(|ui| {
-            if ui.button("Empty Recycle Bin").clicked() {
-                action = Some(Action::EmptyBin);
-                ui.close();
-            }
-            if ui.button("Refresh    F5").clicked() {
-                action = Some(Action::Refresh);
-                ui.close();
-            }
-        });
-    }
-    let bg_menu = |ui: &mut Ui, action: &mut Option<Action>| {
-        if ui.button("New folder    Ctrl+Shift+N").clicked() {
-            *action = Some(Action::NewFolder);
-            ui.close();
-        }
-        if ui.button("Paste    Ctrl+V").clicked() {
-            *action = Some(Action::Paste(cur.clone()));
-            ui.close();
-        }
-        if ui.button("Refresh    F5").clicked() {
-            *action = Some(Action::Refresh);
-            ui.close();
-        }
-        ui.separator();
-        if ui.button("Open in Terminal").clicked() {
-            *action = Some(Action::Terminal);
-            ui.close();
-        }
-        if ui.button("Properties").clicked() {
-            *action = Some(Action::Properties(cur.clone()));
-            ui.close();
-        }
-    };
-    if !shell_menus && !in_bin {
-        bg.context_menu(|ui| bg_menu(ui, &mut action));
+    if !(shell_menus && shift) {
+        bg.context_menu(|ui| crate::menus::background(app, ui, &mut action));
     }
 
     if app.view.is_empty() && !app.loading {
@@ -1431,79 +1458,39 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                     if e.is_dir && !app.is_dragged(&e.name) {
                         drop_hover(&resp, dragging, &app.child(&e.name), &mut hover_target);
                     }
+                    let is_renaming = renaming.as_ref().is_some_and(|r| r.original == e.name);
                     if resp.middle_clicked() && e.is_dir {
                         action = Some(Action::OpenInNewTab(pos));
                     } else if resp.double_clicked() {
                         action = Some(Action::Open(pos));
                     } else if resp.clicked() {
                         action = Some(Action::Click(pos, resp.ctx.input(|i| i.modifiers)));
-                    } else if resp.secondary_clicked() {
-                        action =
-                            Some(if shell_menus { Action::ShellMenu(Some(pos)) } else { Action::ContextSelect(pos) });
+                    } else if !is_renaming && resp.secondary_clicked() {
+                        let shift = resp.ctx.input(|i| i.modifiers.shift);
+                        action = Some(if shell_menus && shift {
+                            Action::ShellMenu(Some(pos))
+                        } else {
+                            Action::ContextSelect(pos)
+                        });
                     }
-                    let target = app.child(&e.name);
-                    let is_dir = e.is_dir;
-                    if shell_menus {
+                    let shift = resp.ctx.input(|i| i.modifiers.shift);
+                    if is_renaming || (shell_menus && shift) {
                         return;
                     }
                     if in_bin {
-                        resp.context_menu(|ui| {
-                            if ui.button(RichText::new("Restore").strong()).clicked() {
-                                action = Some(Action::Restore);
-                                ui.close();
-                            }
-                            if ui.button("Delete permanently    Del").clicked() {
-                                action = Some(Action::Delete(true));
-                                ui.close();
-                            }
-                        });
+                        resp.context_menu(|ui| crate::menus::recycle_bin_item(ui, &mut action));
                         return;
                     }
-                    resp.context_menu(|ui| {
-                        if ui.button(RichText::new("Open").strong()).clicked() {
-                            action = Some(Action::Open(pos));
-                            ui.close();
-                        }
-                        if is_dir && ui.button("Open in new tab").clicked() {
-                            action = Some(Action::OpenInNewTab(pos));
-                            ui.close();
-                        }
-                        ui.separator();
-                        if ui.button("Cut    Ctrl+X").clicked() {
-                            action = Some(Action::Copy(true));
-                            ui.close();
-                        }
-                        if ui.button("Copy    Ctrl+C").clicked() {
-                            action = Some(Action::Copy(false));
-                            ui.close();
-                        }
-                        if is_dir && ui.button("Paste into folder").clicked() {
-                            action = Some(Action::Paste(target.clone()));
-                            ui.close();
-                        }
-                        if ui.button("Copy as path").clicked() {
-                            action = Some(Action::CopyPath);
-                            ui.close();
-                        }
-                        ui.separator();
-                        if ui.button("Rename    F2").clicked() {
-                            action = Some(Action::Rename);
-                            ui.close();
-                        }
-                        if ui.button("Delete    Del").clicked() {
-                            action = Some(Action::Delete(false));
-                            ui.close();
-                        }
-                        if ui.button("Delete permanently    Shift+Del").clicked() {
-                            action = Some(Action::Delete(true));
-                            ui.close();
-                        }
-                        ui.separator();
-                        if ui.button("Properties    Alt+Enter").clicked() {
-                            action = Some(Action::Properties(target.clone()));
-                            ui.close();
-                        }
-                    });
+                    let target = app.child(&e.name);
+                    let info = crate::menus::ItemInfo {
+                        pos,
+                        path: target.clone(),
+                        is_dir: e.is_dir,
+                        ext: e.extension(),
+                        pinned: app.is_pinned(&target),
+                        shell: shell_menus,
+                    };
+                    resp.context_menu(|ui| crate::menus::item(ui, &info, &mut action));
                 });
             });
         details_band(app, ui, band_start, &drawn, &rows_map);
@@ -1583,11 +1570,7 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
         }
         Some(Action::Copy(cut)) => app.copy_selection(cut),
         Some(Action::Paste(dest)) => app.paste_into(dest),
-        Some(Action::CopyPath) => {
-            let text =
-                app.selected_paths().iter().map(|p| format!("\"{}\"", p.display())).collect::<Vec<_>>().join("\r\n");
-            ui.ctx().copy_text(text);
-        }
+        Some(Action::CopyPath) => app.copy_as_path(ui.ctx()),
         Some(Action::Rename) => app.begin_rename(),
         Some(Action::Restore) => app.restore_selection(),
         Some(Action::OpenInNewTab(pos)) => {
@@ -1599,7 +1582,6 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
         Some(Action::EmptyBin) => app.empty_bin(),
         Some(Action::Delete(permanent)) => app.delete_selection(permanent),
         Some(Action::Properties(p)) => app.show_properties(&p),
-        Some(Action::NewFolder) => app.begin_new_folder(),
         Some(Action::Refresh) => app.refresh(),
         Some(Action::Terminal) => {
             if let Err(e) = explorer_sys::open_terminal(&app.cur) {
@@ -1609,6 +1591,30 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
         Some(Action::ClearSelection) => {
             app.selected.clear();
             app.cursor = None;
+        }
+        Some(Action::Verb(verb)) => {
+            if let Err(e) = explorer_sys::shell_verb(app.hwnd, &app.cur, &app.selected_paths(), verb) {
+                app.status = Some(format!("{verb}: {e}"));
+            }
+        }
+        Some(Action::NewWindow(path)) => {
+            app.open_window(&path);
+        }
+        Some(Action::Pin(path, pin)) => {
+            if pin {
+                app.pin(path);
+            } else {
+                app.unpin(&path);
+            }
+        }
+        Some(Action::TerminalAt(path)) => {
+            if let Err(e) = explorer_sys::open_terminal(&path) {
+                app.status = Some(format!("Terminal: {e}"));
+            }
+        }
+        Some(Action::Share) => {
+            app.nearby.queue = app.selected_paths();
+            app.nearby.open = true;
         }
         None => {}
     }
