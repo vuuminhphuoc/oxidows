@@ -3,14 +3,13 @@
 
 use std::cmp::Ordering;
 
-use egui::{RichText, Ui};
-use egui_extras::{Column, TableBuilder};
-use taskmgr_core::{ProcessRow, Snapshot, format_bits_per_sec, format_bytes, priority_label};
-use ui_common::{SORT_HEADER_HEIGHT, SortBy, sort_header};
-
 use crate::Status;
 use crate::icons::Icons;
 use crate::processes::{NET_HINT, end_task, process_menu};
+use egui::{RichText, Stroke, Ui, pos2};
+use egui_extras::{Column, TableBuilder};
+use taskmgr_core::{ProcessRow, Snapshot, format_bits_per_sec, format_bytes, priority_label};
+use ui_common::{SORT_HEADER_HEIGHT, SortBy, sort_header_drag};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Col {
@@ -48,10 +47,15 @@ pub enum Col {
     Elevated,
     UacVirtualization,
     Platform,
+    GdiObjects,
+    UserObjects,
+    Architecture,
+    PowerThrottling,
+    PackageName,
 }
 
 impl Col {
-    pub const ALL: [Col; 34] = [
+    pub const ALL: [Col; 39] = [
         Col::Name,
         Col::Pid,
         Col::Status,
@@ -86,6 +90,11 @@ impl Col {
         Col::Elevated,
         Col::UacVirtualization,
         Col::Platform,
+        Col::GdiObjects,
+        Col::UserObjects,
+        Col::Architecture,
+        Col::PowerThrottling,
+        Col::PackageName,
     ];
 
     /// What a fresh install shows, as in Task Manager plus Path.
@@ -138,6 +147,11 @@ impl Col {
             Col::Elevated => "Elevated",
             Col::UacVirtualization => "UAC virtualization",
             Col::Platform => "Platform",
+            Col::GdiObjects => "GDI objects",
+            Col::UserObjects => "User objects",
+            Col::Architecture => "Architecture",
+            Col::PowerThrottling => "Power throttling",
+            Col::PackageName => "Package name",
         }
     }
 
@@ -178,6 +192,11 @@ impl Col {
             Col::Elevated => "elevated",
             Col::UacVirtualization => "uacvirt",
             Col::Platform => "platform",
+            Col::GdiObjects => "gdi_objects",
+            Col::UserObjects => "user_objects",
+            Col::Architecture => "architecture",
+            Col::PowerThrottling => "power_throttling",
+            Col::PackageName => "package_name",
         }
     }
 
@@ -201,6 +220,9 @@ impl Col {
             Col::Path | Col::CommandLine => Column::initial(260.0).clip(true),
             Col::Memory | Col::IoRead | Col::IoWrite | Col::Network | Col::CpuTime => Column::initial(90.0),
             Col::Priority | Col::Status => Column::initial(90.0),
+            Col::PowerThrottling => Column::initial(110.0),
+            Col::PackageName => Column::initial(180.0).clip(true),
+            Col::GdiObjects | Col::UserObjects | Col::Architecture => Column::initial(80.0),
             _ => Column::initial(64.0),
         }
     }
@@ -228,6 +250,8 @@ impl Col {
                 | Col::IoWrites
                 | Col::IoOther
                 | Col::IoOtherBytes
+                | Col::GdiObjects
+                | Col::UserObjects
         )
     }
 
@@ -268,6 +292,11 @@ impl Col {
             Col::Elevated => a.info.elevated.cmp(&b.info.elevated),
             Col::UacVirtualization => a.info.uac_virtualization.cmp(&b.info.uac_virtualization),
             Col::Platform => a.info.platform.cmp(&b.info.platform),
+            Col::GdiObjects => a.info.gdi_objects.cmp(&b.info.gdi_objects),
+            Col::UserObjects => a.info.user_objects.cmp(&b.info.user_objects),
+            Col::Architecture => text(&a.info.architecture, &b.info.architecture),
+            Col::PowerThrottling => text(&a.info.power_throttling, &b.info.power_throttling),
+            Col::PackageName => text(&a.info.package_name, &b.info.package_name),
         }
     }
 
@@ -333,6 +362,11 @@ impl Col {
             .to_string(),
             Col::UacVirtualization => dash(&p.info.uac_virtualization),
             Col::Platform => dash(&p.info.platform),
+            Col::GdiObjects => p.info.gdi_objects.map_or("-".to_string(), |v| v.to_string()),
+            Col::UserObjects => p.info.user_objects.map_or("-".to_string(), |v| v.to_string()),
+            Col::Architecture => dash(&p.info.architecture),
+            Col::PowerThrottling => dash(&p.info.power_throttling),
+            Col::PackageName => dash(&p.info.package_name),
         };
         ui.label(text);
     }
@@ -357,6 +391,15 @@ pub fn columns_text(cols: &[Col]) -> String {
     cols.iter().map(|c| c.key()).collect::<Vec<_>>().join(",")
 }
 
+/// Moves a column from index `from` to index `to`, shifting intervening columns.
+pub fn move_column<T>(cols: &mut Vec<T>, from: usize, to: usize) {
+    if from >= cols.len() || to >= cols.len() || from == to {
+        return;
+    }
+    let item = cols.remove(from);
+    cols.insert(to, item);
+}
+
 pub struct State {
     pub(crate) filter: String,
     pub sort: SortBy<Col>,
@@ -366,10 +409,18 @@ pub struct State {
     icons: Icons,
     pub columns: Vec<Col>,
     picking: bool,
+    drag_col: Option<usize>,
+    pub confirm_efficiency: bool,
 }
 
 impl State {
-    pub fn new(status: Status, icons: Icons, columns: Vec<Col>, sort: Option<SortBy<Col>>) -> Self {
+    pub fn new(
+        status: Status,
+        icons: Icons,
+        columns: Vec<Col>,
+        sort: Option<SortBy<Col>>,
+        confirm_efficiency: bool,
+    ) -> Self {
         Self {
             filter: String::new(),
             sort: sort.unwrap_or(SortBy::new(Col::Name, false)),
@@ -379,6 +430,8 @@ impl State {
             icons,
             columns,
             picking: false,
+            drag_col: None,
+            confirm_efficiency,
         }
     }
 
@@ -464,11 +517,17 @@ impl State {
         for (i, c) in cols.iter().enumerate() {
             table = table.column(if i + 1 == cols.len() { Column::remainder().clip(true) } else { c.column() });
         }
+        let mut header_rects: Vec<(usize, egui::Rect)> = Vec::new();
         table
             .header(SORT_HEADER_HEIGHT, |mut h| {
-                for &c in &cols {
+                for (col_idx, &c) in cols.iter().enumerate() {
                     h.col(|ui| {
-                        let resp = sort_header(ui, c.header(), self.sort.arrow(c));
+                        let resp = sort_header_drag(ui, c.header(), self.sort.arrow(c));
+                        header_rects.push((col_idx, resp.rect));
+                        // Name stays first, as in Task Manager.
+                        if resp.drag_started() && col_idx > 0 {
+                            self.drag_col = Some(col_idx);
+                        }
                         if resp.clicked() {
                             clicked = Some(c);
                         }
@@ -496,11 +555,45 @@ impl State {
                     if resp.clicked() {
                         self.selected = Some((p.pid, p.name.clone()));
                     }
-                    resp.context_menu(|ui| process_menu(ui, &self.status, rows, p, true));
+                    resp.context_menu(|ui| process_menu(ui, &self.status, rows, p, true, self.confirm_efficiency));
                 });
             });
         if let Some(k) = clicked {
             self.sort.click(k, k.descending_first());
+        }
+        if let Some(from_idx) = self.drag_col {
+            let mouse_pos = ui.input(|i| i.pointer.latest_pos());
+            if let Some(pos) = mouse_pos {
+                let mut dest = from_idx;
+                let mut drop_x = None;
+                for (idx, rect) in header_rects.iter().filter(|(i, _)| *i > 0) {
+                    if pos.x < rect.center().x {
+                        dest = if from_idx < *idx { *idx - 1 } else { *idx };
+                        drop_x = Some(rect.left());
+                        break;
+                    } else {
+                        dest = if from_idx > *idx { *idx + 1 } else { *idx };
+                        drop_x = Some(rect.right());
+                    }
+                }
+                if dest != from_idx
+                    && let Some(x) = drop_x
+                {
+                    let p = ui_common::Palette::of(ui);
+                    let header_top = header_rects.first().map_or(0.0, |r| r.1.top());
+                    let header_bottom = header_rects.first().map_or(0.0, |r| r.1.bottom());
+                    let painter = ui.painter();
+                    painter.line_segment([pos2(x, header_top), pos2(x, header_bottom)], Stroke::new(2.5, p.accent));
+                }
+                if ui.input(|i| i.pointer.any_released()) {
+                    self.drag_col = None;
+                    if dest != from_idx {
+                        move_column(&mut self.columns, from_idx, dest);
+                    }
+                }
+            } else if ui.input(|i| i.pointer.any_released()) {
+                self.drag_col = None;
+            }
         }
         if !self.columns.contains(&self.sort.key) {
             self.sort = SortBy::new(Col::Name, false);
@@ -564,5 +657,28 @@ mod tests {
         assert_eq!(parse_columns(&columns_text(&cols)), cols);
         assert_eq!(parse_columns("pid,bogus"), vec![Col::Name, Col::Pid]);
         assert_eq!(format_cpu_time(36_610_000_000), "1:01:01");
+    }
+
+    #[test]
+    fn move_column_reorders() {
+        let mut cols = vec!["A", "B", "C", "D"];
+        move_column(&mut cols, 0, 2);
+        assert_eq!(cols, vec!["B", "C", "A", "D"]);
+
+        move_column(&mut cols, 2, 0);
+        assert_eq!(cols, vec!["A", "B", "C", "D"]);
+
+        move_column(&mut cols, 1, 3);
+        assert_eq!(cols, vec!["A", "C", "D", "B"]);
+
+        // Same index does nothing
+        move_column(&mut cols, 1, 1);
+        assert_eq!(cols, vec!["A", "C", "D", "B"]);
+
+        // Out of bounds does nothing
+        move_column(&mut cols, 10, 1);
+        assert_eq!(cols, vec!["A", "C", "D", "B"]);
+        move_column(&mut cols, 1, 10);
+        assert_eq!(cols, vec!["A", "C", "D", "B"]);
     }
 }

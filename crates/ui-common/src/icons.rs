@@ -83,6 +83,7 @@ icons! {
     OpenWith = '\u{E7AC}', "⧉";
     Link = '\u{E71B}', "🔗";
     Play = '\u{E768}', "▶";
+    Pause = '\u{E769}', "⏸";
     Stop = '\u{E71A}', "■";
     // Places and files.
     Home = '\u{E80F}', "🏠";

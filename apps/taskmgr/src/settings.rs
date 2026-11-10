@@ -78,6 +78,18 @@ pub struct Settings {
     pub processes_columns: String,
     /// Visible Details columns, as keys (see `details::Col::key`).
     pub details_columns: String,
+    /// Visible Users columns, as keys (see `users::Col::key`).
+    pub users_columns: String,
+    /// Visible Startup columns, as keys (see `startup::Col::key`).
+    pub startup_columns: String,
+    /// Visible App history columns, as keys (see `history::Col::key`).
+    pub history_columns: String,
+    /// Show DOMAIN\user on the Users page.
+    pub show_full_account_name: bool,
+    /// App history includes classic processes.
+    pub history_all_processes: bool,
+    /// Prompt before turning Efficiency mode on.
+    pub confirm_efficiency_mode: bool,
     /// Sorted column per table, as `column:asc` / `column:desc`; empty for the table's default.
     /// Task Manager keeps each page's sort order the same way.
     pub sort_processes: String,
@@ -106,6 +118,12 @@ impl Default for Settings {
             values_pct: false,
             processes_columns: crate::processes::columns_text(&crate::processes::PCol::DEFAULT),
             details_columns: crate::details::columns_text(&crate::details::Col::DEFAULT),
+            users_columns: crate::users::columns_text(&crate::users::Col::DEFAULT),
+            startup_columns: crate::startup::columns_text(&crate::startup::Col::DEFAULT),
+            history_columns: crate::history::columns_text(&crate::history::Col::DEFAULT),
+            show_full_account_name: false,
+            history_all_processes: false,
+            confirm_efficiency_mode: true,
             sort_processes: String::new(),
             sort_history: String::new(),
             sort_startup: String::new(),
@@ -148,6 +166,12 @@ impl Settings {
                 "values_pct" => s.values_pct = v == "true",
                 "processes_columns" => s.processes_columns = v.to_string(),
                 "details_columns" => s.details_columns = v.to_string(),
+                "users_columns" => s.users_columns = v.to_string(),
+                "startup_columns" => s.startup_columns = v.to_string(),
+                "history_columns" => s.history_columns = v.to_string(),
+                "show_full_account_name" => s.show_full_account_name = v == "true",
+                "history_all_processes" => s.history_all_processes = v == "true",
+                "confirm_efficiency_mode" => s.confirm_efficiency_mode = v != "false",
                 "sort_processes" => s.sort_processes = v.to_string(),
                 "sort_history" => s.sort_history = v.to_string(),
                 "sort_startup" => s.sort_startup = v.to_string(),
@@ -167,7 +191,7 @@ impl Settings {
     pub fn to_text(&self) -> String {
         let theme = self.theme.key();
         let mut t = format!(
-            "default_tab={}\ninterval_ms={}\nalways_on_top={}\nhide_when_minimized={}\nminimize_on_use={}\ntheme={theme}\ngroup_by_type={}\nvalues_pct={}\nprocesses_columns={}\ndetails_columns={}\n",
+            "default_tab={}\ninterval_ms={}\nalways_on_top={}\nhide_when_minimized={}\nminimize_on_use={}\ntheme={theme}\ngroup_by_type={}\nvalues_pct={}\nprocesses_columns={}\ndetails_columns={}\nusers_columns={}\nstartup_columns={}\nhistory_columns={}\nshow_full_account_name={}\nhistory_all_processes={}\nconfirm_efficiency_mode={}\n",
             self.default_tab,
             self.interval_ms,
             self.always_on_top,
@@ -176,7 +200,13 @@ impl Settings {
             self.group_by_type,
             self.values_pct,
             self.processes_columns,
-            self.details_columns
+            self.details_columns,
+            self.users_columns,
+            self.startup_columns,
+            self.history_columns,
+            self.show_full_account_name,
+            self.history_all_processes,
+            self.confirm_efficiency_mode,
         );
         t.push_str(&format!("cpu_logical={}\ncpu_kernel={}\n", self.cpu_logical, self.cpu_kernel));
         for (k, v) in [
@@ -293,6 +323,17 @@ pub fn show(
             status.set(msg);
         }
         ui.end_row();
+
+        ui.label("Other options");
+        ui.vertical(|ui| {
+            ui.checkbox(&mut s.confirm_efficiency_mode, "Ask me before applying Efficiency mode");
+            ui.checkbox(&mut s.show_full_account_name, "Show full account name")
+                .on_hover_text("The Users page shows DOMAIN\\user instead of the short name");
+            ui.checkbox(&mut s.history_all_processes, "Show history for all processes").on_hover_text(
+                "App history lists classic desktop apps and background processes as well as packaged apps",
+            );
+        });
+        ui.end_row();
     });
     ui.add_space(12.0);
     if ui.button("Reset to defaults").clicked() {
@@ -386,6 +427,12 @@ mod tests {
             values_pct: true,
             processes_columns: "status,cpu,memory".into(),
             details_columns: "name,pid,cmdline".into(),
+            users_columns: "user,id,cpu".into(),
+            startup_columns: "name,status".into(),
+            history_columns: "name,cpu".into(),
+            show_full_account_name: true,
+            history_all_processes: true,
+            confirm_efficiency_mode: false,
             sort_processes: "memory:desc".into(),
             sort_history: "name:asc".into(),
             sort_startup: "impact:desc".into(),
