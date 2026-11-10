@@ -50,6 +50,28 @@ impl Kind {
             _ => return None,
         })
     }
+
+    pub const SEARCH_OPTIONS: [(Kind, &'static str); 6] = [
+        (Kind::Document, "Document"),
+        (Kind::Picture, "Picture"),
+        (Kind::Music, "Music"),
+        (Kind::Video, "Video"),
+        (Kind::Folder, "Folder"),
+        (Kind::Program, "Program"),
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Kind::Folder => "Folder",
+            Kind::Document => "Document",
+            Kind::Picture => "Picture",
+            Kind::Music => "Music",
+            Kind::Video => "Video",
+            Kind::Program => "Program",
+            Kind::Compressed => "Compressed",
+            Kind::Link => "Link",
+        }
+    }
 }
 
 /// An inclusive range, `None` meaning unbounded.
@@ -315,6 +337,140 @@ impl Query {
     }
 }
 
+/// Date modified filter buckets for the command bar's Search options menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DateFilter {
+    Today,
+    Yesterday,
+    ThisWeek,
+    LastWeek,
+    ThisMonth,
+    LastMonth,
+    ThisYear,
+    LongAgo,
+}
+
+impl DateFilter {
+    pub const ALL: [(DateFilter, &'static str); 8] = [
+        (DateFilter::Today, "Today"),
+        (DateFilter::Yesterday, "Yesterday"),
+        (DateFilter::ThisWeek, "This week"),
+        (DateFilter::LastWeek, "Last week"),
+        (DateFilter::ThisMonth, "This month"),
+        (DateFilter::LastMonth, "Last month"),
+        (DateFilter::ThisYear, "This year"),
+        (DateFilter::LongAgo, "A long time ago"),
+    ];
+
+    pub fn label(self) -> &'static str {
+        Self::ALL.iter().find(|(d, _)| *d == self).map_or("", |(_, l)| *l)
+    }
+
+    pub fn matches(self, unix_secs: i64, now: i64, utc_offset: i64) -> bool {
+        if unix_secs <= 0 {
+            return false;
+        }
+        let day = |t: i64| (t + utc_offset).div_euclid(86_400);
+        let (today, d) = (day(now), day(unix_secs));
+        // 1970-01-01 was a Thursday; weeks start on Monday.
+        let weekday = (today + 3).rem_euclid(7);
+        let week_start = today - weekday;
+        let (y, m, _) = civil_from_days(today);
+        let (dy, dm, _) = civil_from_days(d);
+        match self {
+            DateFilter::Today => d == today,
+            DateFilter::Yesterday => d == today - 1,
+            DateFilter::ThisWeek => d >= week_start && d <= week_start + 6,
+            DateFilter::LastWeek => d >= week_start - 7 && d < week_start,
+            DateFilter::ThisMonth => dy == y && dm == m,
+            DateFilter::LastMonth => (dy == y && dm + 1 == m) || (dy + 1 == y && m == 1 && dm == 12),
+            DateFilter::ThisYear => dy == y,
+            DateFilter::LongAgo => dy < y,
+        }
+    }
+}
+
+/// File size filter buckets for the command bar's Search options menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SizeFilter {
+    Empty,
+    Tiny,
+    Small,
+    Medium,
+    Large,
+    Huge,
+    Gigantic,
+}
+
+impl SizeFilter {
+    pub const ALL: [(SizeFilter, &'static str); 7] = [
+        (SizeFilter::Empty, "Empty (0)"),
+        (SizeFilter::Tiny, "Tiny (0–10 KB)"),
+        (SizeFilter::Small, "Small (10–100 KB)"),
+        (SizeFilter::Medium, "Medium (100 KB–1 MB)"),
+        (SizeFilter::Large, "Large (1–16 MB)"),
+        (SizeFilter::Huge, "Huge (16–128 MB)"),
+        (SizeFilter::Gigantic, "Gigantic (> 128 MB)"),
+    ];
+
+    pub fn label(self) -> &'static str {
+        Self::ALL.iter().find(|(s, _)| *s == self).map_or("", |(_, l)| *l)
+    }
+
+    pub fn matches(self, is_dir: bool, size: u64) -> bool {
+        if is_dir {
+            return false;
+        }
+        const KB: u64 = 1024;
+        const MB: u64 = 1024 * KB;
+        match self {
+            SizeFilter::Empty => size == 0,
+            SizeFilter::Tiny => (1..=10 * KB).contains(&size),
+            SizeFilter::Small => (10 * KB + 1..=100 * KB).contains(&size),
+            SizeFilter::Medium => (100 * KB + 1..=MB).contains(&size),
+            SizeFilter::Large => (MB + 1..=16 * MB).contains(&size),
+            SizeFilter::Huge => (16 * MB + 1..=128 * MB).contains(&size),
+            SizeFilter::Gigantic => size > 128 * MB,
+        }
+    }
+}
+
+/// UI-level filters applied on top of search results in the view layer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SearchFilters {
+    pub date: Option<DateFilter>,
+    pub kind: Option<Kind>,
+    pub size: Option<SizeFilter>,
+}
+
+impl SearchFilters {
+    pub fn is_empty(self) -> bool {
+        self.date.is_none() && self.kind.is_none() && self.size.is_none()
+    }
+
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    pub fn count(self) -> usize {
+        usize::from(self.date.is_some()) + usize::from(self.kind.is_some()) + usize::from(self.size.is_some())
+    }
+
+    pub fn summary(self) -> String {
+        [self.date.map(DateFilter::label), self.kind.map(Kind::label), self.size.map(SizeFilter::label)]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    pub fn matches(self, e: &Entry, now: i64, utc_offset: i64) -> bool {
+        self.date.is_none_or(|d| d.matches(e.modified, now, utc_offset))
+            && self.kind.is_none_or(|k| Kind::of(e) == Some(k))
+            && self.size.is_none_or(|s| s.matches(e.is_dir, e.size))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -379,5 +535,67 @@ mod tests {
         assert!(!Query::parse("report date:today", today).name_only());
         assert!(!Query::parse("report size:>10mb", today).name_only());
         assert!(!Query::parse("report content:hello", today).name_only());
+    }
+
+    #[test]
+    fn search_option_date_buckets() {
+        // Friday 2026-11-06 12:00 UTC (week started Monday 2026-11-02).
+        let today = days_from_civil(2026, 11, 6);
+        let now = today * 86_400 + 12 * 3600;
+        let ts = |y, m, d| days_from_civil(y, m, d) * 86_400 + 3600;
+
+        assert!(DateFilter::Today.matches(ts(2026, 11, 6), now, 0));
+        assert!(!DateFilter::Today.matches(ts(2026, 11, 5), now, 0));
+        assert!(DateFilter::Yesterday.matches(ts(2026, 11, 5), now, 0));
+        assert!(DateFilter::ThisWeek.matches(ts(2026, 11, 2), now, 0));
+        assert!(DateFilter::ThisWeek.matches(ts(2026, 11, 6), now, 0));
+        assert!(!DateFilter::ThisWeek.matches(ts(2026, 11, 1), now, 0));
+        assert!(DateFilter::LastWeek.matches(ts(2026, 11, 1), now, 0));
+        assert!(DateFilter::LastWeek.matches(ts(2026, 10, 26), now, 0));
+        assert!(!DateFilter::LastWeek.matches(ts(2026, 10, 25), now, 0));
+        assert!(DateFilter::ThisMonth.matches(ts(2026, 11, 1), now, 0));
+        assert!(!DateFilter::ThisMonth.matches(ts(2026, 10, 31), now, 0));
+        assert!(DateFilter::LastMonth.matches(ts(2026, 10, 15), now, 0));
+        assert!(!DateFilter::LastMonth.matches(ts(2026, 9, 30), now, 0));
+        assert!(DateFilter::ThisYear.matches(ts(2026, 1, 1), now, 0));
+        assert!(!DateFilter::ThisYear.matches(ts(2025, 12, 31), now, 0));
+        assert!(DateFilter::LongAgo.matches(ts(2025, 12, 31), now, 0));
+        assert!(!DateFilter::Today.matches(0, now, 0));
+
+        // January boundary for LastMonth (Jan 2026 -> Dec 2025).
+        let jan_now = days_from_civil(2026, 1, 10) * 86_400 + 3600;
+        assert!(DateFilter::LastMonth.matches(ts(2025, 12, 20), jan_now, 0));
+        assert!(!DateFilter::LastMonth.matches(ts(2025, 11, 30), jan_now, 0));
+    }
+
+    #[test]
+    fn search_option_size_and_kind_filters() {
+        const KB: u64 = 1024;
+        const MB: u64 = 1024 * KB;
+        assert!(SizeFilter::Empty.matches(false, 0));
+        assert!(!SizeFilter::Tiny.matches(false, 0));
+        assert!(SizeFilter::Tiny.matches(false, 1));
+        assert!(SizeFilter::Tiny.matches(false, 10 * KB));
+        assert!(SizeFilter::Small.matches(false, 10 * KB + 1));
+        assert!(SizeFilter::Small.matches(false, 100 * KB));
+        assert!(SizeFilter::Medium.matches(false, 100 * KB + 1));
+        assert!(SizeFilter::Medium.matches(false, MB));
+        assert!(SizeFilter::Large.matches(false, MB + 1));
+        assert!(SizeFilter::Large.matches(false, 16 * MB));
+        assert!(SizeFilter::Huge.matches(false, 16 * MB + 1));
+        assert!(SizeFilter::Huge.matches(false, 128 * MB));
+        assert!(SizeFilter::Gigantic.matches(false, 128 * MB + 1));
+        assert!(!SizeFilter::Empty.matches(true, 0));
+
+        let today = days_from_civil(2026, 11, 6);
+        let now = today * 86_400 + 3600;
+        let doc = Entry { name: "notes.pdf".into(), size: 50 * KB, modified: now, ..Default::default() };
+        let dir = Entry { name: "docs".into(), is_dir: true, modified: now, ..Default::default() };
+        let f =
+            SearchFilters { date: Some(DateFilter::Today), kind: Some(Kind::Document), size: Some(SizeFilter::Small) };
+        assert!(f.matches(&doc, now, 0));
+        assert!(!f.matches(&dir, now, 0));
+        assert_eq!(f.count(), 3);
+        assert_eq!(f.summary(), "Today, Document, Small (10–100 KB)");
     }
 }

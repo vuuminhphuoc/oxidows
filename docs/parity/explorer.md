@@ -9,13 +9,15 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | --- | --- | --- |
 | Back / Forward / Up, Alt+Left/Right/Up, mouse back/forward buttons | ✅ | |
 | Breadcrumb address bar, click a segment | ✅ | |
-| Type a path / UNC path in the address bar (Ctrl+L, Alt+D) | ✅ | |
+| Type a path / UNC path in the address bar (Ctrl+L, Alt+D, F4) | 🟡 | Ctrl+L / Alt+D verified; F4 added with select-all (live GUI not yet verified) |
 | Breadcrumb segment dropdown (subfolders after each segment) | ✅ | |
 | Address bar autocomplete | ✅ | subfolders; Tab completes |
 | Environment variables and shell: names in the address bar (`%TEMP%`, `shell:startup`) | ✅ | common shell: names |
 | Recent locations history dropdown | ✅ | |
 | Navigation pane: Home, known folders, drives with free space | ✅ | |
 | Navigation pane: folder tree (expand/collapse) | ✅ | lazy, loaded in the background on first expand |
+| Expand navigation pane to current folder (Ctrl+Shift+E) | 🟡 | path/ancestor matching unit-tested; live tree expansion and scroll not yet verified |
+| Navigation pane: OneDrive and Linux (`\\wsl.localhost`) | 🟡 | Windows only; OneDrive env dedup/naming unit-tested; Linux shown when `wsl.exe` exists without startup enumeration; live GUI not yet verified |
 | Pin / unpin to Quick access | ✅ | own list, mirrors the shell's Pin to Quick access verb |
 | This PC page (drives as tiles) | ✅ | known folders and drives with free space; Up from a drive root |
 | Tabs (Ctrl+T, Ctrl+W, Ctrl+Tab, drag tab out) | ✅ | new/close/switch, middle-click; drag along the bar reorders, drag away opens the tab in a new window |
@@ -60,7 +62,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Navigation pane: hover fill; expand chevrons only while the pointer is over the pane | ✅ | |
 | Item tip when the pointer rests on a file (type, size, date modified) or folder (date created) | ✅ | |
 | No zebra stripes in lists; hover fill shows | ✅ | |
-| Drag hover opens a folder in the tree / switches tab | ❌ | |
+| Drag hover opens a folder in the tree / switches tab | 🟡 | 600 ms hover timer unit-tested; expands collapsed tree folders and switches tabs; drag-hover open folder in list/grid skipped (navigating drops drag); live GUI not yet verified |
 
 ## Views and columns
 
@@ -74,6 +76,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Group by (name, date modified, type, size) | ✅ | Details and icon views (not List); remembered per folder |
 | Extra large / Large / Medium / Small icons, List, Details, Tiles (Ctrl+Shift+1…7) | ✅ | |
 | Content view (Ctrl+Shift+8) | ✅ | name + type, date modified + size, thumbnails |
+| Ctrl+mouse wheel changes view / icon size | 🟡 | view stepping logic unit-tested; list scroll suppressed while Ctrl is held; live GUI not yet verified |
 | Thumbnails for images and videos | ✅ | the shell's thumbnail cache (`IShellItemImageFactory`), Large icons view |
 | System file icons | ✅ | `SHGetFileInfoW`, cached per extension |
 | Overlay icons (shortcut arrow, OneDrive status) | ✅ | shell overlays on links, junctions, cloud files; desktop.ini folder icons |
@@ -95,6 +98,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Rubber-band (drag rectangle) selection | ✅ | every view; in Details it starts outside the name, as in Explorer, and scrolls
 | Item check boxes | ✅ | shown on hover or when selected; every view |
 | Invert selection | ✅ | … menu |
+| Keyboard shortcuts (Ctrl+E, F4, Ctrl+D, F11, Ctrl+Shift+E, Ctrl+Shift+1…8) | 🟡 | Ctrl+Shift+1…8 existing; Ctrl+E, F4, Ctrl+D, F11, Ctrl+Shift+E added (live GUI not yet verified); F6 focus cycle skipped (incompatible with egui focus model) |
 
 ## File operations
 
@@ -104,6 +108,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Open with… (choose app) | ✅ | through the shell menu |
 | Run as administrator | ✅ | through the shell menu |
 | Cut / Copy / Paste, shared clipboard with Windows Explorer | ✅ | `CF_HDROP` + Preferred DropEffect |
+| Cut items faded (~50% opacity) until paste, clipboard change, or Esc | 🟡 | shown in Details and icon/tile/content views via clipboard sequence check; Esc clears local cut state without modifying system clipboard; live GUI not yet verified |
 | Paste into a folder | ✅ | |
 | Copy as path | ✅ | |
 | Paste shortcut | ✅ | through the shell menu |
@@ -131,6 +136,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Search subfolders (Enter) | ✅ | name match, streamed, skips links |
 | Windows Search index, file contents, `kind:` / `date:` filters | ✅ | AQS parsed by `IQueryParser`, run by a shell search folder (`ISearchFolderItemFactory`), so the index answers where available; without it: own walk with kind:, date:, size:, ext:, name:, content:, wildcards |
 | Search: Everything when it runs, multi-threaded walk fallback | ✅ | Instant name search via Everything WM_COPYDATA IPC, parallel directory walk (up to 8 threads) as fallback (beyond Windows' own Explorer) |
+| Search options menu (Date modified, Kind, Size filters) | 🟡 | pure date/kind/size filter buckets unit-tested in `explorer-core`; active filters shown in command bar and status bar; live GUI not yet verified |
 
 ## Special locations
 

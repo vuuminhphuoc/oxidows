@@ -100,6 +100,9 @@ pub fn tab_bar(app: &mut App, ui: &mut Ui) {
                     )
                     .on_hover_text(&title);
                 rects.push(r.rect);
+                if app.drag.is_some() && !active && r.contains_pointer() {
+                    app.frame_hover = Some((crate::dnd::HoverTarget::Tab(i), None));
+                }
                 if r.dragged() {
                     dragged = Some(i);
                 }
@@ -436,6 +439,40 @@ pub(crate) fn view_menu(app: &mut App, ui: &mut Ui) {
     });
 }
 
+fn search_options_menu(app: &mut App, ui: &mut Ui) {
+    use explorer_core::{DateFilter, Kind, SizeFilter};
+    use ui_common::MenuItem;
+    MenuItem::new("Date modified").submenu(ui, |ui| {
+        for (d, label) in DateFilter::ALL {
+            if MenuItem::new(label).selected(app.search_filters.date == Some(d)).ui(ui).clicked() {
+                app.search_filters.date = if app.search_filters.date == Some(d) { None } else { Some(d) };
+                ui.close();
+            }
+        }
+    });
+    MenuItem::new("Kind").submenu(ui, |ui| {
+        for (k, label) in Kind::SEARCH_OPTIONS {
+            if MenuItem::new(label).selected(app.search_filters.kind == Some(k)).ui(ui).clicked() {
+                app.search_filters.kind = if app.search_filters.kind == Some(k) { None } else { Some(k) };
+                ui.close();
+            }
+        }
+    });
+    MenuItem::new("Size").submenu(ui, |ui| {
+        for (s, label) in SizeFilter::ALL {
+            if MenuItem::new(label).selected(app.search_filters.size == Some(s)).ui(ui).clicked() {
+                app.search_filters.size = if app.search_filters.size == Some(s) { None } else { Some(s) };
+                ui.close();
+            }
+        }
+    });
+    ui.separator();
+    if MenuItem::new("Clear filters").enabled(!app.search_filters.is_empty()).ui(ui).clicked() {
+        app.search_filters.clear();
+        ui.close();
+    }
+}
+
 pub fn toolbar(app: &mut App, ui: &mut Ui) {
     egui::Panel::top("toolbar").show(ui, |ui| {
         ui.add_space(4.0);
@@ -555,12 +592,19 @@ pub fn command_bar(app: &mut App, ui: &mut Ui) {
                 app.nearby.queue = app.selected_paths();
                 app.nearby.open = true;
             }
-            if command_button(ui, Icon::Delete, "", has_sel, "Delete (Delete)").clicked() {
+            if command_button(ui, Icon::Delete, "", has_sel, "Delete (Delete, Ctrl+D)").clicked() {
                 app.delete_selection(false);
             }
             command_separator(ui);
             command_menu(ui, Icon::Sort, "Sort", "Sort and group the items", |ui| sort_menu(app, ui));
             command_menu(ui, Icon::View, "View", "Layout and which items and panes to show", |ui| view_menu(app, ui));
+            if !app.filter.trim().is_empty() || app.deep_search.is_some() {
+                let n = app.search_filters.count();
+                let label = if n > 0 { format!("Search options ({n})") } else { "Search options".to_string() };
+                command_menu(ui, Icon::Filter, &label, "Filter the search results", |ui| {
+                    search_options_menu(app, ui);
+                });
+            }
             command_separator(ui);
             ui_common::tool_menu(ui, Icon::More, "See more", |ui| more_menu(app, ui));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -615,8 +659,16 @@ fn address_bar(app: &mut App, ui: &mut Ui) {
             edit = edit.lock_focus(true);
         }
         let r = ui.add(edit);
+        let text_len = text.chars().count();
         if !r.has_focus() && !r.lost_focus() {
             r.request_focus();
+        }
+        if std::mem::take(&mut app.address_select_all)
+            && let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), r.id)
+        {
+            let range = egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(text_len));
+            state.cursor.set_char_range(Some(range));
+            state.store(ui.ctx(), r.id);
         }
         if r.has_focus() && !suggestions.is_empty() {
             let mut pick = None;
@@ -746,7 +798,7 @@ fn address_bar(app: &mut App, ui: &mut Ui) {
     if let Some(p) = go {
         app.navigate(p);
     } else if edit {
-        app.address_edit = Some(app.address_text());
+        app.open_address_edit();
     }
 }
 
@@ -771,10 +823,12 @@ struct TreeOut {
     /// A drag is in progress: folders under the pointer are drop targets.
     dragging: bool,
     drop: Option<PathBuf>,
+    hover_tree: Option<(egui::Id, PathBuf)>,
     /// Pinned folders (keys from `settings::folder_key`), and pin/unpin requests.
     pinned: std::collections::HashSet<String>,
     pin: Option<(PathBuf, bool)>,
     new_tab: Option<PathBuf>,
+    reveal_done: bool,
 }
 
 /// Marks `resp` as the drop target when a drag is over it.
@@ -797,10 +851,19 @@ fn tree_node(
     (icon, label): (Icon, &str),
     out: &mut TreeOut,
     depth: usize,
+    reveal: Option<&Path>,
+    parent_animating: bool,
 ) -> egui::Response {
     let id = ui.make_persistent_id(("tree", path));
     let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
+    if let Some(target) = reveal
+        && explorer_core::path_is_ancestor(path, target)
+        && !state.is_open()
+    {
+        state.set_open(true);
+    }
     let open = state.is_open();
+    let openness_now = state.openness(ui.ctx());
     // Windows 11 shows the expand chevrons only while the pointer is over the pane.
     let (show, color) = (out.pane_hovered, ui_common::Palette::of(ui).text_secondary);
     let row = ui.horizontal(|ui| {
@@ -810,17 +873,48 @@ fn tree_node(
                 tree_chevron(ui, openness, r, color);
             }
         });
-        ui_common::nav_item(ui, Some(icon), label, path == cur)
+        ui_common::nav_item(ui, Some(icon), label, explorer_core::path_eq(path, cur))
     });
     let header = egui::InnerResponse { inner: row.inner, response: row.response.clone() };
+    if let Some(target) = reveal
+        && explorer_core::path_eq(path, target)
+        && !parent_animating
+    {
+        header.inner.scroll_to_me(Some(Align::Center));
+        out.reveal_done = true;
+    }
+    if out.dragging && !open && row.response.contains_pointer() {
+        out.hover_tree = Some((id, path.clone()));
+    }
+    let branch_animating = parent_animating || (open && openness_now < 1.0);
     state.show_body_indented(&row.response, ui, |ui| {
         match tree.get(path) {
             Some(children) if depth < 32 => {
+                let mut any_reveal_child = false;
                 for name in children {
                     let child = path.join(name);
                     // A phone's folders are named by ID; show their display names.
                     let shown = labels.get(&child).map_or(name.as_str(), String::as_str);
-                    tree_node(ui, tree, labels, cur, &child, (Icon::FolderFilled, shown), out, depth + 1);
+                    let child_reveal = reveal.filter(|t| {
+                        let m = explorer_core::path_eq(&child, t) || explorer_core::path_is_ancestor(&child, t);
+                        any_reveal_child |= m;
+                        m
+                    });
+                    tree_node(
+                        ui,
+                        tree,
+                        labels,
+                        cur,
+                        &child,
+                        (Icon::FolderFilled, shown),
+                        out,
+                        depth + 1,
+                        child_reveal,
+                        branch_animating,
+                    );
+                }
+                if reveal.is_some_and(|t| explorer_core::path_is_ancestor(path, t)) && !any_reveal_child {
+                    out.reveal_done = true;
                 }
                 if children.is_empty() {
                     ui.label(RichText::new("(empty)").small().weak());
@@ -904,10 +998,48 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
             let pinned = app.persist.settings.pinned.iter().map(|p| crate::settings::folder_key(p)).collect();
             let pane_hovered = ui.rect_contains_pointer(ui.clip_rect());
             let mut tree_out = TreeOut { dragging, pinned, pane_hovered, ..Default::default() };
+            let reveal = app.reveal_tree.clone();
+            // Pick the deepest matching root (broken by sidebar order) so Ctrl+Shift+E expands one branch.
+            let reveal_root: Option<PathBuf> = reveal.as_ref().and_then(|target| {
+                let roots = app
+                    .places
+                    .iter()
+                    .map(|(_, p)| p)
+                    .chain(app.onedrive.iter().map(|(_, p)| p))
+                    .chain(app.persist.settings.pinned.iter())
+                    .chain(app.drives.iter().map(|d| &d.root))
+                    .chain(app.devices.iter().map(|d| &d.path));
+                let mut best: Option<(usize, PathBuf)> = None;
+                for r in roots {
+                    if explorer_core::path_eq(r, target) || explorer_core::path_is_ancestor(r, target) {
+                        let depth = r.components().count();
+                        if best.as_ref().is_none_or(|(d, _)| depth > *d) {
+                            best = Some((depth, r.clone()));
+                        }
+                    }
+                }
+                best.map(|(_, p)| p)
+            });
+            let mut reveal_used = false;
+            let mut take_reveal = |path: &Path| -> Option<&Path> {
+                if !reveal_used
+                    && let (Some(root), Some(target)) = (reveal_root.as_deref(), reveal.as_deref())
+                    && explorer_core::path_eq(root, path)
+                {
+                    reveal_used = true;
+                    return Some(target);
+                }
+                None
+            };
             let mut place_drop: Option<PathBuf> = None;
+            let mut place_revealed = false;
             let mut place = |ui: &mut Ui, icon: Icon, name: &str, path: &PathBuf, cur: &PathBuf| {
-                let r = ui_common::nav_item(ui, Some(icon), name, path == cur);
-                if path.as_os_str() != explorer_core::NETWORK {
+                let r = ui_common::nav_item(ui, Some(icon), name, explorer_core::path_eq(path, cur));
+                if reveal.as_ref().is_some_and(|t| explorer_core::path_eq(path, t)) {
+                    r.scroll_to_me(Some(Align::Center));
+                    place_revealed = true;
+                }
+                if path.as_os_str() != explorer_core::NETWORK && path.as_os_str() != r"\\wsl.localhost" {
                     drop_hover(&r, dragging, path, &mut place_drop);
                 }
                 r.clicked()
@@ -930,13 +1062,42 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
                     "Videos" => Icon::Videos,
                     _ => Icon::Folder,
                 };
-                tree_node(ui, &app.tree, &app.shell_labels, &app.cur, path, (icon, name), &mut tree_out, 0);
+                let rev = take_reveal(path);
+                tree_node(ui, &app.tree, &app.shell_labels, &app.cur, path, (icon, name), &mut tree_out, 0, rev, false);
             }
             // Quick access pins, after the standard folders (which are always there).
             for path in &app.persist.settings.pinned {
                 let name =
                     path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
-                tree_node(ui, &app.tree, &app.shell_labels, &app.cur, path, (Icon::Pin, &name), &mut tree_out, 0);
+                let rev = take_reveal(path);
+                tree_node(
+                    ui,
+                    &app.tree,
+                    &app.shell_labels,
+                    &app.cur,
+                    path,
+                    (Icon::Pin, &name),
+                    &mut tree_out,
+                    0,
+                    rev,
+                    false,
+                );
+            }
+            // OneDrive personal/commercial roots (Windows only).
+            for (name, path) in &app.onedrive {
+                let rev = take_reveal(path);
+                tree_node(
+                    ui,
+                    &app.tree,
+                    &app.shell_labels,
+                    &app.cur,
+                    path,
+                    (Icon::Cloud, name),
+                    &mut tree_out,
+                    0,
+                    rev,
+                    false,
+                );
             }
             ui.add_space(6.0);
             ui.separator();
@@ -954,8 +1115,19 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
                     DriveKind::Removable => Icon::Usb,
                     _ => Icon::Drive,
                 };
-                let r =
-                    tree_node(ui, &app.tree, &app.shell_labels, &app.cur, &d.root, (icon, &label), &mut tree_out, 0);
+                let rev = take_reveal(&d.root);
+                let r = tree_node(
+                    ui,
+                    &app.tree,
+                    &app.shell_labels,
+                    &app.cur,
+                    &d.root,
+                    (icon, &label),
+                    &mut tree_out,
+                    0,
+                    rev,
+                    false,
+                );
                 if d.kind == DriveKind::Network {
                     let letter = letter.chars().next().unwrap_or('Z');
                     r.context_menu(|ui| {
@@ -971,6 +1143,7 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
             }
             // Phones and cameras, as Explorer lists them with the drives.
             for d in &app.devices {
+                let rev = take_reveal(&d.path);
                 tree_node(
                     ui,
                     &app.tree,
@@ -980,6 +1153,8 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
                     (Icon::Phone, &d.label),
                     &mut tree_out,
                     0,
+                    rev,
+                    false,
                 );
                 if d.total > 0 {
                     space_bar(ui, d.total, d.free);
@@ -994,6 +1169,12 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
             if place(ui, Icon::Network, "Network", &network, &app.cur) {
                 go = Some(network);
             }
+            if app.has_wsl {
+                let wsl = PathBuf::from(r"\\wsl.localhost");
+                if place(ui, Icon::Network, "Linux", &wsl, &app.cur) {
+                    go = Some(wsl);
+                }
+            }
             if ui_common::nav_item(ui, Some(Icon::Share), "Nearby sharing", app.nearby.open)
                 .on_hover_text("Send and receive with phones (LocalSend)")
                 .clicked()
@@ -1003,6 +1184,12 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
             let bin = PathBuf::from(explorer_core::RECYCLE_BIN);
             if place(ui, Icon::RecycleBin, "Recycle Bin", &bin, &app.cur) {
                 go = Some(bin);
+            }
+            if place_revealed || tree_out.reveal_done || (reveal.is_some() && !reveal_used) {
+                app.reveal_tree = None;
+            }
+            if let Some((id, path)) = tree_out.hover_tree {
+                app.frame_hover = Some((crate::dnd::HoverTarget::Tree(id), Some(path)));
             }
             if let Some(l) = unmap {
                 app.unmap(l);
@@ -1054,6 +1241,10 @@ pub fn status_bar(app: &mut App, ui: &mut Ui) {
             if let Some(q) = &app.deep_search {
                 ui.separator();
                 ui.label(format!("Results for \"{q}\" in subfolders"));
+            }
+            if !app.search_filters.is_empty() {
+                ui.separator();
+                ui.label(RichText::new(format!("Filter: {}", app.search_filters.summary())).weak());
             }
             if app.loading {
                 ui.separator();
@@ -1154,6 +1345,49 @@ pub enum Action {
 pub fn file_list(app: &mut App, ui: &mut Ui) {
     // The sidebar or toolbar may have navigated earlier in this frame.
     app.update_view();
+    let over_list = ui.rect_contains_pointer(ui.max_rect());
+    let ctrl_held = ui.input(|i| i.modifiers.ctrl || i.modifiers.command);
+    if over_list && app.dialog.is_none() && ctrl_held {
+        let mut steps = 0i32;
+        ui.input_mut(|i| {
+            // Do not scroll the list while Ctrl+wheel changes the view.
+            i.smooth_scroll_delta = egui::Vec2::ZERO;
+            for ev in &i.events {
+                if let egui::Event::MouseWheel { unit, delta, modifiers, .. } = ev
+                    && (modifiers.ctrl || modifiers.command)
+                {
+                    match unit {
+                        egui::MouseWheelUnit::Line | egui::MouseWheelUnit::Page => {
+                            if delta.y > 0.0 {
+                                steps += 1;
+                            } else if delta.y < 0.0 {
+                                steps -= 1;
+                            }
+                        }
+                        egui::MouseWheelUnit::Point => {
+                            app.wheel_zoom_accum += delta.y;
+                            while app.wheel_zoom_accum >= 20.0 {
+                                app.wheel_zoom_accum -= 20.0;
+                                steps += 1;
+                            }
+                            while app.wheel_zoom_accum <= -20.0 {
+                                app.wheel_zoom_accum += 20.0;
+                                steps -= 1;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        if steps != 0 {
+            let up = steps > 0;
+            for _ in 0..steps.abs() {
+                app.view_mode = app.view_mode.step_wheel(up);
+            }
+        }
+    } else {
+        app.wheel_zoom_accum = 0.0;
+    }
     let mut action: Option<Action> = None;
 
     // Background (empty space below the rows): clear selection, folder context menu.
@@ -1238,6 +1472,7 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
         };
     let n = app.view.len();
     let weak = ui.visuals().weak_text_color();
+    let text_color = ui.visuals().text_color();
     let mut wanted_icons: Vec<IconKey> = Vec::new();
     // Drag and drop, collected while drawing (the rows only borrow `app`).
     let dragging = app.drag.is_some();
@@ -1338,13 +1573,20 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                     let e = &app.entries[app.view[pos]];
                     row.set_selected(app.selected.contains(&e.name));
                     let dim = e.hidden || e.system;
+                    let cut = app.is_cut(&e.name);
+                    let row_weak = if cut { weak.gamma_multiply(0.5) } else { weak };
+                    let img_tint = if cut { egui::Color32::WHITE.gamma_multiply(0.5) } else { egui::Color32::WHITE };
                     let shown = if app.show_extensions || e.is_dir {
                         e.display()
                     } else {
                         let d = e.display();
                         d.rfind('.').filter(|&i| i > 0).map_or(d, |i| &d[..i])
                     };
-                    let name_text = if dim { RichText::new(shown).color(weak) } else { RichText::new(shown) };
+                    let mut name_color = if dim { weak } else { text_color };
+                    if cut {
+                        name_color = name_color.gamma_multiply(0.5);
+                    }
+                    let name_text = RichText::new(shown).color(name_color);
                     let mut name_rect = egui::Rect::NOTHING;
                     row.col(|ui| {
                         if app.item_checkboxes {
@@ -1356,14 +1598,22 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                         let key = IconKey::for_entry(e, &app.cur);
                         match app.icons.get(&key) {
                             Some(IconState::Ready(tex)) => {
-                                ui.add(egui::Image::new((tex.id(), egui::vec2(16.0, 16.0))));
+                                ui.add(egui::Image::new((tex.id(), egui::vec2(16.0, 16.0))).tint(img_tint));
                             }
                             state => {
                                 if state.is_none() {
                                     wanted_icons.push(key);
                                 }
                                 let icon = RichText::new(icon_for(e));
-                                ui.label(if e.is_dir { icon.color(ui_common::Palette::of(ui).folder) } else { icon });
+                                let mut c = if e.is_dir {
+                                    ui_common::Palette::of(ui).folder
+                                } else {
+                                    ui.visuals().text_color()
+                                };
+                                if cut {
+                                    c = c.gamma_multiply(0.5);
+                                }
+                                ui.label(icon.color(c));
                             }
                         }
                         ui.add_space(4.0);
@@ -1374,7 +1624,7 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                             }
                         }
                         if e.link {
-                            ui.label(RichText::new(" ⤴").weak());
+                            ui.label(RichText::new(" ⤴").color(row_weak));
                         }
                         name_rect = ui.min_rect();
                         // Keep the band's end in view: the table scrolls while it is dragged.
@@ -1387,7 +1637,7 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                     });
                     row.col(|ui| {
                         ui.add(
-                            egui::Label::new(RichText::new(format_time(e.modified, app.utc_offset)).color(weak))
+                            egui::Label::new(RichText::new(format_time(e.modified, app.utc_offset)).color(row_weak))
                                 .selectable(false),
                         );
                     });
@@ -1396,13 +1646,13 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                             Some(n) => n.clone(),
                             None => e.type_name(),
                         };
-                        ui.add(egui::Label::new(RichText::new(third).color(weak)).selectable(false));
+                        ui.add(egui::Label::new(RichText::new(third).color(row_weak)).selectable(false));
                     });
                     row.col(|ui| {
                         if !e.is_dir {
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 ui.add(
-                                    egui::Label::new(RichText::new(format_size_kb(e.size)).color(weak))
+                                    egui::Label::new(RichText::new(format_size_kb(e.size)).color(row_weak))
                                         .selectable(false),
                                 );
                             });
@@ -1411,7 +1661,7 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                     if col_created {
                         row.col(|ui| {
                             ui.add(
-                                egui::Label::new(RichText::new(format_time(e.created, app.utc_offset)).color(weak))
+                                egui::Label::new(RichText::new(format_time(e.created, app.utc_offset)).color(row_weak))
                                     .selectable(false),
                             );
                         });
@@ -1419,7 +1669,7 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                     if col_attrs {
                         row.col(|ui| {
                             ui.add(
-                                egui::Label::new(RichText::new(format_attributes(e.attrs)).color(weak))
+                                egui::Label::new(RichText::new(format_attributes(e.attrs)).color(row_weak))
                                     .selectable(false),
                             );
                         });
@@ -1444,7 +1694,7 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                                 values.and_then(|v| v.get(k)).map_or("", String::as_str)
                             };
                             row.col(|ui| {
-                                ui.add(egui::Label::new(RichText::new(text).color(weak)).selectable(false));
+                                ui.add(egui::Label::new(RichText::new(text).color(row_weak)).selectable(false));
                             });
                         }
                     }
