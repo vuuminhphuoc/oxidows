@@ -2161,6 +2161,7 @@ impl App {
         let n = self.view.len();
         let mut moved: Option<(usize, bool)> = None; // (new position, extend selection)
         let mut events = Vec::new();
+        let popup_open = egui::Popup::is_any_open(ui.ctx());
         ui.input_mut(|i| {
             let shift = i.modifiers.shift;
             // In the icon views the arrows follow the grid (Left/Right too); in Details they
@@ -2213,6 +2214,10 @@ impl App {
                 (Modifiers::ALT, Key::Enter, "props"),
                 (Modifiers::NONE, Key::Escape, "none"),
             ] {
+                // An open menu closes on Esc; taking the key here would leave it open.
+                if k == Key::Escape && popup_open {
+                    continue;
+                }
                 if i.consume_key(m, k) {
                     events.push(tag);
                 }
