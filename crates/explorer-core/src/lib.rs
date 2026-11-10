@@ -10,7 +10,7 @@ use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 
 pub mod query;
-pub use query::Query;
+pub use query::{DateFilter, Kind, Query, SearchFilters, SizeFilter};
 
 /// Optional Details columns read from the Windows property system (per file, in the
 /// background), in the column chooser's order.
@@ -660,6 +660,61 @@ pub fn child_path(cur: &Path, name: &str) -> PathBuf {
         Place::Server(server) => PathBuf::from(format!(r"\\{server}\{name}")),
         _ => cur.join(name),
     }
+}
+
+/// Normalized comparison key for a path (case-insensitive on Windows, trims trailing slashes).
+pub fn path_key(p: &Path) -> String {
+    path_key_with(p, cfg!(windows))
+}
+
+pub fn path_key_with(p: &Path, case_insensitive: bool) -> String {
+    let s = p.to_string_lossy();
+    let trimmed = s.trim_end_matches(['\\', '/']);
+    let base = if trimmed.is_empty() && !s.is_empty() { "/" } else { trimmed };
+    if case_insensitive { base.to_lowercase() } else { base.to_string() }
+}
+
+pub fn path_eq(a: &Path, b: &Path) -> bool {
+    path_eq_with(a, b, cfg!(windows))
+}
+
+pub fn path_eq_with(a: &Path, b: &Path, case_insensitive: bool) -> bool {
+    let mut ac = a.components();
+    let mut bc = b.components();
+    loop {
+        match (ac.next(), bc.next()) {
+            (None, None) => return true,
+            (Some(x), Some(y)) => {
+                let xs = x.as_os_str().to_string_lossy();
+                let ys = y.as_os_str().to_string_lossy();
+                let same = if case_insensitive { xs.to_lowercase() == ys.to_lowercase() } else { xs == ys };
+                if !same {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+}
+
+/// True when `ancestor` is a strict parent/ancestor of `target` by path components.
+pub fn path_is_ancestor(ancestor: &Path, target: &Path) -> bool {
+    path_is_ancestor_with(ancestor, target, cfg!(windows))
+}
+
+pub fn path_is_ancestor_with(ancestor: &Path, target: &Path, case_insensitive: bool) -> bool {
+    let mut ac = ancestor.components();
+    let mut tc = target.components();
+    for x in &mut ac {
+        let Some(y) = tc.next() else { return false };
+        let xs = x.as_os_str().to_string_lossy();
+        let ys = y.as_os_str().to_string_lossy();
+        let same = if case_insensitive { xs.to_lowercase() == ys.to_lowercase() } else { xs == ys };
+        if !same {
+            return false;
+        }
+    }
+    tc.next().is_some()
 }
 
 /// One level up: share root -> server -> Network; drive root -> none.
@@ -1334,5 +1389,18 @@ mod tests {
             shell_folder_template("controlpanel").map(|t| classify(Path::new(t))),
             Some(Place::Shell(CONTROL_PANEL_CLSID.into()))
         );
+    }
+
+    #[test]
+    fn path_ancestor_and_equality() {
+        let p = Path::new;
+        assert!(path_eq_with(p(r"C:\Users\Alice\"), p(r"c:\users\alice"), true));
+        assert!(!path_eq_with(p("/Users/Alice"), p("/users/alice"), false));
+        assert!(path_is_ancestor_with(p(r"C:\Users"), p(r"c:\users\Alice\Docs"), true));
+        assert!(!path_is_ancestor_with(p(r"C:\Users"), p(r"C:\Users"), true));
+        assert!(!path_is_ancestor_with(p(r"C:\User"), p(r"C:\Users\Alice"), true));
+        assert!(path_is_ancestor_with(p("/"), p("/home/alice"), false));
+        assert_eq!(path_key_with(p("/"), false), "/");
+        assert_eq!(path_key_with(p(r"C:\Foo\"), true), r"c:\foo");
     }
 }
