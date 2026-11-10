@@ -918,14 +918,15 @@ mod tests {
     }
     #[test]
     fn onedrive_dedup_and_names() {
+        // Forward slashes are separators on every platform, so this runs on Linux too.
         use std::collections::HashMap;
         use std::path::{Path, PathBuf};
         let env = HashMap::from([
-            ("OneDrive", r"C:\Users\a\OneDrive - Contoso\"),
-            ("OneDriveConsumer", r"C:\Users\a\OneDrive"),
-            ("OneDriveCommercial", r"c:\users\a\OneDrive - Contoso"),
+            ("OneDrive", r"C:/Users/a/OneDrive - Contoso/"),
+            ("OneDriveConsumer", r"C:/Users/a/OneDrive"),
+            ("OneDriveCommercial", r"c:/users/a/OneDrive - Contoso"),
         ]);
-        let dirs = HashMap::from([(r"c:\users\a\onedrive", true), (r"c:\users\a\onedrive - contoso", true)]);
+        let dirs = HashMap::from([(r"c:/users/a/onedrive", true), (r"c:/users/a/onedrive - contoso", true)]);
         let got = super::onedrive_folders_from(
             |k| env.get(k).map(|s| (*s).to_string()),
             |p: &Path| dirs.get(explorer_core::path_key_with(p, true).as_str()).copied().unwrap_or(false),
@@ -933,20 +934,20 @@ mod tests {
         assert_eq!(
             got,
             vec![
-                ("OneDrive".to_string(), PathBuf::from(r"C:\Users\a\OneDrive")),
-                ("OneDrive - Contoso".to_string(), PathBuf::from(r"c:\users\a\OneDrive - Contoso")),
+                ("OneDrive".to_string(), PathBuf::from(r"C:/Users/a/OneDrive")),
+                ("OneDrive - Contoso".to_string(), PathBuf::from(r"c:/users/a/OneDrive - Contoso")),
             ]
         );
 
         // Business folder named after company, plus missing personal folder skipped.
         let env2 = HashMap::from([
-            ("OneDriveConsumer", r"C:\Users\a\Missing"),
-            ("OneDriveCommercial", r"C:\Users\a\Acme Corp"),
+            ("OneDriveConsumer", r"C:/Users/a/Missing"),
+            ("OneDriveCommercial", r"C:/Users/a/Acme Corp"),
         ]);
         let got2 = super::onedrive_folders_from(
             |k| env2.get(k).map(|s| (*s).to_string()),
-            |p: &Path| explorer_core::path_key_with(p, true) == r"c:\users\a\acme corp",
+            |p: &Path| explorer_core::path_key_with(p, true) == r"c:/users/a/acme corp",
         );
-        assert_eq!(got2, vec![("OneDrive - Acme Corp".to_string(), PathBuf::from(r"C:\Users\a\Acme Corp"))]);
+        assert_eq!(got2, vec![("OneDrive - Acme Corp".to_string(), PathBuf::from(r"C:/Users/a/Acme Corp"))]);
     }
 }

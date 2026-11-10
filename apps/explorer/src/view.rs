@@ -605,6 +605,7 @@ pub fn command_bar(app: &mut App, ui: &mut Ui) {
                     search_options_menu(app, ui);
                 });
             }
+            command_separator(ui);
             ui_common::tool_menu(ui, Icon::More, "See more", |ui| more_menu(app, ui));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 use crate::pane::Pane;

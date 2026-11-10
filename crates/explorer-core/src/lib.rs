@@ -1394,13 +1394,24 @@ mod tests {
     #[test]
     fn path_ancestor_and_equality() {
         let p = Path::new;
-        assert!(path_eq_with(p(r"C:\Users\Alice\"), p(r"c:\users\alice"), true));
+        // Forward slashes parse as separators on every platform, so this runs on Linux too.
+        assert!(path_eq_with(p("/Users/Alice/"), p("/users/alice"), true));
         assert!(!path_eq_with(p("/Users/Alice"), p("/users/alice"), false));
-        assert!(path_is_ancestor_with(p(r"C:\Users"), p(r"c:\users\Alice\Docs"), true));
-        assert!(!path_is_ancestor_with(p(r"C:\Users"), p(r"C:\Users"), true));
-        assert!(!path_is_ancestor_with(p(r"C:\User"), p(r"C:\Users\Alice"), true));
+        assert!(path_is_ancestor_with(p("/Users"), p("/users/Alice/Docs"), true));
+        assert!(!path_is_ancestor_with(p("/Users"), p("/Users"), true));
+        assert!(!path_is_ancestor_with(p("/User"), p("/Users/Alice"), true));
         assert!(path_is_ancestor_with(p("/"), p("/home/alice"), false));
         assert_eq!(path_key_with(p("/"), false), "/");
         assert_eq!(path_key_with(p(r"C:\Foo\"), true), r"c:\foo");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn path_ancestor_and_equality_with_drives() {
+        let p = Path::new;
+        assert!(path_eq_with(p(r"C:\Users\Alice\"), p(r"c:\users\alice"), true));
+        assert!(path_is_ancestor_with(p(r"C:\Users"), p(r"c:\users\Alice\Docs"), true));
+        assert!(!path_is_ancestor_with(p(r"C:\Users"), p(r"C:\Users"), true));
+        assert!(!path_is_ancestor_with(p(r"C:\User"), p(r"C:\Users\Alice"), true));
     }
 }
