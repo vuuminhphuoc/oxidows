@@ -215,6 +215,8 @@ pub fn startup_items() -> Vec<StartupItem> {
                 enabled: get("Hidden=") != "true",
                 per_user: true,
                 publisher: String::new(),
+                startup_type: "Folder".into(),
+                disabled_time: None,
             })
         })
         .collect()

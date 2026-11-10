@@ -531,6 +531,11 @@ pub fn search_online(term: &str) -> io::Result<()> {
     imp::open_url(&format!("https://www.bing.com/search?q={q}"))
 }
 
+/// Opens a URL or system protocol URI (e.g. `ms-settings:otherusers`) using the default handler.
+pub fn open_url(url: &str) -> io::Result<()> {
+    imp::open_url(url)
+}
+
 /// `"C:\Program Files\x.exe" -a b` -> (`C:\Program Files\x.exe`, `-a b`).
 pub(crate) fn split_command(cmd: &str) -> (String, String) {
     let cmd = cmd.trim();

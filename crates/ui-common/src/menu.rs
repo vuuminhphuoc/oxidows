@@ -350,3 +350,46 @@ impl ViewIcon {
         }
     }
 }
+
+/// Context menu for column headers: toggle columns on/off, keeping an optional fixed column always on.
+pub fn column_chooser_menu<T: Copy + PartialEq>(
+    ui: &mut Ui,
+    all: &[T],
+    columns: &mut Vec<T>,
+    fixed: Option<(&str, T)>,
+    title: impl Fn(T) -> &'static str,
+) {
+    if let Some((name, fixed_col)) = fixed {
+        MenuItem::new(name).checked(true).enabled(false).ui(ui);
+        for &c in all {
+            if c == fixed_col {
+                continue;
+            }
+            let mut on = columns.contains(&c);
+            if menu_check(ui, None, title(c), &mut on).clicked() {
+                if on {
+                    if !columns.contains(&c) {
+                        columns.push(c);
+                        columns.sort_by_key(|x| all.iter().position(|a| a == x).unwrap_or(0));
+                    }
+                } else {
+                    columns.retain(|x| *x != c);
+                }
+            }
+        }
+    } else {
+        for &c in all {
+            let mut on = columns.contains(&c);
+            if menu_check(ui, None, title(c), &mut on).clicked() {
+                if on {
+                    if !columns.contains(&c) {
+                        columns.push(c);
+                        columns.sort_by_key(|x| all.iter().position(|a| a == x).unwrap_or(0));
+                    }
+                } else {
+                    columns.retain(|x| *x != c);
+                }
+            }
+        }
+    }
+}

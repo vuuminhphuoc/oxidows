@@ -426,28 +426,38 @@ impl App {
                 settings.values_pct,
                 processes::parse_columns(&settings.processes_columns),
                 SortBy::parse(&settings.sort_processes, taskmgr_core::SortKey::from_key),
+                settings.confirm_efficiency_mode,
             ),
             performance: performance::State::with_cpu_view(settings.cpu_logical, settings.cpu_kernel),
             history: history::State::new(
                 cc.egui_ctx.clone(),
-                SortBy::parse(&settings.sort_history, history::Sort::from_key),
+                history::parse_columns(&settings.history_columns),
+                SortBy::parse(&settings.sort_history, history::Col::from_key),
+                settings.history_all_processes,
             ),
             details: details::State::new(
                 status.clone(),
                 icons.clone(),
                 details::parse_columns(&settings.details_columns),
                 SortBy::parse(&settings.sort_details, details::Col::from_key),
+                settings.confirm_efficiency_mode,
             ),
             services: services::State::new(
                 status.clone(),
                 cc.egui_ctx.clone(),
                 SortBy::parse(&settings.sort_services, services::Col::from_key),
             ),
-            startup: startup::State::new(status.clone(), SortBy::parse(&settings.sort_startup, startup::Col::from_key)),
+            startup: startup::State::new(
+                status.clone(),
+                startup::parse_columns(&settings.startup_columns),
+                SortBy::parse(&settings.sort_startup, startup::Col::from_key),
+            ),
             users: users::State::new(
                 status.clone(),
                 icons.clone(),
+                users::parse_columns(&settings.users_columns),
                 SortBy::parse(&settings.sort_users, users::Col::from_key),
+                settings.show_full_account_name,
             ),
             icons,
             settings,
@@ -979,15 +989,26 @@ impl eframe::App for App {
             }
             Tab::AppHistory => {
                 self.history.filter = self.search.clone();
-                self.history.show(ui, self.elevated);
+                self.history.show_all_processes = self.settings.history_all_processes;
+                if self.history.show(ui, self.elevated) {
+                    self.settings.history_columns = history::columns_text(&self.history.columns);
+                    self.save_settings();
+                }
             }
             Tab::Startup => {
                 self.startup.filter = self.search.clone();
-                self.startup.show(ui, &snap);
+                if self.startup.show(ui, &snap) {
+                    self.settings.startup_columns = startup::columns_text(&self.startup.columns);
+                    self.save_settings();
+                }
             }
             Tab::Users => {
                 self.users.filter = self.search.clone();
-                self.users.show(ui, &snap);
+                self.users.show_full_name = self.settings.show_full_account_name;
+                if self.users.show(ui, &snap) {
+                    self.settings.users_columns = users::columns_text(&self.users.columns);
+                    self.save_settings();
+                }
             }
             Tab::Details => {
                 self.details.filter = self.search.clone();
@@ -1018,6 +1039,10 @@ impl eframe::App for App {
                         // "Reset" also clears the Performance checkboxes.
                         self.performance.per_core = s.cpu_logical;
                         self.performance.kernel = s.cpu_kernel;
+                        self.processes.confirm_efficiency = s.confirm_efficiency_mode;
+                        self.details.confirm_efficiency = s.confirm_efficiency_mode;
+                        self.users.show_full_name = s.show_full_account_name;
+                        self.history.show_all_processes = s.history_all_processes;
                         self.save_settings();
                     }
                     // As in Windows 11's Task Manager, About closes the Settings page.

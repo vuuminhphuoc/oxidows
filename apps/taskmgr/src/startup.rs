@@ -15,7 +15,10 @@ pub enum Col {
     Name,
     Publisher,
     Status,
+    StartupType,
     Impact,
+    RunningNow,
+    DisabledTime,
     Cpu,
     Disk,
     Command,
@@ -23,7 +26,21 @@ pub enum Col {
 }
 
 impl Col {
-    const ALL: [Col; 8] =
+    pub const ALL: [Col; 11] = [
+        Col::Name,
+        Col::Publisher,
+        Col::Status,
+        Col::StartupType,
+        Col::Impact,
+        Col::RunningNow,
+        Col::DisabledTime,
+        Col::Cpu,
+        Col::Disk,
+        Col::Command,
+        Col::Location,
+    ];
+
+    pub const DEFAULT: [Col; 8] =
         [Col::Name, Col::Publisher, Col::Status, Col::Impact, Col::Cpu, Col::Disk, Col::Command, Col::Location];
 
     pub fn key(self) -> &'static str {
@@ -31,7 +48,10 @@ impl Col {
             Col::Name => "name",
             Col::Publisher => "publisher",
             Col::Status => "status",
+            Col::StartupType => "startup_type",
             Col::Impact => "impact",
+            Col::RunningNow => "running_now",
+            Col::DisabledTime => "disabled_time",
             Col::Cpu => "cpu",
             Col::Disk => "disk",
             Col::Command => "command",
@@ -43,12 +63,15 @@ impl Col {
         Col::ALL.into_iter().find(|c| c.key() == k)
     }
 
-    fn title(self) -> &'static str {
+    pub fn title(self) -> &'static str {
         match self {
             Col::Name => "Name",
             Col::Publisher => "Publisher",
             Col::Status => "Status",
+            Col::StartupType => "Startup type",
             Col::Impact => "Startup impact",
+            Col::RunningNow => "Running now",
+            Col::DisabledTime => "Disabled time",
             Col::Cpu => "CPU at startup",
             Col::Disk => "Disk I/O at startup",
             Col::Command => "Command",
@@ -56,10 +79,41 @@ impl Col {
         }
     }
 
+    fn column(self) -> Column {
+        match self {
+            Col::Name => Column::initial(200.0).clip(true),
+            Col::Publisher => Column::initial(160.0).clip(true),
+            Col::Status => Column::exact(80.0),
+            Col::StartupType => Column::exact(90.0),
+            Col::Impact => Column::exact(100.0),
+            Col::RunningNow => Column::exact(90.0),
+            Col::DisabledTime => Column::initial(130.0).clip(true),
+            Col::Cpu => Column::exact(100.0),
+            Col::Disk => Column::exact(100.0),
+            Col::Command => Column::initial(300.0).clip(true),
+            Col::Location => Column::remainder().clip(true),
+        }
+    }
+
     /// Text columns sort A to Z first; impact and costs biggest first.
     fn descending_first(self) -> bool {
-        matches!(self, Col::Impact | Col::Cpu | Col::Disk)
+        matches!(self, Col::Impact | Col::Cpu | Col::Disk | Col::DisabledTime)
     }
+}
+
+pub fn parse_columns(v: &str) -> Vec<Col> {
+    if v.trim().is_empty() {
+        return Col::DEFAULT.to_vec();
+    }
+    let mut cols: Vec<Col> = v.split(',').filter_map(|k| Col::from_key(k.trim())).collect();
+    if !cols.contains(&Col::Name) {
+        cols.insert(0, Col::Name);
+    }
+    cols
+}
+
+pub fn columns_text(cols: &[Col]) -> String {
+    cols.iter().map(|c| c.key()).collect::<Vec<_>>().join(",")
 }
 
 /// "Startup impact" as shown: disabled apps have none, unmeasured ones say so.
@@ -82,7 +136,7 @@ fn impact_rank(label: &str) -> i8 {
 }
 
 /// Indices of `items` in the order of `sort`, name breaking ties.
-fn sorted(items: &[StartupItem], cost: &[Option<(u64, u64)>], sort: SortBy<Col>) -> Vec<usize> {
+fn sorted(items: &[StartupItem], cost: &[Option<(u64, u64)>], running: &[bool], sort: SortBy<Col>) -> Vec<usize> {
     let mut v: Vec<usize> = (0..items.len()).collect();
     v.sort_by(|&i, &j| {
         let (a, b) = (&items[i], &items[j]);
@@ -90,7 +144,10 @@ fn sorted(items: &[StartupItem], cost: &[Option<(u64, u64)>], sort: SortBy<Col>)
             Col::Name => cmp_text(&a.name, &b.name),
             Col::Publisher => cmp_text(&a.publisher, &b.publisher),
             Col::Status => a.enabled.cmp(&b.enabled),
+            Col::StartupType => cmp_text(&a.startup_type, &b.startup_type),
             Col::Impact => impact_rank(impact(a, cost[i])).cmp(&impact_rank(impact(b, cost[j]))),
+            Col::RunningNow => running[i].cmp(&running[j]),
+            Col::DisabledTime => a.disabled_time.cmp(&b.disabled_time),
             Col::Cpu => cost[i].map(|c| c.0).cmp(&cost[j].map(|c| c.0)),
             Col::Disk => cost[i].map(|c| c.1).cmp(&cost[j].map(|c| c.1)),
             Col::Command => cmp_text(&a.command, &b.command),
@@ -105,6 +162,7 @@ pub struct State {
     pub(crate) filter: String,
     items: Option<Vec<StartupItem>>,
     pub sort: SortBy<Col>,
+    pub columns: Vec<Col>,
     selected: Option<usize>,
     bios_ms: Option<u32>,
     status: Status,
@@ -123,11 +181,12 @@ fn now_filetime() -> u64 {
 }
 
 impl State {
-    pub fn new(status: Status, sort: Option<SortBy<Col>>) -> Self {
+    pub fn new(status: Status, columns: Vec<Col>, sort: Option<SortBy<Col>>) -> Self {
         Self {
             filter: String::new(),
             items: None,
             sort: sort.unwrap_or(SortBy::new(Col::Name, false)),
+            columns,
             selected: None,
             bios_ms: taskmgr_sys::last_bios_ms(),
             status,
@@ -187,7 +246,8 @@ impl State {
         }
     }
 
-    pub fn show(&mut self, ui: &mut Ui, snap: &Snapshot) {
+    pub fn show(&mut self, ui: &mut Ui, snap: &Snapshot) -> bool {
+        let before = self.columns.clone();
         if self.measured.is_empty() || self.items.is_none() {
             self.measure(snap);
         }
@@ -197,7 +257,17 @@ impl State {
             .iter()
             .map(|it| self.measured.get(&taskmgr_sys::startup_exe(&it.command).to_lowercase()).copied())
             .collect();
-        let view = sorted(items, &cost, self.sort);
+        let running: Vec<bool> = items
+            .iter()
+            .map(|it| {
+                let exe = taskmgr_sys::startup_exe(&it.command).to_lowercase();
+                if exe.is_empty() {
+                    return false;
+                }
+                snap.processes.iter().any(|p| !p.info.path.is_empty() && p.info.path.to_lowercase() == exe)
+            })
+            .collect();
+        let view = sorted(items, &cost, &running, self.sort);
         let f = self.filter.trim().to_lowercase();
         let view: Vec<usize> = view
             .into_iter()
@@ -227,26 +297,34 @@ impl State {
             self.selected = Some(view[new_k]);
             scroll_to = Some(new_k);
         }
+        let cols = self.columns.clone();
         let mut table = TableBuilder::new(ui)
             .resizable(true)
             .sense(egui::Sense::click())
-            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-            .column(Column::initial(200.0).clip(true))
-            .column(Column::initial(160.0).clip(true))
-            .column(Column::exact(80.0))
-            .columns(Column::exact(100.0), 3)
-            .column(Column::initial(300.0).clip(true))
-            .column(Column::remainder().clip(true));
+            .cell_layout(egui::Layout::left_to_right(egui::Align::Center));
+        for (idx, &c) in cols.iter().enumerate() {
+            table = table.column(if idx + 1 == cols.len() { Column::remainder().clip(true) } else { c.column() });
+        }
         if let Some(pos) = scroll_to {
             table = table.scroll_to_row(pos, Some(egui::Align::Center));
         }
         table
             .header(SORT_HEADER_HEIGHT, |mut h| {
-                for c in Col::ALL {
+                for &c in &cols {
                     h.col(|ui| {
-                        if sort_header(ui, c.title(), self.sort.arrow(c)).clicked() {
+                        let resp = sort_header(ui, c.title(), self.sort.arrow(c));
+                        if resp.clicked() {
                             clicked = Some(c);
                         }
+                        resp.context_menu(|ui| {
+                            ui_common::column_chooser_menu(
+                                ui,
+                                &Col::ALL,
+                                &mut self.columns,
+                                Some(("Name", Col::Name)),
+                                |c| c.title(),
+                            );
+                        });
                     });
                 }
             })
@@ -255,32 +333,47 @@ impl State {
                     let i = view[row.index()];
                     let it = &items[i];
                     row.set_selected(self.selected == Some(i));
-                    row.col(|ui| {
-                        ui.label(&it.name);
-                    });
-                    row.col(|ui| {
-                        ui.label(&it.publisher);
-                    });
-                    row.col(|ui| {
-                        ui.label(if it.enabled { "Enabled" } else { "Disabled" });
-                    });
-                    let c = cost[i];
-                    row.col(|ui| {
-                        ui.label(impact(it, c))
-                            .on_hover_text("From the app's own CPU and disk use since it started at sign-in");
-                    });
-                    row.col(|ui| {
-                        ui.label(c.map_or(String::new(), |(cpu, _)| format!("{} ms", cpu / 10_000)));
-                    });
-                    row.col(|ui| {
-                        ui.label(c.map_or(String::new(), |(_, io)| format_bytes(io as f64)));
-                    });
-                    row.col(|ui| {
-                        ui.label(&it.command).on_hover_text(&it.command);
-                    });
-                    row.col(|ui| {
-                        ui.label(&it.location);
-                    });
+                    for &c in &cols {
+                        row.col(|ui| match c {
+                            Col::Name => {
+                                ui.label(&it.name);
+                            }
+                            Col::Publisher => {
+                                ui.label(&it.publisher);
+                            }
+                            Col::Status => {
+                                ui.label(if it.enabled { "Enabled" } else { "Disabled" });
+                            }
+                            Col::StartupType => {
+                                ui.label(&it.startup_type);
+                            }
+                            Col::Impact => {
+                                ui.label(impact(it, cost[i]))
+                                    .on_hover_text("From the app's own CPU and disk use since it started at sign-in");
+                            }
+                            Col::RunningNow => {
+                                ui.label(if running[i] { "Yes" } else { "No" });
+                            }
+                            Col::DisabledTime => {
+                                let dt = it.disabled_time.map_or(String::new(), taskmgr_core::format_filetime);
+                                ui.label(dt);
+                            }
+                            Col::Cpu => {
+                                let c = cost[i];
+                                ui.label(c.map_or(String::new(), |(cpu, _)| format!("{} ms", cpu / 10_000)));
+                            }
+                            Col::Disk => {
+                                let c = cost[i];
+                                ui.label(c.map_or(String::new(), |(_, io)| format_bytes(io as f64)));
+                            }
+                            Col::Command => {
+                                ui.label(&it.command).on_hover_text(&it.command);
+                            }
+                            Col::Location => {
+                                ui.label(&it.location);
+                            }
+                        });
+                    }
                     let resp = row.response();
                     if resp.clicked() {
                         self.selected = Some(i);
@@ -328,5 +421,21 @@ impl State {
             self.items = None;
             self.measured.clear();
         }
+        if !self.columns.contains(&self.sort.key) {
+            self.sort = SortBy::new(Col::Name, false);
+        }
+        self.columns != before
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn columns_round_trip() {
+        let cols = vec![Col::Name, Col::Status, Col::RunningNow, Col::DisabledTime];
+        assert_eq!(parse_columns(&columns_text(&cols)), cols);
+        assert_eq!(parse_columns(""), Col::DEFAULT.to_vec());
     }
 }

@@ -321,13 +321,14 @@ pub fn app_history(cycles_per_sec: f64) -> io::Result<AppHistory> {
     let db = snapshot(&work)?;
     let jet = Jet::open(&db, &work)?;
 
-    let mut names: HashMap<u32, String> = HashMap::new();
+    let mut names: HashMap<u32, (String, bool)> = HashMap::new();
     jet.scan(ID_MAP, &["IdType", "IdIndex", "IdBlob"], |v| {
-        // IdType 3 is a user SID; 0, 1 and 2 are apps (path, package, service).
-        if int(&v[0]) != 3
+        // IdType 3 is a user SID; 0, 1 and 2 are apps (0: path, 1: package, 2: service).
+        let id_type = int(&v[0]);
+        if id_type != 3
             && let Some(blob) = &v[2]
         {
-            names.insert(int(&v[1]) as u32, app_name(blob));
+            names.insert(int(&v[1]) as u32, (app_name(blob), id_type == 1));
         }
     })?;
 
@@ -352,8 +353,9 @@ pub fn app_history(cycles_per_sec: f64) -> io::Result<AppHistory> {
     })?;
     let mut apps: HashMap<String, AppUsage> = HashMap::new();
     for (id, cycles, sent, recv, m) in rows {
-        let name = names.get(&(id as u32)).cloned().unwrap_or_else(|| format!("App {id}"));
-        let a = apps.entry(name.clone()).or_insert_with(|| AppUsage { name, ..Default::default() });
+        let (name, packaged) = names.get(&(id as u32)).cloned().unwrap_or_else(|| (format!("App {id}"), false));
+        let a = apps.entry(name.clone()).or_insert_with(|| AppUsage { name, packaged, ..Default::default() });
+        a.packaged |= packaged;
         a.cpu_cycles += cycles;
         a.bytes_sent += sent;
         a.bytes_received += recv;

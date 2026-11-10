@@ -64,17 +64,39 @@ fn values(key: &Key) -> Vec<(String, String)> {
     out
 }
 
+/// Decodes a `StartupApproved` registry binary value.
+/// Missing/empty value = enabled with no disabled time.
+/// First byte even (0x02, 0x06...) = enabled.
+/// First byte odd (0x03, 0x07...) = disabled, and if at least 12 bytes long,
+/// bytes 4..12 store the 64-bit FILETIME timestamp when it was disabled.
+pub fn decode_startup_approved(bytes: &[u8]) -> (bool, Option<u64>) {
+    if bytes.is_empty() {
+        return (true, None);
+    }
+    let enabled = bytes[0] & 1 == 0;
+    let disabled_time = if !enabled && bytes.len() >= 12 {
+        let ft = u64::from_le_bytes(bytes[4..12].try_into().unwrap_or_default());
+        if ft != 0 { Some(ft) } else { None }
+    } else {
+        None
+    };
+    (enabled, disabled_time)
+}
+
 /// Missing value = enabled. First byte even (0x02, 0x06) = enabled, odd (0x03, 0x07) = disabled.
-fn approved(root: HKEY, sub: &str, name: &str) -> bool {
+fn approved(root: HKEY, sub: &str, name: &str) -> (bool, Option<u64>) {
     let Some(k) = open(root, &format!(r"{APPROVED}\{sub}"), KEY_READ) else {
-        return true;
+        return (true, None);
     };
     let n = wide(name);
     let mut data = [0u8; 16];
     let mut len = data.len() as u32;
     // SAFETY: buffer of `len` bytes.
     let r = unsafe { RegQueryValueExW(k.0, n.as_ptr(), null(), null_mut(), data.as_mut_ptr(), &mut len) };
-    r != ERROR_SUCCESS || len == 0 || data[0] & 1 == 0
+    if r != ERROR_SUCCESS || len == 0 {
+        return (true, None);
+    }
+    decode_startup_approved(&data[..len as usize])
 }
 
 fn subkeys(key: &Key) -> Vec<String> {
@@ -127,9 +149,10 @@ fn packaged_items() -> Vec<StartupItem> {
                 command: format!(r"shell:AppsFolder\{family}"),
                 location: format!(r"{APPX_PREFIX}{family}\{task}"),
                 enabled: matches!(state, 2 | 4),
-                // Policy-controlled tasks cannot be changed here.
                 per_user: state <= 2,
                 publisher: String::new(),
+                startup_type: "Task".into(),
+                disabled_time: None,
             });
         }
     }
@@ -163,13 +186,16 @@ pub fn startup_items() -> Vec<StartupItem> {
             if name.is_empty() {
                 continue;
             }
+            let (enabled, disabled_time) = approved(root, sub, &name);
             out.push(StartupItem {
-                enabled: approved(root, sub, &name),
+                enabled,
+                disabled_time,
                 name,
                 command,
                 location: format!(r"{}\{path}", root_name(root)),
                 per_user: root == HKEY_CURRENT_USER,
                 publisher: String::new(),
+                startup_type: "Registry".into(),
             });
         }
     }
@@ -182,13 +208,16 @@ pub fn startup_items() -> Vec<StartupItem> {
             if file.eq_ignore_ascii_case("desktop.ini") {
                 continue;
             }
+            let (enabled, disabled_time) = approved(root, "StartupFolder", &file);
             out.push(StartupItem {
-                enabled: approved(root, "StartupFolder", &file),
+                enabled,
+                disabled_time,
                 name: file.trim_end_matches(".lnk").to_string(),
                 command: e.path().display().to_string(),
                 location: dir.display().to_string(),
                 per_user: root == HKEY_CURRENT_USER,
                 publisher: String::new(),
+                startup_type: "Folder".into(),
             });
         }
     }
@@ -383,4 +412,33 @@ pub fn set_taskmgr_replacement(exe: Option<&str>) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decode_startup_approved_byte_array() {
+        // Empty array defaults to enabled with no timestamp
+        assert_eq!(decode_startup_approved(&[]), (true, None));
+
+        // Enabled: even first byte (0x02)
+        let enabled_blob = [0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(decode_startup_approved(&enabled_blob), (true, None));
+
+        // Disabled: odd first byte (0x03) with 12 bytes of FILETIME
+        // 133_758_684_000_000_000u64 = 0x01DAEC47C5E98E80
+        let ft_bytes = 133_758_684_000_000_000u64.to_le_bytes();
+        let mut disabled_blob = vec![0x03, 0x00, 0x00, 0x00];
+        disabled_blob.extend_from_slice(&ft_bytes);
+        assert_eq!(decode_startup_approved(&disabled_blob), (false, Some(133_758_684_000_000_000)));
+
+        // Disabled with short buffer (< 12 bytes)
+        assert_eq!(decode_startup_approved(&[0x03, 0x00, 0x00, 0x00]), (false, None));
+
+        // Disabled with zero FILETIME
+        let zero_ft = [0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(decode_startup_approved(&zero_ft), (false, None));
+    }
 }

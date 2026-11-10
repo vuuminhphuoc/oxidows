@@ -69,12 +69,27 @@ pub fn sort_header(ui: &mut Ui, title: &str, sorted: Option<bool>) -> Response {
     sort_header_total(ui, title, None, sorted)
 }
 
+/// Like [`sort_header`], but responds to dragging as well as clicking.
+pub fn sort_header_drag(ui: &mut Ui, title: &str, sorted: Option<bool>) -> Response {
+    sort_header_total_opts(ui, title, None, sorted, Sense::click_and_drag())
+}
+
 /// [`sort_header`] with the column's total ("37%") in a larger font above the title, as Task
 /// Manager heads its CPU, Memory, Disk, Network and GPU columns. Use a row
 /// [`SORT_HEADER_TOTAL_HEIGHT`] high.
 pub fn sort_header_total(ui: &mut Ui, title: &str, total: Option<&str>, sorted: Option<bool>) -> Response {
+    sort_header_total_opts(ui, title, total, sorted, Sense::click())
+}
+
+pub fn sort_header_total_opts(
+    ui: &mut Ui,
+    title: &str,
+    total: Option<&str>,
+    sorted: Option<bool>,
+    sense: Sense,
+) -> Response {
     let size = vec2(ui.available_width().max(1.0), ui.available_height().max(1.0));
-    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(size, sense);
     if !ui.is_rect_visible(rect) {
         return resp;
     }

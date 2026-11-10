@@ -165,6 +165,7 @@ pub struct State {
     status: Status,
     icons: Icons,
     pub columns: Vec<PCol>,
+    pub confirm_efficiency: bool,
 }
 
 enum Line {
@@ -281,7 +282,14 @@ fn restart_explorer(status: &Status, rows: &[ProcessRow], p: &ProcessRow) {
 }
 
 /// The right-click menu shared by Processes and Details.
-pub fn process_menu(ui: &mut Ui, status: &Status, rows: &[ProcessRow], p: &ProcessRow, on_details: bool) {
+pub fn process_menu(
+    ui: &mut Ui,
+    status: &Status,
+    rows: &[ProcessRow],
+    p: &ProcessRow,
+    on_details: bool,
+    confirm_efficiency: bool,
+) {
     ui.label(RichText::new(format!("{} ({})", p.name, p.pid)).weak());
     if p.has_window && ui.button("Switch to").clicked() {
         match taskmgr_sys::switch_to(p.pid) {
@@ -321,13 +329,20 @@ pub fn process_menu(ui: &mut Ui, status: &Status, rows: &[ProcessRow], p: &Proce
     let mut eco = taskmgr_sys::efficiency_mode(p.pid).unwrap_or(false);
     if ui.checkbox(&mut eco, "Efficiency mode").changed() {
         if eco {
-            status.open(Dialog::Confirm {
-                text: format!(
-                    "Turn on Efficiency mode for {}?\n\nEfficiency mode will lower process priority and improve power efficiency. It might cause instability for some processes.",
-                    p.name
-                ),
-                action: ConfirmAction::EfficiencyMode { pid: p.pid, name: p.name.clone() },
-            });
+            if confirm_efficiency {
+                status.open(Dialog::Confirm {
+                    text: format!(
+                        "Turn on Efficiency mode for {}?\n\nEfficiency mode will lower process priority and improve power efficiency. It might cause instability for some processes.",
+                        p.name
+                    ),
+                    action: ConfirmAction::EfficiencyMode { pid: p.pid, name: p.name.clone() },
+                });
+            } else {
+                status.set(match taskmgr_sys::set_efficiency_mode(p.pid, true) {
+                    Ok(()) => format!("Efficiency mode on for {}", p.name),
+                    Err(e) => format!("Could not change efficiency mode of {}: {e}", p.name),
+                });
+            }
         } else {
             status.set(match taskmgr_sys::set_efficiency_mode(p.pid, false) {
                 Ok(()) => format!("Efficiency mode off for {}", p.name),
@@ -461,6 +476,7 @@ impl State {
         percent: bool,
         columns: Vec<PCol>,
         sort: Option<SortBy<SortKey>>,
+        confirm_efficiency: bool,
     ) -> Self {
         Self {
             percent,
@@ -474,6 +490,7 @@ impl State {
             status,
             icons,
             columns,
+            confirm_efficiency,
         }
     }
 
@@ -652,8 +669,13 @@ impl State {
                         Line::Header(g, n) => {
                             let gi = g as usize;
                             row.col(|ui| {
-                                let arrow = if self.collapsed[gi] { ">" } else { "v" };
-                                ui.label(RichText::new(format!("{arrow} {} ({n})", g.label())).strong());
+                                let icon = if self.collapsed[gi] {
+                                    ui_common::Icon::ChevronRight
+                                } else {
+                                    ui_common::Icon::ChevronDown
+                                };
+                                ui.label(RichText::new(icon.glyph()).font(ui_common::Icon::font(11.0)));
+                                ui.label(RichText::new(format!("{} ({n})", g.label())).strong());
                             });
                             for _ in 0..cols.len() {
                                 row.col(|_| {});
@@ -678,7 +700,12 @@ impl State {
                         match fold {
                             Some(n) if n > 0 => {
                                 let open = self.expanded.contains(&p.pid);
-                                if ui.small_button(if open { "v" } else { ">" }).clicked() {
+                                let icon =
+                                    if open { ui_common::Icon::ChevronDown } else { ui_common::Icon::ChevronRight };
+                                if ui
+                                    .small_button(RichText::new(icon.glyph()).font(ui_common::Icon::font(10.0)))
+                                    .clicked()
+                                {
                                     toggle_app = Some(p.pid);
                                 }
                                 self.icons.show(ui, p);
@@ -701,12 +728,24 @@ impl State {
                                 ui.label(type_label(p, &self.windir));
                             }
                             PCol::Status => {
-                                if p.suspended {
-                                    ui.label(RichText::new("Suspended").weak());
-                                } else if p.efficiency {
-                                    ui.label(RichText::new("Efficiency").color(Color32::from_rgb(60, 170, 90)))
-                                        .on_hover_text("Efficiency mode: this process runs at low priority and power");
-                                }
+                                ui.horizontal(|ui| {
+                                    if p.efficiency {
+                                        ui.label(
+                                            RichText::new(ui_common::Icon::Leaf.glyph())
+                                                .font(ui_common::Icon::font(12.0))
+                                                .color(Color32::from_rgb(60, 170, 90)),
+                                        )
+                                        .on_hover_text("Efficiency mode");
+                                    }
+                                    if p.suspended {
+                                        ui.label(
+                                            RichText::new(ui_common::Icon::Pause.glyph())
+                                                .font(ui_common::Icon::font(12.0))
+                                                .weak(),
+                                        )
+                                        .on_hover_text("Suspended");
+                                    }
+                                });
                             }
                             PCol::Publisher => {
                                 ui.label(&p.info.publisher);
@@ -788,7 +827,9 @@ impl State {
                         Line::App(i, _, _) => &rows[i],
                         _ => p,
                     };
-                    resp.context_menu(|ui| process_menu(ui, &self.status, rows, target, false));
+                    resp.context_menu(|ui| {
+                        process_menu(ui, &self.status, rows, target, false, self.confirm_efficiency)
+                    });
                 });
             });
         if let Some(pid) = toggle_app
@@ -817,12 +858,19 @@ impl State {
         {
             let eco = !taskmgr_sys::efficiency_mode(*pid).unwrap_or(false);
             if eco {
-                self.status.open(Dialog::Confirm {
-                    text: format!(
-                        "Turn on Efficiency mode for {name}?\n\nEfficiency mode will lower process priority and improve power efficiency. It might cause instability for some processes."
-                    ),
-                    action: ConfirmAction::EfficiencyMode { pid: *pid, name: name.clone() },
-                });
+                if self.confirm_efficiency {
+                    self.status.open(Dialog::Confirm {
+                        text: format!(
+                            "Turn on Efficiency mode for {name}?\n\nEfficiency mode will lower process priority and improve power efficiency. It might cause instability for some processes."
+                        ),
+                        action: ConfirmAction::EfficiencyMode { pid: *pid, name: name.clone() },
+                    });
+                } else {
+                    self.status.set(match taskmgr_sys::set_efficiency_mode(*pid, true) {
+                        Ok(()) => format!("Efficiency mode on for {name}"),
+                        Err(e) => format!("Could not change efficiency mode of {name}: {e}"),
+                    });
+                }
             } else {
                 self.status.set(match taskmgr_sys::set_efficiency_mode(*pid, false) {
                     Ok(()) => format!("Efficiency mode off for {name}"),
