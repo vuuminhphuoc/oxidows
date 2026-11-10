@@ -22,32 +22,68 @@ enum Load {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Sort {
+pub enum Col {
     Name,
     Cpu,
     Network,
+    Metered,
     Upload,
     Download,
-    Metered,
 }
 
-impl Sort {
-    const ALL: [Sort; 6] = [Sort::Name, Sort::Cpu, Sort::Network, Sort::Metered, Sort::Upload, Sort::Download];
+pub type Sort = Col;
+
+impl Col {
+    pub const ALL: [Col; 6] = [Col::Name, Col::Cpu, Col::Network, Col::Metered, Col::Upload, Col::Download];
+    pub const DEFAULT: [Col; 6] = [Col::Name, Col::Cpu, Col::Network, Col::Metered, Col::Upload, Col::Download];
 
     pub fn key(self) -> &'static str {
         match self {
-            Sort::Name => "name",
-            Sort::Cpu => "cpu",
-            Sort::Network => "network",
-            Sort::Upload => "upload",
-            Sort::Download => "download",
-            Sort::Metered => "metered",
+            Col::Name => "name",
+            Col::Cpu => "cpu",
+            Col::Network => "network",
+            Col::Metered => "metered",
+            Col::Upload => "upload",
+            Col::Download => "download",
         }
     }
 
-    pub fn from_key(k: &str) -> Option<Sort> {
-        Sort::ALL.into_iter().find(|s| s.key() == k)
+    pub fn from_key(k: &str) -> Option<Col> {
+        Col::ALL.into_iter().find(|s| s.key() == k)
     }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Col::Name => "Name",
+            Col::Cpu => "CPU time",
+            Col::Network => "Network",
+            Col::Metered => "Metered network",
+            Col::Upload => "Uploads",
+            Col::Download => "Downloads",
+        }
+    }
+
+    fn column(self) -> Column {
+        match self {
+            Col::Name => Column::remainder().at_least(220.0).clip(true),
+            _ => Column::exact(110.0),
+        }
+    }
+}
+
+pub fn parse_columns(v: &str) -> Vec<Col> {
+    if v.trim().is_empty() {
+        return Col::DEFAULT.to_vec();
+    }
+    let mut cols: Vec<Col> = v.split(',').filter_map(|k| Col::from_key(k.trim())).collect();
+    if !cols.contains(&Col::Name) {
+        cols.insert(0, Col::Name);
+    }
+    cols
+}
+
+pub fn columns_text(cols: &[Col]) -> String {
+    cols.iter().map(|c| c.key()).collect::<Vec<_>>().join(",")
 }
 
 #[derive(Default, Clone)]
@@ -107,7 +143,9 @@ pub struct State {
     load: Arc<Mutex<Load>>,
     ctx: egui::Context,
     pub(crate) filter: String,
-    pub sort: SortBy<Sort>,
+    pub sort: SortBy<Col>,
+    pub columns: Vec<Col>,
+    pub show_all_processes: bool,
     baseline: Option<Baseline>,
     message: Option<String>,
     /// The app row clicked last (hover and selection, as on the other pages).
@@ -115,18 +153,19 @@ pub struct State {
 }
 
 impl State {
-    pub fn new(ctx: egui::Context, sort: Option<SortBy<Sort>>) -> Self {
+    pub fn new(ctx: egui::Context, columns: Vec<Col>, sort: Option<SortBy<Col>>, show_all_processes: bool) -> Self {
         Self {
             load: Arc::new(Mutex::new(Load::Idle)),
             ctx,
             filter: String::new(),
-            sort: sort.unwrap_or(SortBy::new(Sort::Cpu, true)),
+            sort: sort.unwrap_or(SortBy::new(Col::Cpu, true)),
+            columns,
+            show_all_processes,
             selected: None,
             baseline: Baseline::load(),
             message: None,
         }
     }
-
     pub fn start(&self) {
         if let Ok(mut l) = self.load.lock() {
             *l = Load::Loading;
@@ -216,19 +255,22 @@ impl State {
         }
     }
 
-    pub fn show(&mut self, ui: &mut Ui, elevated: bool) {
+    pub fn show(&mut self, ui: &mut Ui, elevated: bool) -> bool {
+        let before = self.columns.clone();
         if !elevated {
             ui.add_space(8.0);
             ui.label("App history comes from Windows' resource usage database, which only administrators can read.");
             ui.label("Use \"Run as administrator\" at the top to see it.");
-            return;
+            return false;
         }
         let idle = matches!(self.load.lock().as_deref(), Ok(Load::Idle));
         if idle {
             self.start();
         }
         let guard = self.load.lock();
-        let Ok(load) = guard.as_deref() else { return };
+        let Ok(load) = guard.as_deref() else {
+            return false;
+        };
         let mut refresh = false;
         match load {
             Load::Idle | Load::Loading => {
@@ -268,29 +310,38 @@ impl State {
                     self.selected = Some(apps[new_i].name.clone());
                     scroll_to = Some(new_i);
                 }
+                let cols = self.columns.clone();
                 let mut table = TableBuilder::new(ui)
                     .resizable(true)
                     .sense(egui::Sense::click())
-                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                    .column(Column::remainder().at_least(220.0).clip(true))
-                    .columns(Column::exact(110.0), 5);
+                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center));
+                for (idx, &c) in cols.iter().enumerate() {
+                    table = table.column(if idx == 0 {
+                        Column::remainder().at_least(220.0).clip(true)
+                    } else {
+                        c.column()
+                    });
+                }
                 if let Some(i) = scroll_to {
                     table = table.scroll_to_row(i, Some(egui::Align::Center));
                 }
                 table
                     .header(SORT_HEADER_HEIGHT, |mut hd| {
-                        for (k, t) in [
-                            (Sort::Name, "Name"),
-                            (Sort::Cpu, "CPU time"),
-                            (Sort::Network, "Network"),
-                            (Sort::Metered, "Metered network"),
-                            (Sort::Upload, "Uploads"),
-                            (Sort::Download, "Downloads"),
-                        ] {
+                        for &c in &cols {
                             hd.col(|ui| {
-                                if sort_header(ui, t, self.sort.arrow(k)).clicked() {
-                                    clicked = Some(k);
+                                let resp = sort_header(ui, c.title(), self.sort.arrow(c));
+                                if resp.clicked() {
+                                    clicked = Some(c);
                                 }
+                                resp.context_menu(|ui| {
+                                    ui_common::column_chooser_menu(
+                                        ui,
+                                        &Col::ALL,
+                                        &mut self.columns,
+                                        Some(("Name", Col::Name)),
+                                        |c| c.title(),
+                                    );
+                                });
                             });
                         }
                     })
@@ -298,24 +349,28 @@ impl State {
                         body.rows(22.0, apps.len(), |mut row| {
                             let a = &apps[row.index()];
                             row.set_selected(self.selected.as_deref() == Some(a.name.as_str()));
-                            row.col(|ui| {
-                                ui.label(&a.name);
-                            });
-                            row.col(|ui| {
-                                ui.label(format_cpu_time(a.cpu_time_100ns));
-                            });
-                            row.col(|ui| {
-                                ui.label(format_bytes((a.bytes_sent + a.bytes_received) as f64));
-                            });
-                            row.col(|ui| {
-                                ui.label(format_bytes(a.metered_bytes as f64));
-                            });
-                            row.col(|ui| {
-                                ui.label(format_bytes(a.bytes_sent as f64));
-                            });
-                            row.col(|ui| {
-                                ui.label(format_bytes(a.bytes_received as f64));
-                            });
+                            for &c in &cols {
+                                row.col(|ui| match c {
+                                    Col::Name => {
+                                        ui.label(&a.name);
+                                    }
+                                    Col::Cpu => {
+                                        ui.label(format_cpu_time(a.cpu_time_100ns));
+                                    }
+                                    Col::Network => {
+                                        ui.label(format_bytes((a.bytes_sent + a.bytes_received) as f64));
+                                    }
+                                    Col::Metered => {
+                                        ui.label(format_bytes(a.metered_bytes as f64));
+                                    }
+                                    Col::Upload => {
+                                        ui.label(format_bytes(a.bytes_sent as f64));
+                                    }
+                                    Col::Download => {
+                                        ui.label(format_bytes(a.bytes_received as f64));
+                                    }
+                                });
+                            }
                             if row.response().clicked() {
                                 pick = Some(a.name.clone());
                             }
@@ -333,6 +388,10 @@ impl State {
         if refresh {
             self.start();
         }
+        if !self.columns.contains(&self.sort.key) {
+            self.sort = SortBy::new(Col::Cpu, true);
+        }
+        self.columns != before
     }
 
     /// Apps after the baseline is subtracted, filtered and sorted; apps with no use are dropped.
@@ -340,6 +399,7 @@ impl State {
         let f = self.filter.trim().to_lowercase();
         let mut v: Vec<AppUsage> = apps
             .iter()
+            .filter(|a| self.show_all_processes || a.packaged)
             .map(|a| {
                 let mut a = a.clone();
                 if let Some((c, s, r, m)) = self.baseline.as_ref().and_then(|b| b.apps.get(&a.name)) {
@@ -382,5 +442,12 @@ mod tests {
         assert_eq!(p.at, 46_000.5);
         assert_eq!(p.apps.get("chrome.exe"), Some(&(10, 20, 30, 5)));
         assert_eq!(Baseline::parse("x\t1\t2\t3\n").apps.get("x"), Some(&(1, 2, 3, 0)));
+    }
+
+    #[test]
+    fn columns_round_trip() {
+        let cols = vec![Col::Name, Col::Cpu, Col::Metered];
+        assert_eq!(parse_columns(&columns_text(&cols)), cols);
+        assert_eq!(parse_columns(""), Col::DEFAULT.to_vec());
     }
 }

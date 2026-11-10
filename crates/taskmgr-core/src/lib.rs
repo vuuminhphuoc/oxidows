@@ -113,6 +113,16 @@ pub struct StaticInfo {
     pub uac_virtualization: String,
     /// "64-bit", "32-bit" or "ARM64".
     pub platform: String,
+    /// GDI object count from GetGuiResources.
+    pub gdi_objects: Option<u32>,
+    /// USER object count from GetGuiResources.
+    pub user_objects: Option<u32>,
+    /// Architecture from IsWow64Process2: "x64", "x86", "ARM64".
+    pub architecture: String,
+    /// Power throttling from GetProcessInformation: "Enabled", "Disabled".
+    pub power_throttling: String,
+    /// Package full name from GetPackageFullName, empty when not packaged.
+    pub package_name: String,
 }
 
 /// System-wide counters for one sample.
@@ -223,6 +233,8 @@ pub struct AppUsage {
     pub bytes_received: u64,
     /// Sent and received over connections Windows treats as metered.
     pub metered_bytes: u64,
+    /// True for packaged (UWP / MSIX / Store) apps, false for classic processes.
+    pub packaged: bool,
 }
 
 /// App history as Windows records it (SRUM), from the oldest record kept.
@@ -246,6 +258,30 @@ pub fn format_ole_date(d: f64) -> String {
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = yoe + era * 400 + i64::from(month <= 2);
     format!("{year:04}-{month:02}-{day:02}")
+}
+
+/// A FILETIME (100 ns intervals since 1601-01-01 UTC) formatted as `YYYY-MM-DD HH:MM`.
+pub fn format_filetime(ft: u64) -> String {
+    const UNIX_EPOCH_FILETIME: u64 = 116_444_736_000_000_000;
+    if ft < UNIX_EPOCH_FILETIME {
+        return String::new();
+    }
+    let unix_100ns = ft - UNIX_EPOCH_FILETIME;
+    let unix_secs = unix_100ns / 10_000_000;
+    let days = (unix_secs / 86_400) as i64;
+    let day_secs = unix_secs % 86_400;
+    let hour = day_secs / 3600;
+    let min = (day_secs % 3600) / 60;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{min:02}")
 }
 
 /// Addresses and network name of one adapter, read on demand.
@@ -637,6 +673,10 @@ pub struct Session {
     pub user: String,
     /// "Active", "Disconnected"...
     pub state: String,
+    /// WTSWinStationName ("Console", "RDP-Tcp#0"...).
+    pub session_name: String,
+    /// WTSClientName (client machine for remote desktop sessions).
+    pub client_name: String,
 }
 
 /// A blocked thread found by "Analyze wait chain".
@@ -662,6 +702,10 @@ pub struct StartupItem {
     /// False when changing it needs administrator rights (machine-wide entries).
     pub per_user: bool,
     pub publisher: String,
+    /// "Registry", "Folder", or "Task".
+    pub startup_type: String,
+    /// FILETIME when disabled, read from StartupApproved.
+    pub disabled_time: Option<u64>,
 }
 
 /// Users tab row: processes grouped by session.
@@ -673,6 +717,8 @@ pub struct UserUsage {
     pub processes: usize,
     pub cpu_pct: f32,
     pub memory: u64,
+    pub session_name: String,
+    pub client_name: String,
 }
 
 /// Groups processes by session; sessions with no processes still appear.
@@ -686,6 +732,8 @@ pub fn users_view(rows: &[ProcessRow], sessions: &[Session]) -> Vec<UserUsage> {
             processes: 0,
             cpu_pct: 0.0,
             memory: 0,
+            session_name: s.session_name.clone(),
+            client_name: s.client_name.clone(),
         })
         .collect();
     for p in rows {
@@ -699,6 +747,8 @@ pub fn users_view(rows: &[ProcessRow], sessions: &[Session]) -> Vec<UserUsage> {
                     processes: 0,
                     cpu_pct: 0.0,
                     memory: 0,
+                    session_name: String::new(),
+                    client_name: String::new(),
                 });
                 out.len() - 1
             }
@@ -1585,7 +1635,13 @@ mod tests {
             power_trend: 0.0,
         };
         let rows = [row(1, 0, 1.0, 10), row(2, 1, 2.0, 20), row(3, 1, 3.0, 30)];
-        let sessions = [Session { id: 1, user: "PC\\phuoc".into(), state: "Active".into() }];
+        let sessions = [Session {
+            id: 1,
+            user: "PC\\phuoc".into(),
+            state: "Active".into(),
+            session_name: "Console".into(),
+            client_name: String::new(),
+        }];
         let v = users_view(&rows, &sessions);
         assert_eq!(v.len(), 2);
         assert_eq!((v[0].session_id, v[0].processes, v[0].user.as_str()), (0, 1, "svc"));
@@ -1674,5 +1730,7 @@ mod tests {
         assert_eq!(format_bytes(300.0 * 1024.0 * 1024.0), "300 MB");
         assert_eq!(format_bits_per_sec(125_000.0), "1.0 Mbps");
         assert_eq!(format_uptime(Duration::from_secs(90_061)), "1:01:01:01");
+        assert_eq!(format_filetime(116_444_736_000_000_000), "1970-01-01 00:00");
+        assert_eq!(format_filetime(0), "");
     }
 }

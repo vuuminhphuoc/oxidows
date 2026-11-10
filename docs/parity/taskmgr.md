@@ -18,6 +18,7 @@ as the feature.
 | No status bar; messages in an info bar | done | |
 | Settings: default start page, update speed, always on top | done | |
 | Settings: theme (light / dark / system) | done | |
+| Settings: other options | done | Show full account name, Show history for all processes, Ask me before applying Efficiency mode |
 | Settings: hide when minimized | done | the tray icon brings the window back |
 | Settings: minimize on use | done | after Switch to |
 | Settings persisted between runs | done | `%APPDATA%\oxidows\taskmgr.ini` |
@@ -52,11 +53,11 @@ as the feature.
 | Expand an app to its child processes | done | children fold into the app row; windows are not listed |
 | Network column | done | ETW Microsoft-Windows-Kernel-Network; needs administrator (Task Manager uses a system service) |
 | GPU engine column | done | busiest engine per process, from PDH `GPU Engine(*)` |
-| Status column | done | Suspended, Efficiency |
+| Status column | done | Suspended (pause icon), Efficiency (leaf icon); icons only, tooltip carries words |
 | Publisher column | done | version resource CompanyName |
 | Power usage, Power usage trend | done | estimated from CPU, GPU, disk and network (Windows' column is an estimate too); trend is a two-minute average |
 | End process tree | done | children first, PID-reuse guard; confirms with "End process tree" / "Cancel" |
-| Efficiency mode | done | EcoQoS + idle priority; confirms before turning on ("Turn on Efficiency mode" / "Cancel") |
+| Efficiency mode | done | EcoQoS + idle priority; confirms before turning on when "Ask me before applying Efficiency mode" is on |
 | Critical process protection | done | confirms before ending critical Windows processes ("Shut down" / "Cancel") |
 | Choose columns (right-click header) | done | 14 choices matching Windows 11, saved as processes_columns |
 | Open file location, Copy command line, Search online | done | |
@@ -65,6 +66,7 @@ as the feature.
 | Go to details | done | |
 | Restart (for Windows Explorer) | done | starts a new shell only if Windows did not |
 | Resource values as % or absolute | done | Settings; Memory, Disk, Network |
+| Expand arrows | done | ChevronDown / ChevronRight icons for group headers and app rows |
 
 ## Performance
 
@@ -100,6 +102,8 @@ as the feature.
 | CPU time, network, uploads, downloads per app since a date | done | SRUM (`sru\SRUDB.dat`) copied with `esentutl /vss`, read with the ESE API; needs administrator |
 | Metered network | done | the user's per-connection choice (`DusmSvc\Profiles`), else `DefaultMediaCost` for the interface type |
 | Delete usage history | done | keeps a baseline and subtracts it (Windows' own SRUM is left alone) |
+| Choose columns (right-click header) | done | 6 columns matching Windows 11, saved as `history_columns` |
+| Show history for all processes | done | includes classic win32 / background processes when enabled in Settings |
 
 ## Startup apps
 
@@ -113,6 +117,7 @@ as the feature.
 | Scheduled-task startup entries | done (n/a) | Task Manager does not list them either |
 | Open file location, Search online | done | |
 | Properties | done | shell Properties sheet |
+| Choose columns (right-click header) | done | includes Startup type, Running now, Disabled time; saved as `startup_columns` |
 
 ## Users
 
@@ -121,7 +126,11 @@ as the feature.
 | Signed-in sessions with status, CPU, memory, disk, process count | done | |
 | Network per user | done | needs administrator, like the Network column |
 | Expand a user to their processes | done | with program icons |
-| Totals above CPU, Memory, Disk, Network headers | done | |
+| Totals above CPU, Memory, Disk, Network, GPU headers | done | |
+| GPU column | done | per-user sum of process GPU % |
+| Choose columns (right-click header) | done | ID, Session, Client name; saved as `users_columns` |
+| Show full account name | done | shows DOMAIN\user when enabled in Settings, short name when disabled |
+| Manage user accounts | done | command bar button opens `ms-settings:otherusers` |
 | Disconnect, Sign off | done | asks first |
 
 ## Details
@@ -129,7 +138,8 @@ as the feature.
 | Feature | Status | Notes |
 | --- | --- | --- |
 | Name, PID, user, session, CPU, memory, threads, handles, priority, path, command line | done | |
-| Choose columns | done | 34 columns, saved between runs |
+| Choose columns | done | 39 columns, saved between runs; includes GDI objects, User objects, Architecture, Power throttling, Package name |
+| Reorder columns | done | drag a column header to reorder with drop marker indicator |
 | Program icon left of the name | done | same cache as Processes |
 | Same right-click actions as Processes | done | end, tree, efficiency, priority, affinity, dump, search |
 | Go to service(s) | done | svchost.exe rows |

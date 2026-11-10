@@ -5,7 +5,8 @@ use std::ptr::null_mut;
 
 use taskmgr_core::Session;
 use windows_sys::Win32::System::RemoteDesktop::{
-    WTS_SESSION_INFOW, WTSDomainName, WTSEnumerateSessionsW, WTSFreeMemory, WTSQuerySessionInformationW, WTSUserName,
+    WTS_SESSION_INFOW, WTSClientName, WTSDomainName, WTSEnumerateSessionsW, WTSFreeMemory, WTSQuerySessionInformationW,
+    WTSUserName, WTSWinStationName,
 };
 
 fn query(id: u32, class: i32) -> String {
@@ -47,10 +48,14 @@ pub fn list_sessions() -> io::Result<Vec<Session>> {
                 6 => "Listening",
                 _ => "Other",
             };
+            let session_name = query(s.SessionId, WTSWinStationName);
+            let client_name = query(s.SessionId, WTSClientName);
             out.push(Session {
                 id: s.SessionId,
                 user: if domain.is_empty() { user } else { format!("{domain}\\{user}") },
                 state: state.into(),
+                session_name,
+                client_name,
             });
         }
         WTSFreeMemory(p.cast());

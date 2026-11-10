@@ -12,9 +12,11 @@ use windows_sys::Win32::Security::{
     TokenUser, TokenVirtualizationAllowed, TokenVirtualizationEnabled,
 };
 use windows_sys::Win32::System::Threading::{
-    ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, GetCurrentProcess, HIGH_PRIORITY_CLASS,
-    IDLE_PRIORITY_CLASS, IsWow64Process2, NORMAL_PRIORITY_CLASS, OpenProcess, OpenProcessToken, PROCESS_NAME_WIN32,
-    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION, QueryFullProcessImageNameW, REALTIME_PRIORITY_CLASS,
+    ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, GetCurrentProcess, GetGuiResources,
+    GetProcessInformation, HIGH_PRIORITY_CLASS, IDLE_PRIORITY_CLASS, IsWow64Process2, NORMAL_PRIORITY_CLASS,
+    OpenProcess, OpenProcessToken, PROCESS_NAME_WIN32, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+    PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE, PROCESS_QUERY_LIMITED_INFORMATION,
+    PROCESS_SET_INFORMATION, ProcessPowerThrottling, QueryFullProcessImageNameW, REALTIME_PRIORITY_CLASS,
     SetPriorityClass,
 };
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
@@ -27,6 +29,10 @@ const PROCESS_COMMAND_LINE_INFORMATION: u32 = 60;
 #[link(name = "ntdll")]
 unsafe extern "system" {
     fn NtQueryInformationProcess(h: HANDLE, class: u32, buf: *mut c_void, len: u32, ret: *mut u32) -> i32;
+}
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn GetPackageFullName(hProcess: HANDLE, packageFullNameLength: *mut u32, packageFullName: *mut u16) -> i32;
 }
 
 struct Handle(HANDLE);
@@ -50,6 +56,10 @@ pub fn static_info(pid: u32) -> StaticInfo {
     let path = image_path(&h);
     let (description, publisher) = version_strings(&path);
     let (elevated, uac_virtualization) = token_flags(h.0);
+    let (gdi_objects, user_objects) = gui_resources(h.0);
+    let arch = architecture(h.0);
+    let throttling = power_throttling(h.0);
+    let pkg = package_name(h.0);
     StaticInfo {
         command_line: command_line(&h),
         user: token_user(h.0),
@@ -59,6 +69,11 @@ pub fn static_info(pid: u32) -> StaticInfo {
         elevated,
         uac_virtualization,
         platform: platform(h.0),
+        gdi_objects,
+        user_objects,
+        architecture: arch,
+        power_throttling: throttling,
+        package_name: pkg,
     }
 }
 
@@ -102,6 +117,61 @@ fn platform(process: HANDLE) -> String {
         _ => "",
     }
     .to_string()
+}
+
+fn architecture(process: HANDLE) -> String {
+    let (mut proc_m, mut native) = (0u16, 0u16);
+    // SAFETY: two out values.
+    if unsafe { IsWow64Process2(process, &mut proc_m, &mut native) } == 0 {
+        return String::new();
+    }
+    let m = if proc_m == 0 { native } else { proc_m };
+    match m {
+        0x8664 => "x64",
+        0x014c => "x86",
+        0xAA64 => "ARM64",
+        0x01c0 | 0x01c2 | 0x01c4 => "ARM",
+        _ => "",
+    }
+    .to_string()
+}
+
+fn gui_resources(process: HANDLE) -> (Option<u32>, Option<u32>) {
+    // SAFETY: plain Win32 call; GetGuiResources returns 0 on error or when the process has none.
+    let gdi = unsafe { GetGuiResources(process, 0) };
+    let user = unsafe { GetGuiResources(process, 1) };
+    (Some(gdi), Some(user))
+}
+
+fn power_throttling(process: HANDLE) -> String {
+    let mut state: PROCESS_POWER_THROTTLING_STATE = unsafe { zeroed() };
+    state.Version = 1;
+    let r = unsafe {
+        GetProcessInformation(
+            process,
+            ProcessPowerThrottling,
+            (&mut state as *mut PROCESS_POWER_THROTTLING_STATE).cast(),
+            size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
+        )
+    };
+    if r != 0 {
+        if state.StateMask & 1 != 0 { "Enabled".to_string() } else { "Disabled".to_string() }
+    } else {
+        String::new()
+    }
+}
+
+fn package_name(process: HANDLE) -> String {
+    let mut len = 0u32;
+    // SAFETY: buffer size query; 122 = ERROR_INSUFFICIENT_BUFFER
+    let rc = unsafe { GetPackageFullName(process, &mut len, null_mut()) };
+    if rc == 122 && len > 0 {
+        let mut buf = vec![0u16; len as usize];
+        if unsafe { GetPackageFullName(process, &mut len, buf.as_mut_ptr()) } == 0 {
+            return String::from_utf16_lossy(&buf).trim_end_matches('\0').to_string();
+        }
+    }
+    String::new()
 }
 
 fn image_path(h: &Handle) -> String {
@@ -300,9 +370,7 @@ use std::os::windows::io::AsRawHandle;
 
 use windows_sys::Win32::System::Diagnostics::Debug::{MiniDumpWithFullMemory, MiniDumpWriteDump};
 use windows_sys::Win32::System::Threading::{
-    GetProcessAffinityMask, GetProcessInformation, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
-    PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE, PROCESS_QUERY_INFORMATION,
-    PROCESS_VM_READ, ProcessPowerThrottling, SetProcessAffinityMask, SetProcessInformation,
+    GetProcessAffinityMask, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ, SetProcessAffinityMask, SetProcessInformation,
 };
 
 /// (process mask, system mask).
