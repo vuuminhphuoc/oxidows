@@ -4,7 +4,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::UNIX_EPOCH;
 
 use explorer_core::Entry;
@@ -12,6 +12,7 @@ use explorer_core::Entry;
 use crate::{BATCH, BinItem, Drive, DriveKind, FileOp, IconImage, Share};
 
 static CLIPBOARD: Mutex<Option<(Vec<PathBuf>, bool)>> = Mutex::new(None);
+static CLIP_SEQ: AtomicU32 = AtomicU32::new(1);
 
 pub fn list_dir(dir: &Path, cancel: &AtomicBool, sink: &mut dyn FnMut(Vec<Entry>)) -> io::Result<()> {
     let mut batch = Vec::with_capacity(256);
@@ -137,6 +138,7 @@ pub fn file_op(op: FileOp, sources: &[PathBuf], dest: Option<&Path>, _interactiv
 
 pub fn clipboard_set_files(paths: &[PathBuf], cut: bool) -> io::Result<()> {
     *CLIPBOARD.lock().unwrap() = Some((paths.to_vec(), cut));
+    CLIP_SEQ.fetch_add(1, Ordering::Relaxed);
     Ok(())
 }
 
@@ -146,6 +148,10 @@ pub fn clipboard_has_data() -> bool {
 
 pub fn clipboard_get_files() -> Option<(Vec<PathBuf>, bool)> {
     CLIPBOARD.lock().unwrap().clone()
+}
+
+pub fn clipboard_seq() -> u32 {
+    CLIP_SEQ.load(Ordering::Relaxed)
 }
 
 /// Polls the folder's modification time once a second (development only).

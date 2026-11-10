@@ -32,8 +32,8 @@ use windows_sys::Win32::System::Com::{
     COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoTaskMemFree,
 };
 use windows_sys::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
-    RegisterClipboardFormatW, SetClipboardData,
+    CloseClipboard, EmptyClipboard, GetClipboardData, GetClipboardSequenceNumber, IsClipboardFormatAvailable,
+    OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
 };
 use windows_sys::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
 use windows_sys::Win32::System::Ole::CF_HDROP;
@@ -467,6 +467,9 @@ pub fn clipboard_set_files(paths: &[PathBuf], cut: bool) -> io::Result<()> {
 }
 
 pub fn clipboard_get_files() -> Option<(Vec<PathBuf>, bool)> {
+    if unsafe { IsClipboardFormatAvailable(CF_HDROP as u32) } == 0 {
+        return None;
+    }
     let _g = open_clipboard().ok()?;
     let h = unsafe { GetClipboardData(CF_HDROP as u32) };
     if h.is_null() {
@@ -509,6 +512,10 @@ pub fn clipboard_has_data() -> bool {
 
 pub(crate) fn clipboard_is_cut() -> bool {
     open_clipboard().is_ok_and(|_g| read_cut())
+}
+
+pub fn clipboard_seq() -> u32 {
+    unsafe { GetClipboardSequenceNumber() }
 }
 
 const WAIT_OBJECT_0: u32 = 0;

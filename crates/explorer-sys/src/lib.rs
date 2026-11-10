@@ -462,6 +462,59 @@ pub fn known_folders() -> Vec<(&'static str, PathBuf)> {
     imp::known_folders()
 }
 
+/// OneDrive folders from `OneDrive`, `OneDriveConsumer`, `OneDriveCommercial` (deduplicated,
+/// skipping missing folders). Empty off Windows.
+pub fn onedrive_folders() -> Vec<(String, PathBuf)> {
+    if cfg!(windows) { onedrive_folders_from(|k| std::env::var(k).ok(), |p| p.is_dir()) } else { Vec::new() }
+}
+
+pub(crate) fn onedrive_folders_from(
+    var: impl Fn(&str) -> Option<String>,
+    exists: impl Fn(&Path) -> bool,
+) -> Vec<(String, PathBuf)> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    // Check Consumer and Commercial before generic `OneDrive`, so a business-only install gets
+    // its "OneDrive - <folder name>" label when `OneDrive` points to the same path.
+    for (key, business) in [("OneDriveConsumer", false), ("OneDriveCommercial", true), ("OneDrive", false)] {
+        let Some(raw) = var(key).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        let p = PathBuf::from(&raw);
+        if !exists(&p) || !seen.insert(explorer_core::path_key_with(&p, true)) {
+            continue;
+        }
+        let folder = p.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        let business_suffix =
+            folder.get(..11).is_some_and(|pre| pre.eq_ignore_ascii_case("OneDrive - ")) && folder.len() > 11;
+        let label = if business {
+            if folder.is_empty() || folder.eq_ignore_ascii_case("OneDrive") {
+                "OneDrive".to_string()
+            } else if business_suffix {
+                format!("OneDrive - {}", &folder[11..])
+            } else {
+                format!("OneDrive - {folder}")
+            }
+        } else if business_suffix {
+            format!("OneDrive - {}", &folder[11..])
+        } else {
+            "OneDrive".to_string()
+        };
+        out.push((label, p));
+    }
+    out
+}
+
+/// Whether WSL is present (`%SystemRoot%\System32\wsl.exe`). Never enumerates `\\wsl.localhost`.
+/// Always false off Windows.
+pub fn has_wsl() -> bool {
+    if !cfg!(windows) {
+        return false;
+    }
+    let root = std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
+    root.join("System32").join("wsl.exe").is_file()
+}
+
 pub fn home_dir() -> PathBuf {
     imp::home_dir()
 }
@@ -537,6 +590,11 @@ pub fn clipboard_get_files() -> Option<(Vec<PathBuf>, bool)> {
 /// (copied from a phone, say). Cheap: only looks at the formats, reads no data.
 pub fn clipboard_has_data() -> bool {
     imp::clipboard_has_data()
+}
+
+/// Monotonic sequence number of the clipboard contents; changes whenever any program updates it.
+pub fn clipboard_seq() -> u32 {
+    imp::clipboard_seq()
 }
 
 /// A small (16 px at 100 % scaling) icon as straight RGBA, row-major, top row first.
@@ -857,5 +915,38 @@ mod tests {
         existing.insert(name2);
         let name3 = super::unique_new_name("Text Document", ".txt", |n| existing.contains(n));
         assert_eq!(name3, "New Text Document (3).txt");
+    }
+    #[test]
+    fn onedrive_dedup_and_names() {
+        use std::collections::HashMap;
+        use std::path::{Path, PathBuf};
+        let env = HashMap::from([
+            ("OneDrive", r"C:\Users\a\OneDrive - Contoso\"),
+            ("OneDriveConsumer", r"C:\Users\a\OneDrive"),
+            ("OneDriveCommercial", r"c:\users\a\OneDrive - Contoso"),
+        ]);
+        let dirs = HashMap::from([(r"c:\users\a\onedrive", true), (r"c:\users\a\onedrive - contoso", true)]);
+        let got = super::onedrive_folders_from(
+            |k| env.get(k).map(|s| (*s).to_string()),
+            |p: &Path| dirs.get(explorer_core::path_key_with(p, true).as_str()).copied().unwrap_or(false),
+        );
+        assert_eq!(
+            got,
+            vec![
+                ("OneDrive".to_string(), PathBuf::from(r"C:\Users\a\OneDrive")),
+                ("OneDrive - Contoso".to_string(), PathBuf::from(r"c:\users\a\OneDrive - Contoso")),
+            ]
+        );
+
+        // Business folder named after company, plus missing personal folder skipped.
+        let env2 = HashMap::from([
+            ("OneDriveConsumer", r"C:\Users\a\Missing"),
+            ("OneDriveCommercial", r"C:\Users\a\Acme Corp"),
+        ]);
+        let got2 = super::onedrive_folders_from(
+            |k| env2.get(k).map(|s| (*s).to_string()),
+            |p: &Path| explorer_core::path_key_with(p, true) == r"c:\users\a\acme corp",
+        );
+        assert_eq!(got2, vec![("OneDrive - Acme Corp".to_string(), PathBuf::from(r"C:\Users\a\Acme Corp"))]);
     }
 }

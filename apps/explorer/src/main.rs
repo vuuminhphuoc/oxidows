@@ -139,6 +139,14 @@ impl ViewMode {
     pub fn parse(s: &str) -> Option<Self> {
         Self::ALL.iter().map(|a| a.0).find(|m| m.name() == s)
     }
+
+    /// Steps to the next bigger (`up = true`) or smaller (`up = false`) view, as Ctrl+mouse wheel
+    /// does in Explorer.
+    pub fn step_wheel(self, up: bool) -> Self {
+        let i = Self::ALL.iter().position(|(m, _, _)| *m == self).unwrap_or(5);
+        let next = if up { i.saturating_sub(1) } else { (i + 1).min(Self::ALL.len() - 1) };
+        Self::ALL[next].0
+    }
 }
 
 pub enum IconState {
@@ -181,6 +189,7 @@ pub struct TabSnap {
     history: History,
     selected: HashSet<String>,
     filter: String,
+    search_filters: explorer_core::SearchFilters,
     sort: SortKey,
     ascending: bool,
 }
@@ -191,6 +200,7 @@ pub struct TabSnap {
 struct ViewKey {
     version: u64,
     filter: String,
+    search_filters: explorer_core::SearchFilters,
     sort: SortKey,
     ascending: bool,
     show_hidden: bool,
@@ -242,6 +252,9 @@ struct App {
     pub persist: settings::Persist,
     pub undo_stack: Vec<undo::Undoable>,
     pub drag: Option<dnd::Drag>,
+    pub drag_hover: dnd::HoverTimer,
+    /// Drag-hover target seen during the current frame (`tab_bar` / `sidebar`).
+    pub frame_hover: Option<(dnd::HoverTarget, Option<PathBuf>)>,
     /// Folder under the pointer during a drag (set while drawing each frame).
     pub drop_target: Option<PathBuf>,
     release_pointer: bool,
@@ -266,7 +279,9 @@ struct App {
     type_ahead: (String, Instant),
 
     address_edit: Option<String>,
+    pub address_select_all: bool,
     focus_search: bool,
+    pub search_filters: explorer_core::SearchFilters,
     /// Query of the running/finished search through subfolders; `None` = normal listing.
     pub deep_search: Option<String>,
     pub needs_sign_in: bool,
@@ -294,6 +309,8 @@ struct App {
     /// Phones and cameras under This PC, for the navigation pane.
     pub devices: Vec<explorer_sys::ShellDevice>,
     places: Vec<(&'static str, PathBuf)>,
+    pub onedrive: Vec<(String, PathBuf)>,
+    pub has_wsl: bool,
     utc_offset: i64,
     started: Instant,
     timing_logged: bool,
@@ -309,6 +326,12 @@ struct App {
     pub tree: HashMap<PathBuf, Vec<String>>,
     tree_pending: HashSet<PathBuf>,
     pub active_tab: usize,
+    pub reveal_tree: Option<PathBuf>,
+    fullscreen: bool,
+    pub wheel_zoom_accum: f32,
+    cut_paths: HashSet<String>,
+    cut_seq: Option<u32>,
+    cut_dismissed_seq: Option<u32>,
     pub nearby: nearby::Nearby,
     /// The About window (See more > About and updates), with "Check for updates".
     pub about_open: bool,
@@ -363,6 +386,8 @@ impl App {
             persist: settings::Persist::new(settings.clone()),
             undo_stack: Vec::new(),
             drag: None,
+            drag_hover: dnd::HoverTimer::default(),
+            frame_hover: None,
             drop_target: None,
             release_pointer: false,
             redo_stack: Vec::new(),
@@ -378,7 +403,9 @@ impl App {
             paste_ready: (false, None),
             type_ahead: (String::new(), Instant::now()),
             address_edit: None,
+            address_select_all: false,
             focus_search: false,
+            search_filters: explorer_core::SearchFilters::default(),
             deep_search: None,
             needs_sign_in: false,
             prompted: HashSet::new(),
@@ -399,6 +426,8 @@ impl App {
             drives: Vec::new(),
             devices: Vec::new(),
             places: explorer_sys::known_folders(),
+            onedrive: explorer_sys::onedrive_folders(),
+            has_wsl: explorer_sys::has_wsl(),
             utc_offset: explorer_sys::utc_offset_secs(),
             started: Instant::now(),
             timing_logged: false,
@@ -410,6 +439,12 @@ impl App {
             tree: HashMap::new(),
             tree_pending: HashSet::new(),
             active_tab: 0,
+            reveal_tree: None,
+            fullscreen: false,
+            wheel_zoom_accum: 0.0,
+            cut_paths: HashSet::new(),
+            cut_seq: None,
+            cut_dismissed_seq: None,
             nearby: nearby::Nearby::new(),
             about_open: false,
             updater: ui_common::Updater::new(ui_common::AppInfo {
@@ -747,13 +782,37 @@ impl App {
                         }
                         Ok(())
                     }
-                    Place::Server(server) => explorer_sys::list_shares(&server).map(|shares| {
-                        let batch = shares
-                            .into_iter()
-                            .map(|s| Entry { name: s.name, is_dir: true, ..Default::default() })
-                            .collect();
-                        let _ = tx.send(Msg::Batch(generation, batch));
-                    }),
+                    Place::Server(server) => match explorer_sys::list_shares(&server) {
+                        Ok(shares) => {
+                            let batch = shares
+                                .into_iter()
+                                .map(|s| Entry { name: s.name, is_dir: true, ..Default::default() })
+                                .collect();
+                            let _ = tx.send(Msg::Batch(generation, batch));
+                            Ok(())
+                        }
+                        Err(err) if server.eq_ignore_ascii_case("wsl.localhost") => {
+                            let root = PathBuf::from(format!(r"\\{server}"));
+                            explorer_sys::shell_list(&root, &cancel, &mut |batch| {
+                                let batch = batch
+                                    .into_iter()
+                                    .map(|mut e| {
+                                        if !e.name.starts_with(explorer_core::SHELL)
+                                            && let Some(leaf) = Path::new(&e.name).file_name()
+                                        {
+                                            e.name = leaf.to_string_lossy().into_owned();
+                                            e.label = None;
+                                        }
+                                        e
+                                    })
+                                    .collect();
+                                let _ = tx.send(Msg::Batch(generation, batch));
+                                ctx.request_repaint();
+                            })
+                            .or(Err(err))
+                        }
+                        Err(err) => Err(err),
+                    },
                     _ => explorer_sys::list_dir(&dir, &cancel, &mut |batch| {
                         let _ = tx.send(Msg::Batch(generation, batch));
                         ctx.request_repaint();
@@ -1108,6 +1167,7 @@ impl App {
             history: std::mem::take(&mut self.history),
             selected: std::mem::take(&mut self.selected),
             filter: std::mem::take(&mut self.filter),
+            search_filters: std::mem::take(&mut self.search_filters),
             sort: self.sort,
             ascending: self.ascending,
         }
@@ -1121,6 +1181,7 @@ impl App {
         self.entered_new_folder(None);
         self.selected = t.selected;
         self.filter = t.filter;
+        self.search_filters = t.search_filters;
     }
 
     pub fn switch_tab(&mut self, i: usize) {
@@ -1136,6 +1197,7 @@ impl App {
                 history: History::default(),
                 selected: HashSet::new(),
                 filter: String::new(),
+                search_filters: explorer_core::SearchFilters::default(),
                 sort: SortKey::Name,
                 ascending: true,
             },
@@ -1152,6 +1214,7 @@ impl App {
             history: History::default(),
             selected: HashSet::new(),
             filter: String::new(),
+            search_filters: explorer_core::SearchFilters::default(),
             sort: self.sort,
             ascending: self.ascending,
         };
@@ -1189,6 +1252,7 @@ impl App {
             history: History::default(),
             selected: HashSet::new(),
             filter: String::new(),
+            search_filters: explorer_core::SearchFilters::default(),
             sort: self.sort,
             ascending: self.ascending,
         };
@@ -1248,7 +1312,10 @@ impl App {
         self.cursor = None;
         self.anchor = None;
         self.filter.clear();
+        self.search_filters.clear();
         self.address_edit = None;
+        self.address_select_all = false;
+        self.reveal_tree = None;
         self.pending_select = select;
         self.scroll_to = Some(0);
         self.changed_at = None;
@@ -1605,9 +1672,14 @@ impl App {
     // ---- view & selection ----------------------------------------------------------------
 
     pub fn update_view(&mut self) {
+        let search_active = !self.filter.trim().is_empty() || self.deep_search.is_some();
+        if !search_active && !self.search_filters.is_empty() {
+            self.search_filters.clear();
+        }
         let key = ViewKey {
             version: self.version,
             filter: self.filter.clone(),
+            search_filters: self.search_filters,
             sort: self.sort,
             ascending: self.ascending,
             show_hidden: self.show_hidden && !self.show_protected,
@@ -1627,6 +1699,10 @@ impl App {
             self.ascending,
         );
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+        if !self.search_filters.is_empty() {
+            let filters = self.search_filters;
+            self.view.retain(|&i| filters.matches(&self.entries[i], now, self.utc_offset));
+        }
         self.groups = explorer_core::group_view(
             &self.entries,
             &mut self.view,
@@ -1706,6 +1782,27 @@ impl App {
         matches!(classify(&self.cur), Place::Shell(_))
     }
 
+    pub fn open_address_edit(&mut self) {
+        self.address_edit = Some(self.address_text());
+        self.address_select_all = true;
+    }
+
+    fn sync_cut_state(&mut self) {
+        let seq = explorer_sys::clipboard_seq();
+        if self.cut_seq == Some(seq) {
+            return;
+        }
+        self.cut_seq = Some(seq);
+        self.cut_dismissed_seq = None;
+        self.cut_paths.clear();
+        if let Some((files, true)) = explorer_sys::clipboard_get_files() {
+            self.cut_paths.extend(files.iter().map(|p| explorer_core::path_key(p)));
+        }
+    }
+
+    pub fn is_cut(&self, name: &str) -> bool {
+        !self.cut_paths.is_empty() && self.cut_paths.contains(&explorer_core::path_key(&self.child(name)))
+    }
     pub fn copy_selection(&mut self, cut: bool) {
         if self.in_recycle_bin() {
             return;
@@ -1720,11 +1817,18 @@ impl App {
                 self.status = Some(format!("Clipboard error: {e}"));
             } else {
                 self.status = Some(format!("{} {} item(s)", if cut { "Cut" } else { "Copied" }, paths.len()));
+                self.cut_seq = Some(explorer_sys::clipboard_seq());
+                self.cut_dismissed_seq = None;
+                self.cut_paths =
+                    if cut { paths.iter().map(|p| explorer_core::path_key(p)).collect() } else { HashSet::new() };
             }
             return;
         }
         self.status = Some(match explorer_sys::clipboard_set_files(&paths, cut) {
-            Ok(()) => format!("{} {} item(s)", if cut { "Cut" } else { "Copied" }, paths.len()),
+            Ok(()) => {
+                self.sync_cut_state();
+                format!("{} {} item(s)", if cut { "Cut" } else { "Copied" }, paths.len())
+            }
             Err(e) => format!("Clipboard error: {e}"),
         });
     }
@@ -1772,9 +1876,13 @@ impl App {
         if files.is_empty() {
             return;
         }
+        if cut && self.cut_dismissed_seq == Some(explorer_sys::clipboard_seq()) {
+            return;
+        }
         if cut {
             // A cut is used up by the paste, as in Explorer.
             let _ = explorer_sys::clipboard_set_files(&[], false);
+            self.sync_cut_state();
         }
         self.run_op(if cut { FileOp::Move } else { FileOp::Copy }, files, Some(dest));
     }
@@ -2114,14 +2222,20 @@ impl App {
             let to = if next_tab { (self.active_tab + 1) % n } else { (self.active_tab + n - 1) % n };
             self.switch_tab(to);
         }
-        let (back, fwd, up, f5, addr, find, newdir) = ui.input_mut(|i| {
+        // Check Ctrl+Shift+E before Ctrl+E so egui's logical match doesn't trigger search focus.
+        let (back, fwd, up, f5, f11, reveal, addr, find, newdir) = ui.input_mut(|i| {
+            let no_mods = !i.modifiers.alt && !i.modifiers.shift;
             (
                 i.consume_key(alt, Key::ArrowLeft) || i.pointer.button_pressed(egui::PointerButton::Extra1),
                 i.consume_key(alt, Key::ArrowRight) || i.pointer.button_pressed(egui::PointerButton::Extra2),
                 i.consume_key(alt, Key::ArrowUp),
                 i.consume_key(Modifiers::NONE, Key::F5),
-                i.consume_key(ctrl, Key::L) || i.consume_key(alt, Key::D),
-                i.consume_key(ctrl, Key::F) || i.consume_key(Modifiers::NONE, Key::F3),
+                no_mods && i.consume_key(Modifiers::NONE, Key::F11),
+                i.consume_key(ctrl | Modifiers::SHIFT, Key::E),
+                i.consume_key(ctrl, Key::L)
+                    || i.consume_key(alt, Key::D)
+                    || (no_mods && i.consume_key(Modifiers::NONE, Key::F4)),
+                i.consume_key(ctrl, Key::F) || i.consume_key(ctrl, Key::E) || i.consume_key(Modifiers::NONE, Key::F3),
                 i.consume_key(ctrl | Modifiers::SHIFT, Key::N),
             )
         });
@@ -2138,8 +2252,15 @@ impl App {
             self.refresh();
             self.load_drives();
         }
+        if f11 {
+            self.fullscreen = !self.fullscreen;
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
+        }
+        if reveal {
+            self.reveal_tree = Some(self.cur.clone());
+        }
         if addr {
-            self.address_edit = Some(self.address_text());
+            self.open_address_edit();
         }
         if find {
             self.focus_search = true;
@@ -2205,6 +2326,7 @@ impl App {
                 (Modifiers::NONE, Key::F2, "rename"),
                 (Modifiers::SHIFT, Key::Delete, "nuke"),
                 (Modifiers::NONE, Key::Delete, "delete"),
+                (ctrl, Key::D, "delete"),
                 (ctrl, Key::A, "all"),
                 (ctrl, Key::N, "newwin"),
                 (ctrl | Modifiers::SHIFT, Key::Z, "redo"),
@@ -2282,6 +2404,10 @@ impl App {
                 "none" => {
                     self.selected.clear();
                     self.cursor = None;
+                    if !self.cut_paths.is_empty() {
+                        self.cut_paths.clear();
+                        self.cut_dismissed_seq = self.cut_seq;
+                    }
                 }
                 "copy" => self.copy_selection(false),
                 "cut" => self.copy_selection(true),
@@ -2323,6 +2449,7 @@ impl eframe::App for App {
             }
         }
         self.drain();
+        self.sync_cut_state();
         // Coming back to the window: pick up changes made elsewhere (cheap: one listing).
         let focused = ui.input(|i| i.viewport().focused.unwrap_or(true));
         if focused && !self.was_focused && !self.loading {
@@ -2735,4 +2862,25 @@ fn run(renderer: ui_common::Renderer) -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native("oxi-explorer", options, Box::new(|cc| Ok(Box::new(App::new(cc, start, settings)))))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ViewMode;
+
+    #[test]
+    fn wheel_steps_views_and_clamps() {
+        assert_eq!(ViewMode::Small.step_wheel(true), ViewMode::Medium);
+        assert_eq!(ViewMode::Medium.step_wheel(true), ViewMode::Large);
+        assert_eq!(ViewMode::Large.step_wheel(true), ViewMode::ExtraLarge);
+        assert_eq!(ViewMode::ExtraLarge.step_wheel(true), ViewMode::ExtraLarge);
+
+        assert_eq!(ViewMode::ExtraLarge.step_wheel(false), ViewMode::Large);
+        assert_eq!(ViewMode::Small.step_wheel(false), ViewMode::List);
+        assert_eq!(ViewMode::List.step_wheel(false), ViewMode::Details);
+        assert_eq!(ViewMode::Details.step_wheel(false), ViewMode::Tiles);
+        assert_eq!(ViewMode::Tiles.step_wheel(false), ViewMode::Content);
+        assert_eq!(ViewMode::Content.step_wheel(false), ViewMode::Content);
+        assert_eq!(ViewMode::Details.step_wheel(true), ViewMode::List);
+    }
 }

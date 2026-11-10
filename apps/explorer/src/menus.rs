@@ -48,7 +48,7 @@ pub fn item(ui: &mut Ui, info: &ItemInfo, action: &mut Option<Action>) {
             *action = Some(Action::Share);
             ui.close();
         }
-        if ui_common::command_button(ui, Icon::Delete, "", true, "Delete (Delete)").clicked() {
+        if ui_common::command_button(ui, Icon::Delete, "", true, "Delete (Delete, Ctrl+D)").clicked() {
             *action = Some(Action::Delete(false));
             ui.close();
         }

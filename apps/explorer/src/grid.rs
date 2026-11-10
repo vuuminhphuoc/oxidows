@@ -328,7 +328,8 @@ pub fn show(
                 ),
             };
             // A shell thumbnail (or the shell's large icon for anything without one), else
-            // the small system icon, else a glyph.
+            let cut = app.is_cut(&e.name);
+            let img_tint = if cut { egui::Color32::WHITE.gamma_multiply(0.5) } else { egui::Color32::WHITE };
             let thumb = if thumbs { app.thumbs.get(&path) } else { None };
             let painted = match thumb {
                 Some(IconState::Ready(tex)) => {
@@ -340,7 +341,7 @@ pub fn show(
                         tex.id(),
                         r,
                         Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                        egui::Color32::WHITE,
+                        img_tint,
                     );
                     true
                 }
@@ -360,14 +361,17 @@ pub fn show(
                             tex.id(),
                             r,
                             Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                            egui::Color32::WHITE,
+                            img_tint,
                         );
                     }
                     state => {
                         if state.is_none() {
                             wanted_icons.push(key);
                         }
-                        let color = if e.is_dir { folder } else { text };
+                        let mut color = if e.is_dir { folder } else { text };
+                        if cut {
+                            color = color.gamma_multiply(0.5);
+                        }
                         ui.painter().text(
                             img_rect.center(),
                             egui::Align2::CENTER_CENTER,
@@ -379,7 +383,10 @@ pub fn show(
                 }
             }
 
-            let name_color = if e.hidden || e.system { weak } else { text };
+            let mut name_color = if e.hidden || e.system { weak } else { text };
+            if cut {
+                name_color = name_color.gamma_multiply(0.5);
+            }
             let name = if app.show_extensions || e.is_dir {
                 e.display().to_string()
             } else {
@@ -442,7 +449,10 @@ pub fn show(
                     let width = rect.right() - x - 4.0;
                     let second = e.note.clone().unwrap_or_else(|| e.type_name());
                     let third = if e.is_dir { String::new() } else { format_size_kb(e.size) };
-                    for (i, (t, c)) in [(name, name_color), (second, weak), (third, weak)].into_iter().enumerate() {
+                    let sub_color = if cut { weak.gamma_multiply(0.5) } else { weak };
+                    for (i, (t, c)) in
+                        [(name, name_color), (second, sub_color), (third, sub_color)].into_iter().enumerate()
+                    {
                         let mut job = egui::text::LayoutJob::simple_singleline(t, egui::FontId::proportional(12.5), c);
                         job.wrap.max_width = width;
                         job.wrap.max_rows = 1;
@@ -464,13 +474,20 @@ pub fn show(
                     };
                     let (y1, y2) = (rect.top() + 12.0, rect.top() + 32.0);
                     line(name, name_color, 14.0, egui::pos2(x, y1), right - x - 12.0);
+                    let sub_color = if cut { weak.gamma_multiply(0.5) } else { weak };
                     let kind = e.note.clone().unwrap_or_else(|| e.type_name());
-                    line(format!("Type: {kind}"), weak, 12.5, egui::pos2(x, y2), right - x - 12.0);
+                    line(format!("Type: {kind}"), sub_color, 12.5, egui::pos2(x, y2), right - x - 12.0);
                     let width = rect.right() - right - 8.0;
                     let when = explorer_core::format_time(e.modified, app.utc_offset);
-                    line(format!("Date modified: {when}"), weak, 12.5, egui::pos2(right, y1), width);
+                    line(format!("Date modified: {when}"), sub_color, 12.5, egui::pos2(right, y1), width);
                     if !e.is_dir {
-                        line(format!("Size: {}", format_size_kb(e.size)), weak, 12.5, egui::pos2(right, y2), width);
+                        line(
+                            format!("Size: {}", format_size_kb(e.size)),
+                            sub_color,
+                            12.5,
+                            egui::pos2(right, y2),
+                            width,
+                        );
                     }
                     ui.painter().hline(
                         rect.x_range(),
