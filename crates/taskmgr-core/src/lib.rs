@@ -292,6 +292,10 @@ pub struct AdapterInfo {
     pub dns_suffix: String,
     /// Wi-Fi network name, for wireless adapters.
     pub ssid: Option<String>,
+    /// "Ethernet", "Wi-Fi", "Bluetooth", "Cellular", "Other".
+    pub connection_type: String,
+    /// Signal quality in percent (0..=100), where available for wireless adapters.
+    pub signal_strength: Option<u32>,
 }
 
 /// Facts about the processor that do not change while running.
@@ -306,6 +310,8 @@ pub struct CpuInfo {
     pub l2_bytes: u64,
     pub l3_bytes: u64,
     pub virtualization: Option<bool>,
+    /// NUMA node index for each logical processor.
+    pub numa_nodes: Vec<u32>,
 }
 
 /// From `GPU Engine(*)` instances like `pid_1234_luid_0x0_0x1_phys_0_eng_0_engtype_3D`:
@@ -557,6 +563,8 @@ pub struct SystemRates {
     pub uptime: Duration,
     pub cpu_mhz: Option<f32>,
     pub mem_cached: Option<u64>,
+    /// Compressed memory working set (from "Memory Compression" process).
+    pub mem_compressed: Option<u64>,
     pub mem_paged_pool: Option<u64>,
     pub mem_nonpaged_pool: Option<u64>,
     pub mem_hw_reserved: Option<u64>,
@@ -1078,6 +1086,10 @@ impl Sampler {
             uptime: sys.uptime,
             cpu_mhz: sys.cpu_mhz,
             mem_cached: sys.mem_cached,
+            mem_compressed: processes
+                .iter()
+                .find(|p| p.name.eq_ignore_ascii_case("Memory Compression"))
+                .map(|p| p.memory),
             mem_paged_pool: sys.mem_paged_pool,
             mem_nonpaged_pool: sys.mem_nonpaged_pool,
             mem_hw_reserved: sys.mem_hw_reserved,
@@ -1341,6 +1353,71 @@ pub fn format_bits_per_sec(bytes_per_sec: f64) -> String {
 pub fn format_uptime(d: Duration) -> String {
     let s = d.as_secs();
     format!("{}:{:02}:{:02}:{:02}", s / 86_400, (s / 3600) % 24, (s / 60) % 60, s % 60)
+}
+
+/// Groups logical processor values by NUMA node and computes each node's average value.
+/// Returns a sorted list of `(node_id, average_value)`.
+pub fn group_by_numa_node(core_values: &[f32], core_nodes: &[u32]) -> Vec<(u32, f32)> {
+    if core_values.is_empty() || core_nodes.is_empty() {
+        return Vec::new();
+    }
+    let mut sums: HashMap<u32, (f32, usize)> = HashMap::new();
+    for (&val, &node) in core_values.iter().zip(core_nodes.iter()) {
+        let entry = sums.entry(node).or_insert((0.0, 0));
+        entry.0 += val;
+        entry.1 += 1;
+    }
+    let mut result: Vec<(u32, f32)> =
+        sums.into_iter().map(|(node, (sum, count))| (node, if count > 0 { sum / count as f32 } else { 0.0 })).collect();
+    result.sort_by_key(|(node, _)| *node);
+    result
+}
+
+/// Picks default engines for up to 4 slots from the list of available engine names.
+/// Preferences for slots 0..3 are "3D", "Copy", "Video Encode", "Video Decode".
+/// If preferred engines are missing or there are fewer engines, other available engines fill the slots.
+pub fn pick_default_gpu_engines(available: &[String]) -> [String; 4] {
+    let defaults = ["3D", "Copy", "Video Encode", "Video Decode"];
+    let mut chosen: [String; 4] = Default::default();
+    let mut used: Vec<&str> = Vec::new();
+
+    for (slot, &preferred) in defaults.iter().enumerate() {
+        if let Some(found) = available.iter().find(|&a| a == preferred && !used.contains(&a.as_str())) {
+            chosen[slot] = found.clone();
+            used.push(found.as_str());
+        }
+    }
+
+    // Fill any empty slots with remaining available engines
+    for c in &mut chosen {
+        if c.is_empty() {
+            if let Some(remaining) = available.iter().find(|&a| !used.contains(&a.as_str())) {
+                *c = remaining.clone();
+                used.push(remaining.as_str());
+            } else if let Some(first) = available.first() {
+                *c = first.clone();
+            }
+        }
+    }
+
+    chosen
+}
+
+/// Pushes current engine utilization values into history rings.
+/// Known engines not present in `engines` receive 0.0; new engines get a fresh ring.
+pub fn push_engine_rings(rings: &mut HashMap<String, Ring>, engines: &[(String, f32)]) {
+    let present: HashMap<&str, f32> = engines.iter().map(|(n, v)| (n.as_str(), *v)).collect();
+    for (name, ring) in rings.iter_mut() {
+        let val = present.get(name.as_str()).copied().unwrap_or(0.0);
+        ring.push(val);
+    }
+    for (name, val) in engines {
+        if !rings.contains_key(name) {
+            let mut ring = Ring::default();
+            ring.push(*val);
+            rings.insert(name.clone(), ring);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1732,5 +1809,45 @@ mod tests {
         assert_eq!(format_uptime(Duration::from_secs(90_061)), "1:01:01:01");
         assert_eq!(format_filetime(116_444_736_000_000_000), "1970-01-01 00:00");
         assert_eq!(format_filetime(0), "");
+    }
+
+    #[test]
+    fn group_by_numa_node_test() {
+        assert_eq!(group_by_numa_node(&[], &[]), vec![]);
+        let cores = vec![10.0, 20.0, 30.0, 40.0];
+        let nodes = vec![0, 0, 1, 1];
+        let grouped = group_by_numa_node(&cores, &nodes);
+        assert_eq!(grouped, vec![(0, 15.0), (1, 35.0)]);
+
+        let single_node = vec![0, 0, 0, 0];
+        let grouped_single = group_by_numa_node(&cores, &single_node);
+        assert_eq!(grouped_single, vec![(0, 25.0)]);
+    }
+
+    #[test]
+    fn pick_default_gpu_engines_test() {
+        let avail = vec!["3D".into(), "Copy".into(), "Video Decode".into(), "Video Encode".into(), "Compute_0".into()];
+        let picked = pick_default_gpu_engines(&avail);
+        assert_eq!(picked, ["3D", "Copy", "Video Encode", "Video Decode"]);
+
+        let partial = vec!["3D".into(), "Compute_0".into()];
+        let picked_partial = pick_default_gpu_engines(&partial);
+        assert_eq!(picked_partial[0], "3D");
+        assert_eq!(picked_partial[1], "Compute_0");
+    }
+
+    #[test]
+    fn push_engine_rings_test() {
+        let mut rings = HashMap::new();
+        let sample1 = vec![("3D".into(), 25.0), ("Copy".into(), 5.0)];
+        push_engine_rings(&mut rings, &sample1);
+        assert_eq!(rings["3D"].last(), Some(25.0));
+        assert_eq!(rings["Copy"].last(), Some(5.0));
+
+        // Second sample: 3D is 30, Copy is missing -> pushes 0.0
+        let sample2 = vec![("3D".into(), 30.0)];
+        push_engine_rings(&mut rings, &sample2);
+        assert_eq!(rings["3D"].last(), Some(30.0));
+        assert_eq!(rings["Copy"].last(), Some(0.0));
     }
 }

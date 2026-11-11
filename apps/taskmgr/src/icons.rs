@@ -78,15 +78,26 @@ impl Icons {
             return;
         }
         let key = p.info.path.to_lowercase();
+        if !inner.map.contains_key("") {
+            if let Some(tx) = &inner.tx {
+                let _ = tx.send(String::new());
+            }
+            inner.map.insert(String::new(), Slot::Pending);
+        }
+        let default_tex = match inner.map.get("") {
+            Some(Slot::Ready(t)) => Some(t.clone()),
+            _ => None,
+        };
         let tex = match inner.map.get(&key) {
             Some(Slot::Ready(t)) => Some(t.clone()),
-            Some(_) => None,
+            Some(Slot::Missing) => default_tex,
+            Some(Slot::Pending) => default_tex,
             None => {
                 if let Some(tx) = &inner.tx {
                     let _ = tx.send(key.clone());
                 }
                 inner.map.insert(key, Slot::Pending);
-                None
+                default_tex
             }
         };
         drop(inner);

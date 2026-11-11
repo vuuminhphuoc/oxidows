@@ -33,10 +33,10 @@ as the feature.
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| No zebra stripes; hover fill on every table (App history included) | done | |
+| No zebra stripes; hover fill on every table (App history included) | done | Heat-map cells (CPU, Memory, Disk, Network, GPU) preserve row hover highlight |
 | Arrow pointer over column headers (no hand) | done | |
 | Title-bar search box, per-page command bar, no status bar | done | |
-| Keyboard focus ring on table rows, hover and page-indicator animations | todo | |
+| Keyboard focus ring on table rows | won't | No shared table wrapper in ui-common (pages construct TableBuilder directly) |
 
 ## Processes
 
@@ -48,7 +48,7 @@ as the feature.
 | End task | done | button, Delete key, right-click |
 | Groups: Apps / Background processes / Windows processes | done | collapsible, can be turned off |
 | Friendly names (file description) | done | hover shows the image name |
-| Program icon left of each name | done | shell small icon of the exe, read on a background thread and cached by path; generic program icon when there is no path (System, Registry) |
+| Program icon left of each name | done | shell small icon of the exe, read on a background thread and cached by path; default executable icon via `SHGetStockIconInfo(SIID_APPLICATION)` when there is no path (System, Registry) or icon fails to load |
 | Machine totals above CPU, Memory, Disk, Network, GPU headers | done | Network total = all adapters' throughput over their link speed, shown even when per-process network is off |
 | Expand an app to its child processes | done | children fold into the app row; windows are not listed |
 | Network column | done | ETW Microsoft-Windows-Kernel-Network; needs administrator (Task Manager uses a system service) |
@@ -72,18 +72,18 @@ as the feature.
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| CPU graph 60 s, per-logical-processor view | done | choice saved in taskmgr.ini (`cpu_logical`) |
+| CPU graph 60 s, per-logical-processor view, NUMA nodes view | done | choice saved in taskmgr.ini (`cpu_logical`); NUMA nodes view with per-node average utilization, disabled on single-node machines |
 | CPU utilization, speed, processes, threads, handles, up time | done | |
 | CPU name, base speed, sockets, cores, logical processors, L1/L2/L3 cache, virtualization | done | |
-| Kernel times overlay | done | checkbox on the CPU page, also per processor; saved (`cpu_kernel`) |
+| Kernel times overlay | done | "Show kernel times" in the CPU graph's right-click menu (as in Windows), also per processor; saved (`cpu_kernel`) |
 | Memory graph, in use, available, committed | done | |
-| Memory cached, paged / non-paged pool, composition bar, hardware reserved | done | `GetPerformanceInfo` |
+| Memory cached, compressed, paged / non-paged pool, composition bar, hardware reserved | done | `GetPerformanceInfo`, working set of Memory Compression process |
 | Memory speed, slots, form factor | done | SMBIOS type 17 |
 | One entry per physical disk: active time, response time, read / write speed, transfer-rate graph | done | PDH `PhysicalDisk(*)`; titled "Disk 0 (C:)" |
 | Disk model, capacity, type (SSD / HDD), bus, system disk, page file | done | `IOCTL_STORAGE_QUERY_PROPERTY`, `IOCTL_DISK_GET_DRIVE_GEOMETRY_EX` (no admin) |
 | One entry per adapter: send / receive, link speed | done | `GetIfTable2` |
-| Adapter IPv4 / IPv6, DNS name, SSID | done | `GetAdaptersAddresses`, WLAN API |
-| GPU utilization, engines (3D, Copy, Video…), dedicated / shared memory | done | PDH `GPU Engine(*)`, `GPU Adapter Memory(*)` |
+| Adapter IPv4 / IPv6, DNS name, SSID, connection type, Wi-Fi signal strength | done | `GetAdaptersAddresses`, WLAN API |
+| GPU 2x2 engine grid (default 3D, Copy, Video Encode, Video Decode with per-slot dropdown) and Dedicated / Shared memory graphs | done | PDH `GPU Engine(*)`, `GPU Adapter Memory(*)`; 60 s history ring per engine and for memory; axis labels and total titles |
 | One entry per GPU adapter with name, dedicated / shared memory used of total | done | DXGI + PDH split by LUID |
 | GPU driver version, driver date, DirectX version | done | DXGI `CheckInterfaceSupport`, the display driver key, D3D12 feature-level probe |
 | GPU physical location | done | SetupAPI `SPDRP_LOCATION_INFORMATION` |
@@ -92,6 +92,7 @@ as the feature.
 | NPU | done | DXCore machine-learning adapters without graphics, numbered NPU 0, 1... |
 | Copy to clipboard | done | |
 | Summary view | done | button or double-click; double-click again to come back |
+| Graph context menu and layout | done | Right-click graph menu (Graph summary view, Change graph to, Show kernel times, Copy); 4 axis labels (top-left caption, top-right 100%, bottom-left 60s, bottom-right 0); stats block with big value on left and 2 columns on right |
 | Open Resource Monitor | done | launches `resmon` |
 | FPS (extra, not in Windows' Task Manager) | done | DXGI / D3D9 `Present_Start` ETW events per swap chain; FPS, frame time, 1% low, 60 s graph, every app drawing frames; needs administrator; recording starts when the Performance tab first opens |
 

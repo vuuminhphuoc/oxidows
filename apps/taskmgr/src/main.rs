@@ -1036,8 +1036,8 @@ impl eframe::App for App {
                         INTERVAL_MS.store(s.interval_ms, Ordering::Relaxed);
                         self.processes.set_group(s.group_by_type);
                         self.processes.percent = s.values_pct;
-                        // "Reset" also clears the Performance checkboxes.
-                        self.performance.per_core = s.cpu_logical;
+                        // "Reset" also clears the Performance graph choices.
+                        self.performance.set_per_core(s.cpu_logical);
                         self.performance.kernel = s.cpu_kernel;
                         self.processes.confirm_efficiency = s.confirm_efficiency_mode;
                         self.details.confirm_efficiency = s.confirm_efficiency_mode;

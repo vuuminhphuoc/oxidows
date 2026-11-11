@@ -10,7 +10,8 @@ use windows_sys::Win32::Graphics::Gdi::{
 };
 use windows_sys::Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx};
 use windows_sys::Win32::UI::Shell::{
-    SHFILEINFOW, SHGFI_ICON, SHGFI_SMALLICON, SHGFI_USEFILEATTRIBUTES, SHGetFileInfoW,
+    SHFILEINFOW, SHGFI_ICON, SHGFI_SMALLICON, SHGFI_USEFILEATTRIBUTES, SHGSI_ICON, SHGSI_SMALLICON, SHGetFileInfoW,
+    SHGetStockIconInfo, SHSTOCKICONINFO, SIID_APPLICATION,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, ICONINFO};
 
@@ -67,6 +68,17 @@ pub fn exe_icon(path: &str) -> Option<IconImage> {
         got = unsafe { SHGetFileInfoW(w.as_ptr(), 0, &mut info, size, SHGFI_ICON | SHGFI_SMALLICON) };
     }
     if got == 0 || info.hIcon.is_null() {
+        let mut stock: SHSTOCKICONINFO = unsafe { zeroed() };
+        stock.cbSize = size_of::<SHSTOCKICONINFO>() as u32;
+        // SAFETY: sized SHSTOCKICONINFO pointer.
+        if unsafe { SHGetStockIconInfo(SIID_APPLICATION, SHGSI_ICON | SHGSI_SMALLICON, &mut stock) } == 0
+            && !stock.hIcon.is_null()
+        {
+            info.hIcon = stock.hIcon;
+            got = 1;
+        }
+    }
+    if got == 0 || info.hIcon.is_null() {
         let w: Vec<u16> = "program.exe\0".encode_utf16().collect();
         // SAFETY: as above; USEFILEATTRIBUTES never touches the disk.
         got = unsafe {
@@ -118,4 +130,9 @@ pub fn exe_icon(path: &str) -> Option<IconImage> {
         DestroyIcon(info.hIcon);
         out
     }
+}
+
+/// The shell generic application icon, shown when a process has no path or its icon cannot be loaded.
+pub fn default_app_icon() -> Option<IconImage> {
+    exe_icon("")
 }

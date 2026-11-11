@@ -205,6 +205,11 @@ pub fn exe_icon(path: &str) -> Option<IconImage> {
     }
 }
 
+/// The generic program icon shown when an exe has no path or its icon cannot be loaded.
+pub fn default_app_icon() -> Option<IconImage> {
+    imp::default_app_icon()
+}
+
 pub fn app_history() -> io::Result<taskmgr_core::AppHistory> {
     imp::app_history()
 }
