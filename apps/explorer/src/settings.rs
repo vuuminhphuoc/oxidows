@@ -125,6 +125,12 @@ pub const DOWNLOADS_VIEW: FolderView = FolderView {
     group: GroupBy::Modified,
     group_ascending: false,
 };
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum StartPage {
+    #[default]
+    Home,
+    ThisPc,
+}
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Settings {
@@ -149,8 +155,39 @@ pub struct Settings {
     /// Property-system columns shown in Details, in order.
     pub prop_cols: Vec<explorer_core::Prop>,
     pub share: ShareSettings,
+    /// Files starred as Favorites by the user.
+    pub favorites: Vec<PathBuf>,
+    /// Frequently opened folders: path -> (opens, last opened timestamp).
+    pub frequent: BTreeMap<PathBuf, (u64, i64)>,
+    /// Sections collapsed on Home ("quick_access", "favorites", "recent").
+    pub home_collapsed: std::collections::HashSet<String>,
+    /// Where File Explorer opens at startup (Home or This PC).
+    pub start_page: StartPage,
+    /// Browse folders: open folders in a new window/tab instead of same window.
+    pub browse_new_window: bool,
+    /// Single-click to open an item (point to select) vs double-click.
+    pub single_click: bool,
+    /// Privacy: show recently used files on Home.
+    pub privacy_recent_files: bool,
+    /// Privacy: show frequently used folders on Home.
+    pub privacy_frequent_folders: bool,
+    /// View: Display the full path in the title bar.
+    pub title_full_path: bool,
+    /// View: Hide empty drives in This PC / navigation pane.
+    pub hide_empty_drives: bool,
+    /// View: Show drive letters before drive names (default false = after).
+    pub drive_letters_before: bool,
+    /// View: Always show icons, never thumbnails.
+    pub never_thumbnails: bool,
+    /// View: Show status bar at the bottom.
+    pub show_status_bar: bool,
+    /// View: Automatically expand navigation pane to open folder.
+    pub nav_expand_to_open: bool,
+    /// View: Show libraries in the navigation pane.
+    pub show_libraries: bool,
+    /// Search: Always search file names and contents in non-indexed locations.
+    pub search_contents: bool,
 }
-
 /// Nearby sharing (LocalSend protocol).
 #[derive(Clone, PartialEq, Debug, Default)]
 pub struct ShareSettings {
@@ -184,6 +221,22 @@ impl Default for Settings {
             compact: false,
             prop_cols: Vec::new(),
             share: ShareSettings::default(),
+            favorites: Vec::new(),
+            frequent: BTreeMap::new(),
+            home_collapsed: std::collections::HashSet::new(),
+            start_page: StartPage::Home,
+            browse_new_window: false,
+            single_click: false,
+            privacy_recent_files: true,
+            privacy_frequent_folders: true,
+            title_full_path: false,
+            hide_empty_drives: true,
+            drive_letters_before: false,
+            never_thumbnails: false,
+            show_status_bar: true,
+            nav_expand_to_open: false,
+            show_libraries: true,
+            search_contents: false,
         }
     }
 }
@@ -290,6 +343,14 @@ impl Settings {
                 }
                 continue;
             }
+            if let Some(folder) = k.strip_prefix("frequent:") {
+                if let Some((opens, last)) = v.split_once(',')
+                    && let (Ok(opens), Ok(last)) = (opens.parse(), last.parse())
+                {
+                    s.frequent.insert(PathBuf::from(folder), (opens, last));
+                }
+                continue;
+            }
             match k {
                 "width" => s.size[0] = v.parse().unwrap_or(s.size[0]),
                 "height" => s.size[1] = v.parse().unwrap_or(s.size[1]),
@@ -318,6 +379,41 @@ impl Settings {
                 "share_quick_save" => s.share.quick_save = flag(v),
                 "hotspot_pass" => s.share.hotspot_pass = v.to_string(),
                 "theme" => s.theme = Theme::parse(v),
+                "favorite" if !v.is_empty() => s.favorites.push(PathBuf::from(v)),
+                "favorites" if !v.is_empty() => {
+                    for p in v.split(',') {
+                        let p = p.trim();
+                        if !p.is_empty() {
+                            s.favorites.push(PathBuf::from(p));
+                        }
+                    }
+                }
+                "home_collapsed" if !v.is_empty() => {
+                    for name in v.split(',') {
+                        let name = name.trim();
+                        if !name.is_empty() {
+                            s.home_collapsed.insert(name.to_string());
+                        }
+                    }
+                }
+                "start_page" => {
+                    s.start_page = match v {
+                        "this_pc" | "thispc" => StartPage::ThisPc,
+                        _ => StartPage::Home,
+                    };
+                }
+                "browse_new_window" => s.browse_new_window = flag(v),
+                "single_click" => s.single_click = flag(v),
+                "privacy_recent_files" => s.privacy_recent_files = v != "false",
+                "privacy_frequent_folders" => s.privacy_frequent_folders = v != "false",
+                "title_full_path" => s.title_full_path = flag(v),
+                "hide_empty_drives" => s.hide_empty_drives = v != "false",
+                "drive_letters_before" => s.drive_letters_before = flag(v),
+                "never_thumbnails" => s.never_thumbnails = flag(v),
+                "show_status_bar" => s.show_status_bar = v != "false",
+                "nav_expand_to_open" => s.nav_expand_to_open = flag(v),
+                "show_libraries" => s.show_libraries = v != "false",
+                "search_contents" => s.search_contents = flag(v),
                 _ => {}
             }
         }
@@ -366,6 +462,39 @@ impl Settings {
         }
         for (k, (n, v)) in &self.folders {
             out.push_str(&format!("folder:{k}={n},{}\n", v.to_text()));
+        }
+        out.push_str(&format!(
+            "start_page={}\nbrowse_new_window={}\nsingle_click={}\nprivacy_recent_files={}\n\
+             privacy_frequent_folders={}\ntitle_full_path={}\nhide_empty_drives={}\ndrive_letters_before={}\n\
+             never_thumbnails={}\nshow_status_bar={}\nnav_expand_to_open={}\n\
+             show_libraries={}\nsearch_contents={}\n",
+            match self.start_page {
+                StartPage::Home => "home",
+                StartPage::ThisPc => "this_pc",
+            },
+            self.browse_new_window,
+            self.single_click,
+            self.privacy_recent_files,
+            self.privacy_frequent_folders,
+            self.title_full_path,
+            self.hide_empty_drives,
+            self.drive_letters_before,
+            self.never_thumbnails,
+            self.show_status_bar,
+            self.nav_expand_to_open,
+            self.show_libraries,
+            self.search_contents,
+        ));
+        for p in &self.favorites {
+            out.push_str(&format!("favorite={}\n", p.display()));
+        }
+        if !self.home_collapsed.is_empty() {
+            let mut col: Vec<&str> = self.home_collapsed.iter().map(String::as_str).collect();
+            col.sort();
+            out.push_str(&format!("home_collapsed={}\n", col.join(",")));
+        }
+        for (p, (opens, last)) in &self.frequent {
+            out.push_str(&format!("frequent:{}={opens},{last}\n", p.display()));
         }
         out
     }
@@ -455,6 +584,34 @@ impl App {
 
     pub fn unpin(&mut self, p: &std::path::Path) {
         self.persist.settings.pinned.retain(|q| folder_key(q) != folder_key(p));
+    }
+
+    pub fn is_favorite(&self, p: &std::path::Path) -> bool {
+        self.persist.settings.favorites.iter().any(|q| folder_key(q) == folder_key(p))
+    }
+
+    pub fn add_favorite(&mut self, p: PathBuf) {
+        if !self.is_favorite(&p) {
+            self.persist.settings.favorites.push(p);
+        }
+    }
+
+    pub fn remove_favorite(&mut self, p: &std::path::Path) {
+        self.persist.settings.favorites.retain(|q| folder_key(q) != folder_key(p));
+    }
+
+    pub fn record_frequent_folder(&mut self, p: PathBuf) {
+        if !self.persist.settings.privacy_frequent_folders {
+            return;
+        }
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+        let entry = self.persist.settings.frequent.entry(p).or_insert((0, 0));
+        entry.0 += 1;
+        entry.1 = now;
+    }
+
+    pub fn remove_frequent_folder(&mut self, p: &std::path::Path) {
+        self.persist.settings.frequent.retain(|q, _| folder_key(q) != folder_key(p));
     }
 
     pub fn folder_view(&self) -> FolderView {
@@ -586,6 +743,22 @@ mod tests {
             compact: false,
             prop_cols: vec![explorer_core::Prop::Dimensions, explorer_core::Prop::Authors],
             share: ShareSettings::default(),
+            favorites: Vec::new(),
+            frequent: BTreeMap::new(),
+            home_collapsed: std::collections::HashSet::new(),
+            start_page: StartPage::Home,
+            browse_new_window: false,
+            single_click: false,
+            privacy_recent_files: true,
+            privacy_frequent_folders: true,
+            title_full_path: false,
+            hide_empty_drives: true,
+            drive_letters_before: false,
+            never_thumbnails: false,
+            show_status_bar: true,
+            nav_expand_to_open: false,
+            show_libraries: true,
+            search_contents: false,
         };
         s.remember_folder(
             r"c:\users\a\pictures".into(),
@@ -605,8 +778,42 @@ mod tests {
             quick_save: true,
             hotspot_pass: "k3x9q2mz".into(),
         };
+        s.favorites = vec![PathBuf::from("/home/user/document.txt"), PathBuf::from("/home/user/photo.png")];
+        s.frequent = BTreeMap::from([
+            (PathBuf::from("/home/user/work"), (12, 1700000000)),
+            (PathBuf::from("/home/user/downloads"), (8, 1700001000)),
+        ]);
+        s.home_collapsed = std::collections::HashSet::from(["quick_access".into(), "recent".into()]);
+        s.start_page = StartPage::ThisPc;
+        s.browse_new_window = true;
+        s.single_click = true;
+        s.privacy_recent_files = false;
+        s.privacy_frequent_folders = false;
+        s.title_full_path = true;
+        s.hide_empty_drives = false;
+        s.drive_letters_before = true;
+        s.never_thumbnails = true;
+        s.show_status_bar = false;
+        s.nav_expand_to_open = true;
+        s.show_libraries = false;
+        s.search_contents = true;
         assert_eq!(Settings::parse(&s.to_text()), s);
         assert_eq!(Settings::parse("garbage\nwidth=abc\nview=nope"), Settings::default());
+    }
+
+    #[test]
+    fn favorites_and_frequent_round_trip() {
+        let text = "favorite=/docs/a.txt\nfavorite=/docs/b.png\nhome_collapsed=favorites,recent\n\
+                    frequent:/docs/work=15,1700000000\n";
+        let s = Settings::parse(text);
+        assert_eq!(s.favorites, vec![PathBuf::from("/docs/a.txt"), PathBuf::from("/docs/b.png")]);
+        assert!(s.home_collapsed.contains("favorites"));
+        assert!(s.home_collapsed.contains("recent"));
+        assert_eq!(s.frequent.get(&PathBuf::from("/docs/work")), Some(&(15, 1700000000)));
+
+        // Also check comma-separated favorites= line format
+        let s2 = Settings::parse("favorites=/docs/a.txt,/docs/b.png\n");
+        assert_eq!(s2.favorites, vec![PathBuf::from("/docs/a.txt"), PathBuf::from("/docs/b.png")]);
     }
 
     #[test]

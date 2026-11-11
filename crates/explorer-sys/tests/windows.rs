@@ -245,6 +245,11 @@ fn shell_icons() {
     assert!(txt.width >= 16 && txt.height >= 16);
     assert_eq!(txt.rgba.len(), txt.width * txt.height * 4);
     assert!(txt.rgba.as_chunks::<4>().0.iter().any(|p| p[3] > 0), "icon is fully transparent");
+    let png = explorer_sys::shell_icon(Path::new("file.png"), false, false).expect("png icon");
+    assert!(png.width >= 16 && png.height >= 16);
+    assert!(png.rgba.as_chunks::<4>().0.iter().any(|p| p[3] > 0));
+    let jpg = explorer_sys::shell_icon(Path::new("file.jpg"), false, false).expect("jpg icon");
+    assert!(jpg.width >= 16 && jpg.height >= 16);
     assert!(explorer_sys::shell_icon(Path::new("folder"), true, false).is_some());
     assert!(explorer_sys::shell_icon(Path::new(r"C:\Windows\notepad.exe"), false, true).is_some());
 }
