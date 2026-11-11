@@ -51,7 +51,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Tabs in the title bar, Mica background | ❌ | own row under the system title bar |
 | Windows 11 context menu with “Show more options” | ✅ | top icon row (Cut, Copy, Rename, Share, Delete), common verbs; Shift+right-click opens classic shell menu |
 | Rename in place (not in a dialog) | ✅ | the name turns into a text box in every view; Enter or clicking elsewhere keeps it, Esc cancels; a bad name shows a tip and stays editable |
-| Header filter drop-downs, More… column chooser | ❌ | |
+| Header filter drop-downs, More… column chooser | 🟡 | Pure filter bucket logic (Name, Date modified, Type, Size) unit-tested in explorer-core; hover chevron and filter popups, checked indicator on filtered columns, More… chooser dialog with searchable properties, sorting by properties; live GUI not yet verified |
 
 ## Hover and tooltips
 
@@ -85,7 +85,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Show protected OS files | ✅ | separate checkbox; hidden+system items stay out unless it is on |
 | Compact mode | ✅ | … menu ▸ Compact view: tighter rows and tiles |
 | Preview pane (Alt+P) | ✅ | hosts the registered Windows preview handler (Office, PDF, mail, fonts, media) out of process; text and thumbnails otherwise; files marked as downloaded from the internet get a warning instead, as Explorer |
-| Details pane (Alt+Shift+P) | ✅ | type, size, dates, attributes; totals for a multi-selection |
+| Details pane (Alt+Shift+P) | 🟡 | Shared panel slot with Preview pane; large thumbnail/icon, name, type, kind-specific properties (image, audio/video, document), in-place editing for Rating (five stars), Tags, Title, Authors, Comments via IPropertyStore, write error reporting; live GUI not yet verified |
 | Status bar: item count, selection count and size | ✅ | |
 
 ## Selection and keyboard
@@ -144,7 +144,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | --- | --- | --- |
 | Recycle Bin (browse, restore, empty) | ✅ | reads `$Recycle.Bin` `$I` records; original location and date deleted columns |
 | Home: Quick access, Favorites, Recent | 🟡 | 3 collapsible sections; Quick access folder tile grid with pin markers & frequent folders counter (ranking unit-tested); Favorites table with Add/Remove starred files; Recent files table; collapsed state and lists persisted in explorer.ini |
-| Libraries, Gallery | ✅ | libraries read with IShellLibrary, folders merged; Gallery = Pictures library pictures and videos, newest first |
+| Libraries, Gallery | 🟡 | Libraries read with IShellLibrary, folders merged; Gallery photo view with justified rows (pure layout unit-tested), Ctrl+wheel scaling, month headings with sticky header, timeline scrubber (pure helper unit-tested), Collection folders dropdown in command bar; live GUI not yet verified |
 | OneDrive status | ✅ | overlays on cloud files, plus a Status column (available when online / on this device / always available) |
 | Control Panel and other shell namespaces | ✅ | `::shell\<parsing name>` folders listed with IShellItem; shell:ControlPanelFolder in the address bar; items open with their default verb |
 | Phones (MTP) | ✅ | under This PC; browse, open, thumbnails, preview, copy/cut/paste both ways and delete through the shell's copy engine (`IFileOperation`), right-click menu. Tested on an Honor Magic8 Pro |

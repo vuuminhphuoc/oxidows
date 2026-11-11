@@ -143,6 +143,7 @@ pub struct Settings {
     pub col_created: bool,
     pub col_attrs: bool,
     pub pane: Pane,
+    pub pane_width: f32,
     pub theme: Theme,
     /// Lower-cased folder path → (order changed, view).
     pub folders: BTreeMap<String, (u64, FolderView)>,
@@ -154,6 +155,7 @@ pub struct Settings {
     pub compact: bool,
     /// Property-system columns shown in Details, in order.
     pub prop_cols: Vec<explorer_core::Prop>,
+    pub gallery_folders: Vec<PathBuf>,
     pub share: ShareSettings,
     /// Files starred as Favorites by the user.
     pub favorites: Vec<PathBuf>,
@@ -213,6 +215,7 @@ impl Default for Settings {
             col_created: false,
             col_attrs: false,
             pane: Pane::None,
+            pane_width: 280.0,
             theme: Theme::System,
             folders: BTreeMap::new(),
             pinned: Vec::new(),
@@ -220,6 +223,7 @@ impl Default for Settings {
             item_checkboxes: false,
             compact: false,
             prop_cols: Vec::new(),
+            gallery_folders: Vec::new(),
             share: ShareSettings::default(),
             favorites: Vec::new(),
             frequent: BTreeMap::new(),
@@ -269,6 +273,7 @@ fn sort_name(k: SortKey) -> &'static str {
         SortKey::Size => "size",
         SortKey::Created => "created",
         SortKey::Attributes => "attributes",
+        SortKey::Prop(p) => p.key(),
     }
 }
 
@@ -280,7 +285,10 @@ fn parse_sort(s: &str) -> Option<SortKey> {
         "size" => SortKey::Size,
         "created" => SortKey::Created,
         "attributes" => SortKey::Attributes,
-        _ => return None,
+        other => {
+            let p = explorer_core::Prop::parse(other)?;
+            SortKey::Prop(p)
+        }
     })
 }
 
@@ -368,6 +376,10 @@ impl Settings {
                         _ => Pane::None,
                     }
                 }
+                "pane_width" => s.pane_width = v.parse().unwrap_or(s.pane_width),
+                "gallery_folders" if !v.is_empty() => {
+                    s.gallery_folders = v.split(';').filter(|p| !p.is_empty()).map(PathBuf::from).collect();
+                }
                 "show_protected" => s.show_protected = flag(v),
                 "item_checkboxes" => s.item_checkboxes = flag(v),
                 "compact" => s.compact = flag(v),
@@ -440,9 +452,16 @@ impl Settings {
             self.col_attrs,
         );
         out.push_str(&format!(
-            "show_protected={}\nitem_checkboxes={}\ncompact={}\n",
-            self.show_protected, self.item_checkboxes, self.compact
+            "show_protected={}\nitem_checkboxes={}\ncompact={}\npane_width={}\n",
+            self.show_protected,
+            self.item_checkboxes,
+            self.compact,
+            self.pane_width.round()
         ));
+        if !self.gallery_folders.is_empty() {
+            let list: Vec<String> = self.gallery_folders.iter().map(|p| p.display().to_string()).collect();
+            out.push_str(&format!("gallery_folders={}\n", list.join(";")));
+        }
         let cols: Vec<&str> = self.prop_cols.iter().map(|p| p.key()).collect();
         out.push_str(&format!("columns={}\n", cols.join(",")));
         for p in &self.pinned {
@@ -643,6 +662,7 @@ impl App {
         self.col_created = s.col_created;
         self.col_attrs = s.col_attrs;
         self.pane = s.pane;
+        self.pane_width = s.pane_width;
         self.show_protected = s.show_protected;
         self.item_checkboxes = s.item_checkboxes;
         self.compact = s.compact;
@@ -699,11 +719,11 @@ impl App {
         s.col_created = self.col_created;
         s.col_attrs = self.col_attrs;
         s.pane = self.pane;
+        s.pane_width = self.pane_width;
         s.show_protected = self.show_protected;
         s.item_checkboxes = self.item_checkboxes;
         s.compact = self.compact;
         s.prop_cols = self.prop_cols.clone();
-
         if self.persist.settings != self.persist.saved {
             let at = *self.persist.changed_at.get_or_insert_with(Instant::now);
             let settle = Duration::from_secs(1);
@@ -735,6 +755,7 @@ mod tests {
             col_created: true,
             col_attrs: true,
             pane: Pane::Details,
+            pane_width: 280.0,
             theme: Theme::Light,
             folders: BTreeMap::new(),
             pinned: Vec::new(),
@@ -742,6 +763,7 @@ mod tests {
             item_checkboxes: false,
             compact: false,
             prop_cols: vec![explorer_core::Prop::Dimensions, explorer_core::Prop::Authors],
+            gallery_folders: Vec::new(),
             share: ShareSettings::default(),
             favorites: Vec::new(),
             frequent: BTreeMap::new(),
