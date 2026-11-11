@@ -41,6 +41,9 @@ icons! {
     More = '\u{E712}', "…";
     Add = '\u{E710}', "+";
     Close = '\u{E711}', "×";
+    ClosePane = '\u{E89F}', "◨";
+    ClosePaneMirrored = '\u{EA49}', "◧";
+    FavoriteStar = '\u{E734}', "★";
     Search = '\u{E721}', "🔍";
     Settings = '\u{E713}', "⚙";
     Pin = '\u{E718}', "📌";

@@ -17,6 +17,7 @@ pub struct ItemInfo {
     pub is_dir: bool,
     pub ext: String,
     pub pinned: bool,
+    pub favorite: bool,
     pub shell: bool,
 }
 
@@ -24,7 +25,8 @@ impl ItemInfo {
     pub fn new(app: &App, e: &explorer_core::Entry, pos: usize, shell: bool) -> Self {
         let path = app.child(&e.name);
         let pinned = e.is_dir && app.is_pinned(&path);
-        Self { pos, is_dir: e.is_dir, ext: e.extension(), pinned, shell, path }
+        let favorite = !e.is_dir && app.is_favorite(&path);
+        Self { pos, is_dir: e.is_dir, ext: e.extension(), pinned, favorite, shell, path }
     }
 }
 
@@ -84,6 +86,17 @@ pub fn item(ui: &mut Ui, info: &ItemInfo, action: &mut Option<Action>) {
         };
         if ui_common::menu_item(ui, icon, label, None).clicked() {
             *action = Some(Action::Pin(info.path.clone(), pin));
+            ui.close();
+        }
+    }
+    if !info.is_dir {
+        let (icon, label, add) = if info.favorite {
+            (Icon::FavoriteStar, "Remove from Favorites", false)
+        } else {
+            (Icon::FavoriteStar, "Add to Favorites", true)
+        };
+        if ui_common::menu_item(ui, icon, label, None).clicked() {
+            *action = Some(Action::Favorite(info.path.clone(), add));
             ui.close();
         }
     }

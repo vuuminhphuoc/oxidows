@@ -438,6 +438,10 @@ impl History {
         }
         self.forward.clear();
     }
+    pub fn clear(&mut self) {
+        self.back.clear();
+        self.forward.clear();
+    }
     pub fn back(&mut self, current: PathBuf) -> Option<PathBuf> {
         let to = self.back.pop()?;
         self.forward.push(current);
@@ -715,6 +719,16 @@ pub fn path_is_ancestor_with(ancestor: &Path, target: &Path, case_insensitive: b
         }
     }
     tc.next().is_some()
+}
+
+/// Ranks frequent folders: most opens first, tie-broken by most recently opened (highest timestamp).
+pub fn rank_frequent_folders<I>(items: I) -> Vec<PathBuf>
+where
+    I: IntoIterator<Item = (PathBuf, u64, i64)>,
+{
+    let mut vec: Vec<(PathBuf, u64, i64)> = items.into_iter().collect();
+    vec.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.2.cmp(&a.2)).then_with(|| a.0.cmp(&b.0)));
+    vec.into_iter().map(|(p, _, _)| p).collect()
 }
 
 /// One level up: share root -> server -> Network; drive root -> none.
@@ -1413,5 +1427,20 @@ mod tests {
         assert!(path_is_ancestor_with(p(r"C:\Users"), p(r"c:\users\Alice\Docs"), true));
         assert!(!path_is_ancestor_with(p(r"C:\Users"), p(r"C:\Users"), true));
         assert!(!path_is_ancestor_with(p(r"C:\User"), p(r"C:\Users\Alice"), true));
+    }
+
+    #[test]
+    fn frequent_folder_ranking() {
+        let a = PathBuf::from("/home/user/docs");
+        let b = PathBuf::from("/home/user/downloads");
+        let c = PathBuf::from("/home/user/music");
+        let d = PathBuf::from("/home/user/videos");
+        // a: 10 opens, opened at 100
+        // b: 5 opens, opened at 300
+        // c: 5 opens, opened at 200 (less recent than b)
+        // d: 1 open, opened at 500
+        let items = vec![(d.clone(), 1, 500), (c.clone(), 5, 200), (a.clone(), 10, 100), (b.clone(), 5, 300)];
+        let ranked = rank_frequent_folders(items);
+        assert_eq!(ranked, vec![a, b, c, d]);
     }
 }

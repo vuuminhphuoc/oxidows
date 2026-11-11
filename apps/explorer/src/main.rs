@@ -155,6 +155,14 @@ pub enum IconState {
     Failed,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum OptionsTab {
+    #[default]
+    General,
+    View,
+    Search,
+}
+
 enum Dialog {
     MapDrive(MapDrive),
     ConfirmPurge(Vec<Entry>),
@@ -338,6 +346,7 @@ struct App {
     pub updater: ui_common::Updater,
     /// The Options window (default file manager).
     pub options_open: bool,
+    pub options_tab: OptionsTab,
     /// Layout of the icon view drawn last frame (None in Details), for the arrow keys.
     pub grid_nav: Option<grid::GridNav>,
     /// Options ▸ Folder views: the button waiting for "Yes" (Apply to all folders, Reset folders).
@@ -454,6 +463,7 @@ impl App {
             }),
             // OXI_EXPLORER_OPTIONS=1 opens it at start, for screenshots.
             options_open: std::env::var_os("OXI_EXPLORER_OPTIONS").is_some(),
+            options_tab: OptionsTab::General,
             folder_confirm: None,
             grid_nav: None,
             default_app: ui_common::default_app::DefaultApp::new(cfg!(windows).then(folder_handler)),
@@ -499,6 +509,7 @@ impl App {
         let (root, generation, cancel, tx, ctx) =
             (self.cur.clone(), self.generation, self.cancel.clone(), self.tx.clone(), self.ctx.clone());
         let offset = self.utc_offset;
+        let search_contents = self.persist.settings.search_contents;
         thread::Builder::new()
             .name("search".into())
             .spawn(move || {
@@ -545,7 +556,7 @@ impl App {
                     });
                     if shell.is_err() && !cancel.load(Ordering::Relaxed) {
                         backend = "walk";
-                        walk_search(&root, &query, offset, &cancel, &mut out);
+                        walk_search(&root, &query, offset, search_contents, &cancel, &mut out);
                     }
                 }
 
@@ -581,7 +592,9 @@ impl App {
         }
         let (dir, generation, cancel, tx, ctx) =
             (self.cur.clone(), self.generation, self.cancel.clone(), self.tx.clone(), self.ctx.clone());
-        let pinned = self.persist.settings.pinned.clone();
+        let privacy_recent = self.persist.settings.privacy_recent_files;
+        let hide_empty = self.persist.settings.hide_empty_drives;
+        let letters_before = self.persist.settings.drive_letters_before;
         thread::Builder::new()
             .name("list".into())
             .spawn(move || {
@@ -652,25 +665,7 @@ impl App {
                     // Quick access, then recently opened files (newest first), from the
                     // shortcuts Windows keeps in the Recent folder.
                     Place::Home => {
-                        let quick = explorer_sys::known_folders()
-                            .into_iter()
-                            .map(|(n, p)| (n.to_string(), p))
-                            .chain(pinned.iter().map(|p| {
-                                (
-                                    p.file_name()
-                                        .map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned()),
-                                    p.clone(),
-                                )
-                            }))
-                            .map(|(label, p)| Entry {
-                                name: p.to_string_lossy().into_owned(),
-                                label: Some(label),
-                                note: Some("Quick access".into()),
-                                is_dir: true,
-                                ..Default::default()
-                            });
-                        let mut batch: Vec<Entry> = quick.collect();
-                        batch.extend(recent_files(60));
+                        let batch: Vec<Entry> = if privacy_recent { recent_files(60) } else { Vec::new() };
                         let _ = tx.send(Msg::Batch(generation, batch));
                         Ok(())
                     }
@@ -738,22 +733,32 @@ impl App {
                             is_dir: true,
                             ..Default::default()
                         });
-                        let drives = explorer_sys::drives().into_iter().map(|d| Entry {
-                            name: d.root.to_string_lossy().into_owned(),
-                            label: Some(view::drive_label(&d)),
-                            note: Some(if d.total > 0 {
-                                format!(
-                                    "{} free of {}",
-                                    explorer_core::format_bytes(d.free),
-                                    explorer_core::format_bytes(d.total)
-                                )
-                            } else {
-                                "Drive".into()
-                            }),
-                            is_dir: true,
-                            size: d.total,
-                            ..Default::default()
-                        });
+                        let drives = explorer_sys::drives()
+                            .into_iter()
+                            .filter(|d| {
+                                !hide_empty
+                                    || d.total > 0
+                                    || !matches!(
+                                        d.kind,
+                                        explorer_sys::DriveKind::Removable | explorer_sys::DriveKind::Optical
+                                    )
+                            })
+                            .map(|d| Entry {
+                                name: d.root.to_string_lossy().into_owned(),
+                                label: Some(view::drive_label(&d, letters_before)),
+                                note: Some(if d.total > 0 {
+                                    format!(
+                                        "{} free of {}",
+                                        explorer_core::format_bytes(d.free),
+                                        explorer_core::format_bytes(d.total)
+                                    )
+                                } else {
+                                    "Drive".into()
+                                }),
+                                is_dir: true,
+                                size: d.total,
+                                ..Default::default()
+                            });
                         let _ = tx.send(Msg::Batch(generation, folders.chain(drives).collect()));
                         ctx.request_repaint();
                         // Devices without a drive letter: phones and cameras (MTP), media servers,
@@ -1154,8 +1159,14 @@ impl App {
             }
             return self.refresh();
         }
-        let from = std::mem::replace(&mut self.cur, to);
+        let from = std::mem::replace(&mut self.cur, to.clone());
         self.history.visit(from);
+        if to.is_dir() && !classify(&to).is_page() {
+            self.record_frequent_folder(to.clone());
+        }
+        if self.persist.settings.nav_expand_to_open {
+            self.reveal_tree = Some(to);
+        }
         self.entered_new_folder(None);
     }
 
@@ -1545,7 +1556,8 @@ impl App {
                 // A drive by its name or letter: the rest is an ordinary path under it.
                 let drive = self.drives.iter().find(|d| {
                     let root = d.root.to_string_lossy();
-                    view::drive_label(d).eq_ignore_ascii_case(seg)
+                    view::drive_label(d, false).eq_ignore_ascii_case(seg)
+                        || view::drive_label(d, true).eq_ignore_ascii_case(seg)
                         || root.trim_end_matches('\\').eq_ignore_ascii_case(seg.trim_end_matches('\\'))
                 });
                 if let Some(d) = drive {
@@ -2494,7 +2506,13 @@ impl eframe::App for App {
         // The folder's name as in the breadcrumbs: "This PC", a phone's "Internal storage",
         // not the parsing name behind it.
         let title = match self.cur.file_name() {
-            Some(n) if !classify(&self.cur).is_page() => n.to_string_lossy().into_owned(),
+            Some(n) if !classify(&self.cur).is_page() => {
+                if self.persist.settings.title_full_path {
+                    self.cur.display().to_string()
+                } else {
+                    n.to_string_lossy().into_owned()
+                }
+            }
             _ => self.tab_title(self.active_tab),
         };
         if title != self.title {
@@ -2508,7 +2526,9 @@ impl eframe::App for App {
         view::tab_bar(self, ui);
         view::toolbar(self, ui);
         view::command_bar(self, ui);
-        view::status_bar(self, ui);
+        if self.persist.settings.show_status_bar {
+            view::status_bar(self, ui);
+        }
         view::sidebar(self, ui);
         pane::show(self, ui);
         let content = ui_common::content_frame(ui.style());
@@ -2609,7 +2629,7 @@ const CONTENT_LIMIT: u64 = 32 << 20;
 
 /// The search without Everything or Windows Search: walks `root` using `walk_parallel`. Unreadable folders (access
 /// denied) are skipped, as Explorer does.
-fn walk_search(root: &Path, query: &str, offset: i64, cancel: &AtomicBool, out: &mut SearchOut) {
+fn walk_search(root: &Path, query: &str, offset: i64, search_contents: bool, cancel: &AtomicBool, out: &mut SearchOut) {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
     let q = explorer_core::Query::parse(query, (now + offset).div_euclid(86_400));
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 8);
@@ -2629,7 +2649,12 @@ fn walk_search(root: &Path, query: &str, offset: i64, cancel: &AtomicBool, out: 
                     if cancel.load(Ordering::Relaxed) {
                         return;
                     }
-                    if q.matches(&e, offset) {
+                    let mut matched = q.matches(&e, offset);
+                    if !matched && search_contents && !q.words.is_empty() && !e.is_dir {
+                        let rel_name = rel_dir.join(&e.name);
+                        matched = q.words.iter().any(|needle| contains(&root.join(&rel_name), needle));
+                    }
+                    if matched {
                         let rel_name = rel_dir.join(&e.name);
                         if let Some(needle) = &q.content
                             && !contains(&root.join(&rel_name), needle)
@@ -2749,6 +2774,69 @@ enum FolderAction {
 }
 
 impl App {
+    pub fn quick_access_tiles(&self) -> Vec<(PathBuf, String, bool)> {
+        use explorer_core::rank_frequent_folders;
+        let mut out: Vec<(PathBuf, String, bool)> = Vec::new();
+        let mut seen = HashSet::new();
+
+        // 1. The known folders (pinned by default in Windows), then the folders the user pinned.
+        let known = self.places.iter().map(|(n, p)| (n.to_string(), p.clone()));
+        let pinned = self.persist.settings.pinned.iter().map(|p| {
+            (p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned()), p.clone())
+        });
+        for (label, p) in known.chain(pinned) {
+            if p.is_dir() && seen.insert(settings::folder_key(&p)) {
+                out.push((p, label, true));
+            }
+        }
+
+        // 2. Top frequent folders (if enabled)
+        if self.persist.settings.privacy_frequent_folders {
+            let ranked = rank_frequent_folders(
+                self.persist.settings.frequent.iter().map(|(p, &(opens, last))| (p.clone(), opens, last)),
+            );
+            // Frequent folders fill what is left of 12 tiles after the pinned ones.
+            for p in ranked {
+                if out.len() >= 12 {
+                    break;
+                }
+                if p.is_dir() {
+                    let key = settings::folder_key(&p);
+                    if seen.insert(key) {
+                        let label =
+                            p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned());
+                        out.push((p, label, false));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    pub fn favorite_items(&self) -> Vec<Entry> {
+        self.persist
+            .settings
+            .favorites
+            .iter()
+            .filter_map(|p| {
+                let md = std::fs::metadata(p).ok().filter(|m| m.is_file())?;
+                let mod_time = md
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map_or(0, |d| d.as_secs() as i64);
+                Some(Entry {
+                    name: p.to_string_lossy().into_owned(),
+                    label: p.file_name().map(|n| n.to_string_lossy().into_owned()),
+                    note: p.parent().map(|d| d.to_string_lossy().into_owned()),
+                    size: md.len(),
+                    modified: mod_time,
+                    ..Default::default()
+                })
+            })
+            .collect()
+    }
+
     /// Options ▸ Folder views, as on the View tab of Windows' Folder Options.
     fn folder_views_ui(&mut self, ui: &mut egui::Ui) {
         use settings::{FolderKind, folder_key};
@@ -2807,22 +2895,164 @@ impl App {
         }
     }
 
-    /// Options: which program opens folders and Win+E, and folder views.
+    /// Options dialog with General, View, and Search tabs.
     fn options(&mut self, ctx: &egui::Context) {
         if !self.options_open {
             return;
         }
         let mut open = true;
         let mut msg = None;
-        egui::Window::new("Options").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
-            ui.label(egui::RichText::new("Default file manager").strong());
-            ui.add_space(4.0);
-            msg = self.default_app.show(ui, &DEFAULT_APP, folder_handler, set_default);
-            ui.add_space(8.0);
-            ui.separator();
-            ui.add_space(4.0);
-            self.folder_views_ui(ui);
-        });
+        egui::Window::new("Folder Options")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(420.0)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.options_tab, OptionsTab::General, "General");
+                    ui.selectable_value(&mut self.options_tab, OptionsTab::View, "View");
+                    ui.selectable_value(&mut self.options_tab, OptionsTab::Search, "Search");
+                });
+                ui.separator();
+                ui.add_space(4.0);
+
+                match self.options_tab {
+                    OptionsTab::General => {
+                        ui.label(egui::RichText::new("Open File Explorer to:").strong());
+                        ui.horizontal(|ui| {
+                            ui.radio_value(&mut self.persist.settings.start_page, settings::StartPage::Home, "Home");
+                            ui.radio_value(
+                                &mut self.persist.settings.start_page,
+                                settings::StartPage::ThisPc,
+                                "This PC",
+                            );
+                        });
+                        ui.add_space(8.0);
+
+                        ui.label(egui::RichText::new("Browse folders").strong());
+                        ui.radio_value(
+                            &mut self.persist.settings.browse_new_window,
+                            false,
+                            "Open each folder in the same window",
+                        );
+                        ui.radio_value(
+                            &mut self.persist.settings.browse_new_window,
+                            true,
+                            "Open each folder in its own window",
+                        );
+                        ui.add_space(8.0);
+
+                        ui.label(egui::RichText::new("Click items as follows").strong());
+                        ui.radio_value(
+                            &mut self.persist.settings.single_click,
+                            true,
+                            "Single-click to open an item (point to select)",
+                        );
+                        ui.radio_value(
+                            &mut self.persist.settings.single_click,
+                            false,
+                            "Double-click to open an item (single-click to select)",
+                        );
+                        ui.add_space(8.0);
+
+                        ui.label(egui::RichText::new("Privacy").strong());
+                        ui.checkbox(&mut self.persist.settings.privacy_recent_files, "Show recently used files");
+                        ui.checkbox(
+                            &mut self.persist.settings.privacy_frequent_folders,
+                            "Show frequently used folders",
+                        );
+                        ui.add_space(2.0);
+                        if ui.button("Clear File Explorer history").clicked() {
+                            self.history.clear();
+                            self.persist.settings.frequent.clear();
+                            self.status = Some("File Explorer history cleared".into());
+                        }
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.add_space(4.0);
+
+                        self.folder_views_ui(ui);
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new("Default file manager").strong());
+                        ui.add_space(2.0);
+                        msg = self.default_app.show(ui, &DEFAULT_APP, folder_handler, set_default);
+                    }
+                    OptionsTab::View => {
+                        ui.label(egui::RichText::new("Advanced settings:").strong());
+                        egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                            ui.checkbox(
+                                &mut self.persist.settings.title_full_path,
+                                "Display the full path in the title bar",
+                            );
+                            if ui.checkbox(&mut self.show_hidden, "Show hidden files, folders, and drives").changed() {
+                                self.persist.settings.show_hidden = self.show_hidden;
+                            }
+                            ui.checkbox(&mut self.persist.settings.hide_empty_drives, "Hide empty drives");
+                            let mut hide_ext = !self.show_extensions;
+                            if ui.checkbox(&mut hide_ext, "Hide extensions for known file types").changed() {
+                                self.show_extensions = !hide_ext;
+                                self.persist.settings.show_extensions = self.show_extensions;
+                            }
+                            ui.checkbox(
+                                &mut self.persist.settings.drive_letters_before,
+                                "Show drive letters before drive names",
+                            );
+                            ui.checkbox(
+                                &mut self.persist.settings.never_thumbnails,
+                                "Always show icons, never thumbnails",
+                            );
+                            if ui.checkbox(&mut self.item_checkboxes, "Use check boxes to select items").changed() {
+                                self.persist.settings.item_checkboxes = self.item_checkboxes;
+                            }
+                            ui.checkbox(&mut self.persist.settings.show_status_bar, "Show status bar");
+                            ui.checkbox(
+                                &mut self.persist.settings.nav_expand_to_open,
+                                "Expand to open folder in navigation pane",
+                            );
+                            ui.checkbox(&mut self.persist.settings.show_libraries, "Show libraries in navigation pane");
+                        });
+                        ui.add_space(8.0);
+                        if ui.button("Restore defaults").clicked() {
+                            self.persist.settings.title_full_path = false;
+                            self.show_hidden = false;
+                            self.persist.settings.show_hidden = false;
+                            self.persist.settings.hide_empty_drives = true;
+                            self.show_extensions = true;
+                            self.persist.settings.show_extensions = true;
+                            self.persist.settings.drive_letters_before = false;
+                            self.persist.settings.never_thumbnails = false;
+                            self.item_checkboxes = false;
+                            self.persist.settings.item_checkboxes = false;
+                            self.persist.settings.show_status_bar = true;
+                            self.persist.settings.nav_expand_to_open = false;
+                            self.persist.settings.show_libraries = true;
+                            self.status = Some("View settings restored to defaults".into());
+                        }
+                    }
+                    OptionsTab::Search => {
+                        ui.label(egui::RichText::new("How to search").strong());
+                        ui.label(
+                            egui::RichText::new(
+                                "• System directories and indexed locations are searched using parallel search",
+                            )
+                            .weak(),
+                        );
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new("When searching non-indexed locations").strong());
+                        ui.checkbox(
+                            &mut self.persist.settings.search_contents,
+                            "Always search file names and contents (this might take several minutes)",
+                        );
+                        ui.add_space(8.0);
+                        if ui.button("Restore defaults").clicked() {
+                            self.persist.settings.search_contents = false;
+                            self.status = Some("Search settings restored to defaults".into());
+                        }
+                    }
+                }
+            });
         if msg.is_some() {
             self.status = msg;
         }
@@ -2844,13 +3074,16 @@ fn run(renderer: ui_common::Renderer) -> eframe::Result {
             &DEFAULT_APP,
         ));
     }
+    let settings = settings::Settings::load();
     let start = std::env::args_os()
         .nth(1)
         .map(PathBuf::from)
         .filter(|p| p.is_dir() || classify(p) != Place::Local)
-        // Like Explorer, open on Home.
-        .unwrap_or_else(|| PathBuf::from(explorer_core::HOME));
-    let settings = settings::Settings::load();
+        // Like Explorer, open on Home or This PC per settings.
+        .unwrap_or_else(|| match settings.start_page {
+            settings::StartPage::ThisPc => PathBuf::from(explorer_core::THIS_PC),
+            settings::StartPage::Home => PathBuf::from(explorer_core::HOME),
+        });
     let options = eframe::NativeOptions {
         renderer: match renderer {
             ui_common::Renderer::Glow => eframe::Renderer::Glow,
