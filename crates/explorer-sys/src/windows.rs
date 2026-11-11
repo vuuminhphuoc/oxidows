@@ -41,15 +41,15 @@ use windows_sys::Win32::System::Threading::WaitForSingleObject;
 use windows_sys::Win32::System::Time::{GetTimeZoneInformation, TIME_ZONE_INFORMATION};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL};
 use windows_sys::Win32::UI::Shell::{
-    DragQueryFileW, FO_COPY, FO_DELETE, FO_MOVE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOCONFIRMMKDIR, FOF_NOERRORUI,
-    FOF_RENAMEONCOLLISION, FOF_SILENT, FOF_WANTNUKEWARNING, FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads,
-    FOLDERID_Music, FOLDERID_Pictures, FOLDERID_Profile, FOLDERID_Videos, SEE_MASK_INVOKEIDLIST, SHELLEXECUTEINFOW,
-    SHERB_NOCONFIRMATION, SHEmptyRecycleBinW, SHFILEINFOW, SHFILEOPSTRUCTW, SHFileOperationW, SHGFI_ADDOVERLAYS,
-    SHGFI_ICON, SHGFI_SMALLICON, SHGFI_USEFILEATTRIBUTES, SHGetFileInfoW, SHGetKnownFolderPath, ShellExecuteExW,
-    ShellExecuteW,
+    AssocQueryStringW, DragQueryFileW, ExtractIconExW, FO_COPY, FO_DELETE, FO_MOVE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION,
+    FOF_NOCONFIRMMKDIR, FOF_NOERRORUI, FOF_RENAMEONCOLLISION, FOF_SILENT, FOF_WANTNUKEWARNING, FOLDERID_Desktop,
+    FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Music, FOLDERID_Pictures, FOLDERID_Profile, FOLDERID_Videos,
+    SEE_MASK_INVOKEIDLIST, SHELLEXECUTEINFOW, SHERB_NOCONFIRMATION, SHEmptyRecycleBinW, SHFILEINFOW, SHFILEOPSTRUCTW,
+    SHFileOperationW, SHGFI_ADDOVERLAYS, SHGFI_ICON, SHGFI_SMALLICON, SHGFI_SYSICONINDEX, SHGFI_USEFILEATTRIBUTES,
+    SHGetFileInfoW, SHGetKnownFolderPath, SHLoadIndirectString, ShellExecuteExW, ShellExecuteW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DestroyIcon, GetIconInfo, HWND_MESSAGE, ICONINFO, SW_HIDE, SW_SHOWNORMAL,
+    CreateWindowExW, DestroyIcon, GetIconInfo, HICON, HWND_MESSAGE, ICONINFO, SW_HIDE, SW_SHOWNORMAL,
 };
 use windows_sys::core::GUID;
 
@@ -570,26 +570,12 @@ pub(crate) unsafe fn bitmap_bgra(dc: HDC, bmp: HBITMAP, w: i32, h: i32) -> Optio
     (lines == h).then_some(buf)
 }
 
-pub fn shell_icon(path: &Path, is_dir: bool, per_file: bool) -> Option<IconImage> {
-    com_init();
-    let w = wide(path);
-    let mut info: SHFILEINFOW = unsafe { zeroed() };
-    let attrs = if is_dir { FILE_ATTRIBUTE_DIRECTORY } else { FILE_ATTRIBUTE_NORMAL };
-    // Per item: with the shell's overlays (shortcut arrow, OneDrive status, sharing).
-    let flags = SHGFI_ICON | SHGFI_SMALLICON | if per_file { SHGFI_ADDOVERLAYS } else { SHGFI_USEFILEATTRIBUTES };
-    let ok = if path.starts_with(explorer_core::SHELL) {
-        // Not a file-system path: ask by item ID list.
-        let pidl = crate::shell_ns::pidl(path).ok()?;
-        let flags = SHGFI_ICON | SHGFI_SMALLICON | windows_sys::Win32::UI::Shell::SHGFI_PIDL;
-        unsafe { SHGetFileInfoW(pidl.as_ptr() as *const u16, 0, &mut info, size_of::<SHFILEINFOW>() as u32, flags) }
-    } else {
-        unsafe { SHGetFileInfoW(w.as_ptr(), attrs, &mut info, size_of::<SHFILEINFOW>() as u32, flags) }
-    };
-    if ok == 0 || info.hIcon.is_null() {
+pub(crate) unsafe fn icon_image_from_hicon(hicon: HICON) -> Option<IconImage> {
+    if hicon.is_null() {
         return None;
     }
     let mut ii: ICONINFO = unsafe { zeroed() };
-    let got = unsafe { GetIconInfo(info.hIcon, &mut ii) } != 0;
+    let got = unsafe { GetIconInfo(hicon, &mut ii) } != 0;
     let mut out = None;
     if got && !ii.hbmColor.is_null() {
         let mut bm: BITMAP = unsafe { zeroed() };
@@ -621,9 +607,111 @@ pub fn shell_icon(path: &Path, is_dir: bool, per_file: bool) -> Option<IconImage
         if !ii.hbmMask.is_null() {
             DeleteObject(ii.hbmMask);
         }
-        DestroyIcon(info.hIcon);
+        DestroyIcon(hicon);
     }
     out
+}
+
+/// Resolves the shell icon for a file extension when SHGetFileInfoW falls back to the generic icon.
+fn type_icon(ext: &str) -> Option<IconImage> {
+    const ASSOCSTR_DEFAULTICON: i32 = 15;
+    let dot_ext = wide(if ext.starts_with('.') { ext.to_string() } else { format!(".{ext}") });
+    let mut buf = [0u16; 1024];
+    let mut len = buf.len() as u32;
+    let hr = unsafe {
+        AssocQueryStringW(0, ASSOCSTR_DEFAULTICON, dot_ext.as_ptr(), std::ptr::null(), buf.as_mut_ptr(), &mut len)
+    };
+    let mut path_str = if hr == 0 { unsafe { pwstr(buf.as_ptr()) } } else { String::new() };
+    if path_str.starts_with('@') {
+        let mut out = [0u16; 1024];
+        let wide_val = wide(&path_str);
+        let hr = unsafe {
+            SHLoadIndirectString(wide_val.as_ptr(), out.as_mut_ptr(), out.len() as u32, std::ptr::null_mut())
+        };
+        if hr == 0 {
+            path_str = unsafe { pwstr(out.as_ptr()) };
+        }
+    }
+    // If the resolved icon path is an image file (e.g. PhotosLogoExtensions.png), load via thumbnail.
+    if !path_str.is_empty() {
+        let p = Path::new(&path_str);
+        if let Some(ext) = p.extension().and_then(|e| e.to_str())
+            && matches!(ext.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg" | "ico" | "bmp")
+            && p.exists()
+            && let Some(img) = crate::thumbs::thumbnail(p, 16)
+        {
+            return Some(img);
+        }
+        let (file, idx) = if let Some((f, i)) = path_str.rsplit_once(',') {
+            (f.trim_matches('"'), i.trim().parse::<i32>().unwrap_or(0))
+        } else {
+            (path_str.trim_matches('"'), 0)
+        };
+        let wide_file = wide(file);
+        let mut small_hicon = null_mut();
+        let n = unsafe { ExtractIconExW(wide_file.as_ptr(), idx, std::ptr::null_mut(), &mut small_hicon, 1) };
+        if n > 0
+            && !small_hicon.is_null()
+            && let Some(img) = unsafe { icon_image_from_hicon(small_hicon) }
+        {
+            return Some(img);
+        }
+    }
+    // Standard fallback icons for image types from imageres.dll / shell32.dll.
+    let lower = ext.to_ascii_lowercase();
+    let fallback = match lower.as_str() {
+        "png" => Some((r"C:\Windows\System32\imageres.dll", -83)),
+        "jpg" | "jpeg" => Some((r"C:\Windows\System32\imageres.dll", -72)),
+        "gif" | "bmp" | "webp" | "ico" | "tiff" | "heic" | "svg" => Some((r"C:\Windows\System32\shell32.dll", -16823)),
+        _ => None,
+    };
+    if let Some((dll, idx)) = fallback {
+        let wide_file = wide(dll);
+        let mut small_hicon = null_mut();
+        let n = unsafe { ExtractIconExW(wide_file.as_ptr(), idx, std::ptr::null_mut(), &mut small_hicon, 1) };
+        if n > 0
+            && !small_hicon.is_null()
+            && let Some(img) = unsafe { icon_image_from_hicon(small_hicon) }
+        {
+            return Some(img);
+        }
+    }
+    None
+}
+
+pub fn shell_icon(path: &Path, is_dir: bool, per_file: bool) -> Option<IconImage> {
+    com_init();
+    let w = wide(path);
+    let mut info: SHFILEINFOW = unsafe { zeroed() };
+    let attrs = if is_dir { FILE_ATTRIBUTE_DIRECTORY } else { FILE_ATTRIBUTE_NORMAL };
+    // Per item: with the shell's overlays (shortcut arrow, OneDrive status, sharing).
+    let flags = SHGFI_ICON
+        | SHGFI_SMALLICON
+        | SHGFI_SYSICONINDEX
+        | if per_file { SHGFI_ADDOVERLAYS } else { SHGFI_USEFILEATTRIBUTES };
+    let ok = if path.starts_with(explorer_core::SHELL) {
+        // Not a file-system path: ask by item ID list.
+        let pidl = crate::shell_ns::pidl(path).ok()?;
+        let flags = SHGFI_ICON | SHGFI_SMALLICON | windows_sys::Win32::UI::Shell::SHGFI_PIDL;
+        unsafe { SHGetFileInfoW(pidl.as_ptr() as *const u16, 0, &mut info, size_of::<SHFILEINFOW>() as u32, flags) }
+    } else {
+        unsafe { SHGetFileInfoW(w.as_ptr(), attrs, &mut info, size_of::<SHFILEINFOW>() as u32, flags) }
+    };
+    if ok == 0 || info.hIcon.is_null() {
+        return None;
+    }
+    // If the shell returned the generic document icon (iIcon == 0) for a file,
+    // check whether this extension has an associated shell icon (e.g. UWP Photos,
+    // or system icons in imageres.dll/shell32.dll for images).
+    if !is_dir
+        && info.iIcon == 0
+        && let Some(ext) = path.extension().and_then(|e| e.to_str())
+        && let Some(img) = type_icon(ext)
+    {
+        unsafe { DestroyIcon(info.hIcon) };
+        return Some(img);
+    }
+    unsafe { icon_image_from_hicon(info.hIcon) }
 }
 
 const NERR_SUCCESS: u32 = 0;

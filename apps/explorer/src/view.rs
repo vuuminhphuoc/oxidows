@@ -145,11 +145,17 @@ pub fn tab_bar(app: &mut App, ui: &mut Ui) {
                         tab_choice = Some(TabAction::Close(i));
                         ui.close();
                     }
-                    if ui_common::MenuItem::new("Close other tabs").enabled(app.tabs.len() > 1).ui(ui).clicked() {
+                    if ui_common::MenuItem::new("Close other tabs")
+                        .icon(Icon::ClosePane)
+                        .enabled(app.tabs.len() > 1)
+                        .ui(ui)
+                        .clicked()
+                    {
                         tab_choice = Some(TabAction::CloseOthers(i));
                         ui.close();
                     }
                     if ui_common::MenuItem::new("Close tabs to the right")
+                        .icon(Icon::ClosePaneMirrored)
                         .enabled(i + 1 < app.tabs.len())
                         .ui(ui)
                         .clicked()
@@ -959,16 +965,27 @@ fn tree_node(
 }
 
 /// "Windows (C:)", "Local Disk (D:)", "USB Drive (E:)", as Explorer names drives.
-pub fn drive_label(d: &explorer_sys::Drive) -> String {
+pub fn drive_label(d: &explorer_sys::Drive, letters_before: bool) -> String {
     let root = d.root.to_string_lossy();
     let letter = root.trim_end_matches('\\');
-    match (d.label.is_empty(), d.kind) {
-        (false, _) => format!("{} ({letter})", d.label),
-        (true, DriveKind::Fixed) => format!("Local Disk ({letter})"),
-        (true, DriveKind::Removable) => format!("USB Drive ({letter})"),
-        (true, DriveKind::Network) => format!("Network ({letter})"),
-        (true, DriveKind::Optical) => format!("DVD Drive ({letter})"),
-        (true, DriveKind::Other) => letter.to_string(),
+    if letters_before {
+        match (d.label.is_empty(), d.kind) {
+            (false, _) => format!("({letter}) {}", d.label),
+            (true, DriveKind::Fixed) => format!("({letter}) Local Disk"),
+            (true, DriveKind::Removable) => format!("({letter}) USB Drive"),
+            (true, DriveKind::Network) => format!("({letter}) Network"),
+            (true, DriveKind::Optical) => format!("({letter}) DVD Drive"),
+            (true, DriveKind::Other) => letter.to_string(),
+        }
+    } else {
+        match (d.label.is_empty(), d.kind) {
+            (false, _) => format!("{} ({letter})", d.label),
+            (true, DriveKind::Fixed) => format!("Local Disk ({letter})"),
+            (true, DriveKind::Removable) => format!("USB Drive ({letter})"),
+            (true, DriveKind::Network) => format!("Network ({letter})"),
+            (true, DriveKind::Optical) => format!("DVD Drive ({letter})"),
+            (true, DriveKind::Other) => letter.to_string(),
+        }
     }
 }
 
@@ -1106,9 +1123,15 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
                 go = Some(this_pc);
             }
             for d in &app.drives {
+                if app.persist.settings.hide_empty_drives
+                    && d.total == 0
+                    && matches!(d.kind, DriveKind::Removable | DriveKind::Optical)
+                {
+                    continue;
+                }
                 let root = d.root.to_string_lossy();
                 let letter = root.trim_end_matches('\\');
-                let label = drive_label(d);
+                let label = drive_label(d, app.persist.settings.drive_letters_before);
                 let icon = match d.kind {
                     DriveKind::Network => Icon::NetworkDrive,
                     DriveKind::Optical => Icon::Disc,
@@ -1160,10 +1183,12 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
                     space_bar(ui, d.total, d.free);
                 }
             }
-            ui.add_space(6.0);
-            let libraries = PathBuf::from(explorer_core::LIBRARIES);
-            if place(ui, Icon::Libraries, "Libraries", &libraries, &app.cur) {
-                go = Some(libraries);
+            if app.persist.settings.show_libraries {
+                ui.add_space(6.0);
+                let libraries = PathBuf::from(explorer_core::LIBRARIES);
+                if place(ui, Icon::Libraries, "Libraries", &libraries, &app.cur) {
+                    go = Some(libraries);
+                }
             }
             let network = PathBuf::from(explorer_core::NETWORK);
             if place(ui, Icon::Network, "Network", &network, &app.cur) {
@@ -1320,6 +1345,9 @@ pub fn with_info_tip(resp: egui::Response, e: &explorer_core::Entry, utc_offset:
 pub enum Action {
     Click(usize, egui::Modifiers),
     Open(usize),
+    OpenPath(PathBuf),
+    OpenInNewTabPath(PathBuf),
+    Favorite(PathBuf, bool),
     ContextSelect(usize),
     /// The shell's menu for the clicked row (selecting it first), or the folder background.
     ShellMenu(Option<usize>),
@@ -1480,7 +1508,9 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
     let mut hover_target: Option<PathBuf> = None;
     // A name being edited in place: drawn by its row or tile, committed after the list.
     let mut renaming = app.renaming.take();
-    if app.view_mode != ViewMode::Details {
+    if app.cur.as_os_str() == explorer_core::HOME && app.filter.trim().is_empty() && app.deep_search.is_none() {
+        home_page_ui(app, ui, &mut action, &mut wanted_icons);
+    } else if app.view_mode != ViewMode::Details {
         crate::grid::show(app, ui, &mut action, &mut wanted_icons, shell_menus, in_bin, &mut renaming);
     } else {
         let band_active = ui.data(|d| d.get_temp::<[f32; 2]>(egui::Id::new(DETAILS_BAND)).is_some());
@@ -1720,6 +1750,10 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                     let is_renaming = renaming.as_ref().is_some_and(|r| r.original == e.name);
                     if resp.middle_clicked() && e.is_dir {
                         action = Some(Action::OpenInNewTab(pos));
+                    } else if app.persist.settings.single_click {
+                        if resp.clicked() {
+                            action = Some(Action::Open(pos));
+                        }
                     } else if resp.double_clicked() {
                         action = Some(Action::Open(pos));
                     } else if resp.clicked() {
@@ -1803,7 +1837,33 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
         }
         Some(Action::Open(pos)) => {
             if let Some(e) = app.entry_at(pos).cloned() {
-                app.open_entry(&e);
+                if app.persist.settings.browse_new_window && e.is_dir {
+                    let p = app.child(&e.name);
+                    app.new_tab(p, true);
+                } else {
+                    app.open_entry(&e);
+                }
+            }
+        }
+        Some(Action::OpenPath(p)) => {
+            if p.is_dir() {
+                if app.persist.settings.browse_new_window {
+                    app.new_tab(p, true);
+                } else {
+                    app.navigate(p);
+                }
+            } else if let Err(e) = explorer_sys::open(&p) {
+                app.status = Some(format!("Could not open {}: {e}", p.display()));
+            }
+        }
+        Some(Action::OpenInNewTabPath(p)) => {
+            app.new_tab(p, false);
+        }
+        Some(Action::Favorite(p, add)) => {
+            if add {
+                app.add_favorite(p);
+            } else {
+                app.remove_favorite(&p);
             }
         }
         Some(Action::ShellMenu(pos)) => {
@@ -1989,5 +2049,353 @@ pub fn rename_field(ui: &mut Ui, r: &mut crate::InlineRename, rect: Option<egui:
     if let Some(e) = r.error {
         egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), resp.id.with("err"), &resp)
             .show(|ui| ui.colored_label(ui.visuals().error_fg_color, e));
+    }
+}
+
+fn section_header(ui: &mut Ui, title: &str, count: usize, collapsed: bool) -> egui::Response {
+    let chevron = if collapsed { Icon::ChevronRight } else { Icon::ChevronDown };
+    let resp = ui
+        .horizontal(|ui| {
+            ui.add_space(4.0);
+            ui.label(chevron.sized(13.0));
+            ui.add_space(4.0);
+            ui.label(RichText::new(title).strong().size(14.0));
+            ui.label(RichText::new(format!(" ({count})")).weak().size(13.0));
+        })
+        .response;
+    ui.interact(resp.rect, resp.id.with(title), Sense::click())
+}
+
+fn home_page_ui(app: &mut App, ui: &mut Ui, action: &mut Option<Action>, wanted_icons: &mut Vec<IconKey>) {
+    let weak_color = ui.visuals().weak_text_color();
+
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        ui.add_space(8.0);
+
+        // 1. Quick access
+        let qa_collapsed = app.persist.settings.home_collapsed.contains("quick_access");
+        let tiles = app.quick_access_tiles();
+        let qa_resp = section_header(ui, "Quick access", tiles.len(), qa_collapsed);
+        if qa_resp.clicked() {
+            if qa_collapsed {
+                app.persist.settings.home_collapsed.remove("quick_access");
+            } else {
+                app.persist.settings.home_collapsed.insert("quick_access".into());
+            }
+        }
+        ui.add_space(6.0);
+
+        if !qa_collapsed {
+            let avail_w = ui.available_width() - 24.0;
+            let tile_w = 230.0f32;
+            let cols = ((avail_w + 8.0) / (tile_w + 8.0)).floor().max(1.0) as usize;
+
+            for chunk in tiles.chunks(cols) {
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    for (path, label, pinned) in chunk {
+                        let (rect, resp) = ui.allocate_exact_size(egui::vec2(tile_w, 56.0), Sense::click());
+                        let hover = resp.hovered();
+                        let bg = if hover {
+                            ui.visuals().widgets.hovered.bg_fill
+                        } else {
+                            ui.visuals().widgets.inactive.bg_fill.gamma_multiply(0.3)
+                        };
+                        let stroke = if hover {
+                            egui::Stroke::new(1.0, ui.visuals().widgets.hovered.bg_stroke.color)
+                        } else {
+                            egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color)
+                        };
+                        ui.painter().rect_filled(rect, 4.0, bg);
+                        ui.painter().rect_stroke(rect, 4.0, stroke, egui::StrokeKind::Inside);
+
+                        // Icon on left
+                        let icon_center = egui::pos2(rect.left() + 24.0, rect.center().y);
+                        ui.painter().text(
+                            icon_center,
+                            egui::Align2::CENTER_CENTER,
+                            Icon::FolderFilled.glyph(),
+                            Icon::font(24.0),
+                            ui_common::Palette::of(ui).folder,
+                        );
+
+                        // Labels on right
+                        let text_left = rect.left() + 48.0;
+                        let text_w = (rect.right() - text_left - 8.0).max(10.0);
+                        let line1_rect = egui::Rect::from_min_size(
+                            egui::pos2(text_left, rect.top() + 8.0),
+                            egui::vec2(text_w, 18.0),
+                        );
+                        let line2_rect = egui::Rect::from_min_size(
+                            egui::pos2(text_left, rect.top() + 28.0),
+                            egui::vec2(text_w, 16.0),
+                        );
+
+                        let name_rich = if app.persist.settings.single_click && hover {
+                            RichText::new(label).strong().underline()
+                        } else {
+                            RichText::new(label).strong()
+                        };
+                        ui.put(line1_rect, egui::Label::new(name_rich).truncate());
+                        if *pinned {
+                            let pin_pos = egui::pos2(rect.right() - 16.0, rect.top() + 14.0);
+                            ui.painter().text(
+                                pin_pos,
+                                egui::Align2::CENTER_CENTER,
+                                Icon::Pin.glyph(),
+                                Icon::font(11.0),
+                                weak_color,
+                            );
+                        }
+
+                        let parent_str = path.parent().map(|p| p.display().to_string()).unwrap_or_default();
+                        ui.put(line2_rect, egui::Label::new(RichText::new(parent_str).small().weak()).truncate());
+
+                        if resp.middle_clicked() {
+                            *action = Some(Action::OpenInNewTabPath(path.clone()));
+                        } else if app.persist.settings.single_click {
+                            if resp.clicked() {
+                                *action = Some(Action::OpenPath(path.clone()));
+                            }
+                        } else if resp.double_clicked() {
+                            *action = Some(Action::OpenPath(path.clone()));
+                        }
+
+                        resp.context_menu(|ui| {
+                            if ui_common::MenuItem::new("Open").icon(Icon::OpenFile).ui(ui).clicked() {
+                                *action = Some(Action::OpenPath(path.clone()));
+                                ui.close();
+                            }
+                            if ui_common::MenuItem::new("Open in new tab").icon(Icon::Add).ui(ui).clicked() {
+                                *action = Some(Action::OpenInNewTabPath(path.clone()));
+                                ui.close();
+                            }
+                            if ui_common::MenuItem::new("Open in new window").icon(Icon::NewWindow).ui(ui).clicked() {
+                                *action = Some(Action::NewWindow(path.clone()));
+                                ui.close();
+                            }
+                            ui.separator();
+                            if *pinned {
+                                if ui_common::MenuItem::new("Unpin from Quick access")
+                                    .icon(Icon::Unpin)
+                                    .ui(ui)
+                                    .clicked()
+                                {
+                                    app.unpin(path);
+                                    ui.close();
+                                }
+                            } else {
+                                if ui_common::MenuItem::new("Pin to Quick access").icon(Icon::Pin).ui(ui).clicked() {
+                                    app.pin(path.clone());
+                                    ui.close();
+                                }
+                                if ui_common::MenuItem::new("Remove from Quick access")
+                                    .icon(Icon::Delete)
+                                    .ui(ui)
+                                    .clicked()
+                                {
+                                    app.remove_frequent_folder(path);
+                                    ui.close();
+                                }
+                            }
+                        });
+                    }
+                });
+                ui.add_space(6.0);
+            }
+        }
+        ui.add_space(16.0);
+
+        // 2. Favorites
+        let fav_collapsed = app.persist.settings.home_collapsed.contains("favorites");
+        let favorites = app.favorite_items();
+        let fav_resp = section_header(ui, "Favorites", favorites.len(), fav_collapsed);
+        if fav_resp.clicked() {
+            if fav_collapsed {
+                app.persist.settings.home_collapsed.remove("favorites");
+            } else {
+                app.persist.settings.home_collapsed.insert("favorites".into());
+            }
+        }
+        ui.add_space(6.0);
+
+        if !fav_collapsed {
+            if favorites.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.add_space(24.0);
+                    ui.label(RichText::new("Files you favorite appear here. Right-click any file to add it.").weak());
+                });
+            } else {
+                home_file_table(app, ui, &favorites, action, wanted_icons, true);
+            }
+        }
+        ui.add_space(16.0);
+
+        // 3. Recent
+        let rec_collapsed = app.persist.settings.home_collapsed.contains("recent");
+        let recent_items = if app.persist.settings.privacy_recent_files { app.entries.clone() } else { Vec::new() };
+        let rec_resp = section_header(ui, "Recent", recent_items.len(), rec_collapsed);
+        if rec_resp.clicked() {
+            if rec_collapsed {
+                app.persist.settings.home_collapsed.remove("recent");
+            } else {
+                app.persist.settings.home_collapsed.insert("recent".into());
+            }
+        }
+        ui.add_space(6.0);
+
+        if !rec_collapsed {
+            if !app.persist.settings.privacy_recent_files {
+                ui.horizontal(|ui| {
+                    ui.add_space(24.0);
+                    ui.label(RichText::new("Recent files are hidden (Folder Options ▸ General ▸ Privacy).").weak());
+                });
+            } else if recent_items.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.add_space(24.0);
+                    ui.label(RichText::new("No recent files.").weak());
+                });
+            } else {
+                home_file_table(app, ui, &recent_items, action, wanted_icons, false);
+            }
+        }
+        ui.add_space(16.0);
+    });
+}
+
+fn home_file_table(
+    app: &mut App,
+    ui: &mut Ui,
+    items: &[explorer_core::Entry],
+    action: &mut Option<Action>,
+    wanted_icons: &mut Vec<IconKey>,
+    is_favorites_section: bool,
+) {
+    let row_h = 24.0;
+    let shell = app.hwnd != 0;
+
+    // Header
+    ui.horizontal(|ui| {
+        ui.add_space(16.0);
+        let avail_w = ui.available_width() - 32.0;
+        let col1_w = (avail_w * 0.45).max(150.0);
+        let col2_w = 160.0f32;
+        let col3_w = (avail_w - col1_w - col2_w).max(100.0);
+
+        let (r1, _) = ui.allocate_exact_size(egui::vec2(col1_w, 20.0), Sense::hover());
+        ui.put(r1, egui::Label::new(RichText::new("Name").strong().weak()));
+        let (r2, _) = ui.allocate_exact_size(egui::vec2(col2_w, 20.0), Sense::hover());
+        ui.put(r2, egui::Label::new(RichText::new("Date modified").strong().weak()));
+        let (r3, _) = ui.allocate_exact_size(egui::vec2(col3_w, 20.0), Sense::hover());
+        ui.put(r3, egui::Label::new(RichText::new("Location").strong().weak()));
+    });
+    ui.add_space(2.0);
+    ui.separator();
+    ui.add_space(2.0);
+
+    // Rows
+    for e in items {
+        let (row_rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width() - 16.0, row_h), Sense::click());
+        let hover = resp.hovered();
+        if hover {
+            ui.painter().rect_filled(row_rect, 3.0, ui.visuals().widgets.hovered.bg_fill);
+        }
+
+        let avail_w = row_rect.width() - 32.0;
+        let col1_w = (avail_w * 0.45).max(150.0);
+        let col2_w = 160.0f32;
+        let col3_w = (avail_w - col1_w - col2_w).max(100.0);
+
+        // Col 1: Icon + Name
+        let name_x = row_rect.left() + 16.0;
+        let icon_rect =
+            egui::Rect::from_center_size(egui::pos2(name_x + 8.0, row_rect.center().y), egui::vec2(16.0, 16.0));
+        let path = PathBuf::from(&e.name);
+        let key = IconKey::for_entry(e, &app.cur);
+        match app.icons.get(&key) {
+            Some(IconState::Ready(tex)) => {
+                ui.painter().image(
+                    tex.id(),
+                    icon_rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            }
+            state => {
+                if state.is_none() {
+                    wanted_icons.push(key);
+                }
+                let icon_text = RichText::new(icon_for(e));
+                ui.put(icon_rect, egui::Label::new(icon_text));
+            }
+        }
+
+        let text_rect = egui::Rect::from_min_size(
+            egui::pos2(name_x + 22.0, row_rect.top() + 3.0),
+            egui::vec2(col1_w - 22.0, row_h - 6.0),
+        );
+        let name_rich = if app.persist.settings.single_click && hover {
+            RichText::new(e.display()).underline()
+        } else {
+            RichText::new(e.display())
+        };
+        ui.put(text_rect, egui::Label::new(name_rich).truncate());
+
+        // Col 2: Date modified
+        let col2_x = name_x + col1_w;
+        let col2_rect =
+            egui::Rect::from_min_size(egui::pos2(col2_x, row_rect.top() + 3.0), egui::vec2(col2_w, row_h - 6.0));
+        let time_str = format_time(e.modified, app.utc_offset);
+        ui.put(col2_rect, egui::Label::new(RichText::new(time_str).weak()).truncate());
+
+        // Col 3: Location
+        let col3_x = col2_x + col2_w;
+        let col3_rect =
+            egui::Rect::from_min_size(egui::pos2(col3_x, row_rect.top() + 3.0), egui::vec2(col3_w, row_h - 6.0));
+        let loc_str = e.note.as_deref().unwrap_or("");
+        ui.put(col3_rect, egui::Label::new(RichText::new(loc_str).weak()).truncate());
+
+        // Click actions
+        if resp.middle_clicked() {
+            *action = Some(Action::OpenInNewTabPath(path.clone()));
+        } else if app.persist.settings.single_click {
+            if resp.clicked() {
+                *action = Some(Action::OpenPath(path.clone()));
+            }
+        } else if resp.double_clicked() {
+            *action = Some(Action::OpenPath(path.clone()));
+        }
+
+        // Context menu
+        resp.context_menu(|ui| {
+            if ui_common::MenuItem::new("Open").icon(Icon::OpenFile).ui(ui).clicked() {
+                *action = Some(Action::OpenPath(path.clone()));
+                ui.close();
+            }
+            if !e.is_dir && shell && ui_common::menu_item(ui, Icon::OpenWith, "Open with…", None).clicked() {
+                *action = Some(Action::Verb("openas"));
+                ui.close();
+            }
+            ui.separator();
+            if is_favorites_section || app.is_favorite(&path) {
+                if ui_common::MenuItem::new("Remove from Favorites").icon(Icon::FavoriteStar).ui(ui).clicked() {
+                    app.remove_favorite(&path);
+                    ui.close();
+                }
+            } else {
+                if ui_common::MenuItem::new("Add to Favorites").icon(Icon::FavoriteStar).ui(ui).clicked() {
+                    app.add_favorite(path.clone());
+                    ui.close();
+                }
+            }
+            if ui_common::menu_item(ui, Icon::Link, "Copy as path", Some("Ctrl+Shift+C")).clicked() {
+                ui.ctx().copy_text(path.display().to_string());
+                ui.close();
+            }
+            if ui_common::menu_item(ui, Icon::Properties, "Properties", Some("Alt+Enter")).clicked() {
+                *action = Some(Action::Properties(path.clone()));
+                ui.close();
+            }
+        });
     }
 }

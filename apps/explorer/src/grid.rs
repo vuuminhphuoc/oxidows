@@ -135,7 +135,7 @@ pub fn show(
     renaming: &mut Option<crate::InlineRename>,
 ) {
     let mut sp = spec(app.view_mode);
-    let thumbs = uses_thumbs(app.view_mode) && !in_bin;
+    let thumbs = uses_thumbs(app.view_mode) && !in_bin && !app.persist.settings.never_thumbnails;
     let n = app.view.len();
     let avail = ui.available_size();
     if sp.style == Style::Content {
@@ -509,6 +509,10 @@ pub fn show(
                 *action = Some(Action::Click(pos, egui::Modifiers::COMMAND | egui::Modifiers::CTRL));
             } else if resp.middle_clicked() && e.is_dir {
                 *action = Some(Action::OpenInNewTab(pos));
+            } else if app.persist.settings.single_click {
+                if resp.clicked() {
+                    *action = Some(Action::Open(pos));
+                }
             } else if resp.double_clicked() {
                 *action = Some(Action::Open(pos));
             } else if resp.clicked() {

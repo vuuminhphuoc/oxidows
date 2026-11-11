@@ -143,7 +143,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Feature | Status | Notes |
 | --- | --- | --- |
 | Recycle Bin (browse, restore, empty) | ✅ | reads `$Recycle.Bin` `$I` records; original location and date deleted columns |
-| Home / Recent files | ✅ | Quick access + recent files from the Recent folder |
+| Home: Quick access, Favorites, Recent | 🟡 | 3 collapsible sections; Quick access folder tile grid with pin markers & frequent folders counter (ranking unit-tested); Favorites table with Add/Remove starred files; Recent files table; collapsed state and lists persisted in explorer.ini |
 | Libraries, Gallery | ✅ | libraries read with IShellLibrary, folders merged; Gallery = Pictures library pictures and videos, newest first |
 | OneDrive status | ✅ | overlays on cloud files, plus a Status column (available when online / on this device / always available) |
 | Control Panel and other shell namespaces | ✅ | `::shell\<parsing name>` folders listed with IShellItem; shell:ControlPanelFolder in the address bar; items open with their default verb |
@@ -158,7 +158,11 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Long paths (> 260 chars) | ✅ | `\\?\` prefix |
 | Remembers window size, view and sort per folder | ✅ | `%APPDATA%\oxidows\explorer.ini`; a change applies to that folder only |
 | Folder type defaults (Pictures/Videos large icons, Downloads grouped by date) | ✅ | by known folder and its subfolders |
-| Folder Options: Apply to Folders / Reset Folders | ✅ | … ▸ Options ▸ Folder views |
+| Folder Options (General, View, Search) | 🟡 | 3-tab dialog matching Windows. General: open to Home/This PC, browse folders in same/new window, single/double-click open, privacy toggles & clear history, folder views, default file manager. View: advanced checkboxes (full path in title, show hidden, hide empty drives, hide extensions, drive letters before/after, never thumbnails, checkboxes, status bar, expand to open, show all folders, show libraries), restore defaults button. Search: non-indexed content search |
+| Folder Options: skipped items | — | Hide folder merge conflicts (no conflict UI), Always show menus (modern command bar only), Show sync provider notifications (no sync notifications UI), Display file size in folder tips (requires recursive tree scan), Launch folder windows in separate process (single-process multi-window design), Don't use index for system files / Include system directories (parallel search covers subtree), Include compressed files (no archive search) |
+| Shell icons and thumbnails for images | ✅ | Resolves AppX Photos and system shell icons from imageres/shell32 for .png/.jpg and image types; thumbnails in icon views |
+| Tab context menu icons | ✅ | Icons for Close tab, Close other tabs, Close tabs to the right, Duplicate tab, Move to new window |
+| Navigation pane expand chevrons | ✅ | Smoothly rotating chevron shown when mouse hovers over pane |
 | Menu icons and shortcut keys in menu rows | ✅ | View rows show a picture of each layout; Show, Group by, Theme submenus |
 | Dark / light theme follows Windows | ✅ | System / Light / Dark in the … menu |
 | Replace Win+E / default folder handler | ✅ | … > Options > Set as default; per user (HKCU) folders, drives and Win+E; restore gives back File Explorer or the file manager that had Win+E, removes every key; `--restore-default` |
