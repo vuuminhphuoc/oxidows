@@ -2,10 +2,11 @@
 
 use std::path::{Path, PathBuf};
 
-use egui::{Align, Layout, RichText, Sense, Ui};
+use egui::{Align, Layout, RichText, Sense, Stroke, Ui};
 use egui_extras::{Column, TableBuilder};
 use explorer_core::{
-    SortKey, classify, format_attributes, format_bytes, format_size_kb, format_time, icon_for, parent_path,
+    DateModifiedBucket, FilterColumn, HeaderSizeBucket, NameBucket, SortKey, classify, format_attributes, format_bytes,
+    format_size_kb, format_time, icon_for, parent_path,
 };
 use explorer_sys::DriveKind;
 
@@ -601,6 +602,11 @@ pub fn command_bar(app: &mut App, ui: &mut Ui) {
             if command_button(ui, Icon::Delete, "", has_sel, "Delete (Delete, Ctrl+D)").clicked() {
                 app.delete_selection(false);
             }
+            if classify(&app.cur) == explorer_core::Place::Gallery {
+                command_menu(ui, Icon::Folder, "Collection", "Gallery collection folders", |ui| {
+                    collection_menu(app, ui);
+                });
+            }
             command_separator(ui);
             command_menu(ui, Icon::Sort, "Sort", "Sort and group the items", |ui| sort_menu(app, ui));
             command_menu(ui, Icon::View, "View", "Layout and which items and panes to show", |ui| view_menu(app, ui));
@@ -630,6 +636,40 @@ pub fn command_bar(app: &mut App, ui: &mut Ui) {
         });
         ui.add_space(2.0);
     });
+}
+
+fn collection_menu(app: &mut App, ui: &mut Ui) {
+    ui.label(RichText::new("Collection folders").strong());
+    ui.separator();
+    let is_default = app.persist.settings.gallery_folders.is_empty();
+    if is_default {
+        ui.label("Pictures (default)");
+    } else {
+        let mut remove_idx = None;
+        for (i, p) in app.persist.settings.gallery_folders.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(p.display().to_string());
+                if ui.small_button("✕").clicked() {
+                    remove_idx = Some(i);
+                }
+            });
+        }
+        if let Some(i) = remove_idx {
+            app.persist.settings.gallery_folders.remove(i);
+            app.refresh();
+            ui.close();
+        }
+    }
+    ui.separator();
+    if ui.button("Add folder…").clicked() {
+        app.dialog = Some(crate::Dialog::AddGalleryFolder(String::new()));
+        ui.close();
+    }
+    if !is_default && ui.button("Reset to default").clicked() {
+        app.persist.settings.gallery_folders.clear();
+        app.refresh();
+        ui.close();
+    }
 }
 
 fn address_bar(app: &mut App, ui: &mut Ui) {
@@ -1468,38 +1508,78 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
     let mut toggle_prop: Option<explorer_core::Prop> = None;
     let mut wanted_props: Vec<PathBuf> = Vec::new();
     // `key`: None for the property columns, which don't sort.
-    let mut header =
-        |h: &mut egui_extras::TableRow, key: Option<SortKey>, title: &str, app: &App, out: &mut Option<SortKey>| {
-            h.col(|ui| {
-                // The whole cell is the button, with the sort chevron above the title, as in
-                // Explorer (and Task Manager).
-                let sorted = key.filter(|&k| app.sort == k).map(|_| !app.ascending);
-                let resp = ui_common::sort_header(ui, title, sorted);
-                if resp.clicked() && key.is_some() {
+    let mut header = |h: &mut egui_extras::TableRow,
+                      key: Option<SortKey>,
+                      filter_kind: Option<FilterColumn>,
+                      title: &str,
+                      app: &App,
+                      out: &mut Option<SortKey>,
+                      popup_out: &mut Option<(FilterColumn, egui::Pos2)>,
+                      choose_cols_out: &mut bool| {
+        h.col(|ui| {
+            // The whole cell sorts, with the chevron above the title, as in Explorer; a filter
+            // chevron appears at the right edge while the pointer is over a filterable header.
+            let sorted = key.filter(|&k| app.sort == k).map(|_| !app.ascending);
+            let resp = ui_common::sort_header(ui, title, sorted);
+            let rect = resp.rect;
+            let p = ui_common::Palette::of(ui);
+            let btn_rect = egui::Rect::from_min_max(
+                egui::pos2(rect.right() - 20.0, rect.top() + 3.0),
+                egui::pos2(rect.right() - 2.0, rect.bottom() - 3.0),
+            );
+            let is_open = filter_kind.is_some() && app.active_filter_popup.as_ref().map(|(k, _)| *k) == filter_kind;
+            if let Some(kind) = filter_kind {
+                let painter = ui.painter_at(rect);
+                if app.header_filters.is_filtered(kind) {
+                    let x = if resp.hovered() { btn_rect.left() - 14.0 } else { rect.right() - 16.0 };
+                    let font = egui::FontId::proportional(12.0);
+                    painter.text(egui::pos2(x, rect.center().y), egui::Align2::LEFT_CENTER, "☑", font, p.text);
+                }
+                if resp.hovered() || is_open {
+                    let on_btn = resp.hover_pos().is_some_and(|pos| btn_rect.contains(pos));
+                    if on_btn {
+                        painter.rect_filled(btn_rect, 2.0, p.hover);
+                    }
+                    let (cx, cy) = btn_rect.center().into();
+                    let points =
+                        vec![egui::pos2(cx - 3.5, cy - 1.5), egui::pos2(cx, cy + 2.0), egui::pos2(cx + 3.5, cy - 1.5)];
+                    painter.line(points, Stroke::new(1.2, p.text));
+                }
+            }
+            if resp.clicked() {
+                let on_btn = resp.interact_pointer_pos().is_some_and(|pos| btn_rect.contains(pos));
+                if let Some(kind) = filter_kind.filter(|_| on_btn) {
+                    *popup_out = Some((kind, rect.left_bottom()));
+                } else if key.is_some() {
                     *out = key;
                 }
-                resp.context_menu(|ui| {
-                    ui.add_enabled(false, egui::Checkbox::new(&mut true, "Name"));
-                    for (k, label, on) in [
-                        (SortKey::Created, "Date created", col_created),
-                        (SortKey::Attributes, "Attributes", col_attrs),
-                    ] {
-                        let mut on = on;
-                        if ui.checkbox(&mut on, label).clicked() {
-                            toggle_col = Some(k);
-                            ui.close();
-                        }
+            }
+            resp.context_menu(|ui| {
+                ui.add_enabled(false, egui::Checkbox::new(&mut true, "Name"));
+                for (k, label, on) in
+                    [(SortKey::Created, "Date created", col_created), (SortKey::Attributes, "Attributes", col_attrs)]
+                {
+                    let mut on = on;
+                    if ui.checkbox(&mut on, label).clicked() {
+                        toggle_col = Some(k);
+                        ui.close();
                     }
-                    for p in explorer_core::Prop::ALL {
-                        let mut on = app.prop_cols.contains(&p);
-                        if ui.checkbox(&mut on, p.label()).clicked() {
-                            toggle_prop = Some(p);
-                            ui.close();
-                        }
+                }
+                for p in explorer_core::Prop::ALL {
+                    let mut on = app.prop_cols.contains(&p);
+                    if ui.checkbox(&mut on, p.label()).clicked() {
+                        toggle_prop = Some(p);
+                        ui.close();
                     }
-                });
+                }
+                ui.separator();
+                if ui.button("More…").clicked() {
+                    *choose_cols_out = true;
+                    ui.close();
+                }
             });
-        };
+        });
+    };
     let n = app.view.len();
     let weak = ui.visuals().weak_text_color();
     let text_color = ui.visuals().text_color();
@@ -1512,9 +1592,13 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
     let mut renaming = app.renaming.take();
     if on_home_page {
         home_page_ui(app, ui, &mut action, &mut wanted_icons);
+    } else if classify(&app.cur) == explorer_core::Place::Gallery {
+        crate::gallery::show(app, ui, &mut action, shell_menus);
     } else if app.view_mode != ViewMode::Details {
         crate::grid::show(app, ui, &mut action, &mut wanted_icons, shell_menus, in_bin, &mut renaming);
     } else {
+        let mut popup_toggle: Option<(FilterColumn, egui::Pos2)> = None;
+        let mut open_choose_cols = false;
         let band_active = ui.data(|d| d.get_temp::<[f32; 2]>(egui::Id::new(DETAILS_BAND)).is_some());
         let mut table = TableBuilder::new(ui)
             .resizable(true)
@@ -1554,31 +1638,82 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
         let mut band_start: Option<[f32; 2]> = None;
         table
             .header(ui_common::SORT_HEADER_HEIGHT, |mut h| {
-                header(&mut h, Some(SortKey::Name), "Name", app, &mut sort_click);
+                header(
+                    &mut h,
+                    Some(SortKey::Name),
+                    Some(FilterColumn::Name),
+                    "Name",
+                    app,
+                    &mut sort_click,
+                    &mut popup_toggle,
+                    &mut open_choose_cols,
+                );
                 let bin = app.in_recycle_bin();
                 header(
                     &mut h,
                     Some(SortKey::Modified),
+                    if bin { None } else { Some(FilterColumn::Modified) },
                     if bin { "Date deleted" } else { "Date modified" },
                     app,
                     &mut sort_click,
+                    &mut popup_toggle,
+                    &mut open_choose_cols,
                 );
                 header(
                     &mut h,
                     Some(SortKey::Type),
+                    if bin { None } else { Some(FilterColumn::Type) },
                     if bin { "Original location" } else { "Type" },
                     app,
                     &mut sort_click,
+                    &mut popup_toggle,
+                    &mut open_choose_cols,
                 );
-                header(&mut h, Some(SortKey::Size), "Size", app, &mut sort_click);
+                header(
+                    &mut h,
+                    Some(SortKey::Size),
+                    Some(FilterColumn::Size),
+                    "Size",
+                    app,
+                    &mut sort_click,
+                    &mut popup_toggle,
+                    &mut open_choose_cols,
+                );
                 if col_created {
-                    header(&mut h, Some(SortKey::Created), "Date created", app, &mut sort_click);
+                    header(
+                        &mut h,
+                        Some(SortKey::Created),
+                        None,
+                        "Date created",
+                        app,
+                        &mut sort_click,
+                        &mut popup_toggle,
+                        &mut open_choose_cols,
+                    );
                 }
                 if col_attrs {
-                    header(&mut h, Some(SortKey::Attributes), "Attributes", app, &mut sort_click);
+                    header(
+                        &mut h,
+                        Some(SortKey::Attributes),
+                        None,
+                        "Attributes",
+                        app,
+                        &mut sort_click,
+                        &mut popup_toggle,
+                        &mut open_choose_cols,
+                    );
                 }
                 for p in &prop_cols {
-                    header(&mut h, None, p.label(), app, &mut sort_click);
+                    header(
+                        &mut h,
+                        Some(SortKey::Prop(*p)),
+                        None,
+                        p.label(),
+                        app,
+                        &mut sort_click,
+                        &mut popup_toggle,
+                        &mut open_choose_cols,
+                    );
                 }
             })
             .body(|body| {
@@ -1784,6 +1919,80 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
                 });
             });
         details_band(app, ui, band_start, &drawn, &rows_map);
+        if let Some((kind, pos)) = popup_toggle {
+            if app.active_filter_popup.as_ref().map(|(k, _)| *k) == Some(kind) {
+                app.active_filter_popup = None;
+            } else {
+                app.active_filter_popup = Some((kind, pos));
+            }
+        }
+        if open_choose_cols {
+            app.choose_columns_open = true;
+            app.choose_columns_search = String::new();
+            app.choose_columns_selected = app.prop_cols.clone();
+        }
+
+        if let Some((popup, pos)) = app.active_filter_popup {
+            let just_opened = popup_toggle.is_some();
+            let mut close = false;
+            let area = egui::Area::new(egui::Id::new("header-filter-popup-area"))
+                .fixed_pos(pos)
+                .order(egui::Order::Foreground);
+            let resp = area.show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_min_width(170.0);
+                    let f = &mut app.header_filters;
+                    match popup {
+                        FilterColumn::Name => {
+                            let items: Vec<_> = NameBucket::ALL.iter().map(|&b| (b, b.label())).collect();
+                            bucket_checks(ui, &items, &mut f.names);
+                        }
+                        FilterColumn::Modified => {
+                            let items: Vec<_> = DateModifiedBucket::ALL.iter().map(|&b| (b, b.label())).collect();
+                            bucket_checks(ui, &items, &mut f.dates);
+                        }
+                        FilterColumn::Type => {
+                            let (top_types, has_others) = explorer_core::folder_type_buckets(&app.entries);
+                            let mut items: Vec<_> = top_types.into_iter().map(|t| (t.clone(), t)).collect();
+                            if has_others {
+                                items.push(("Others".to_string(), "Others".to_string()));
+                            }
+                            let items: Vec<_> = items.iter().map(|(k, l)| (k.clone(), l.as_str())).collect();
+                            bucket_checks(ui, &items, &mut f.types);
+                        }
+                        FilterColumn::Size => {
+                            let items: Vec<_> = HeaderSizeBucket::ALL.iter().map(|&b| (b, b.label())).collect();
+                            bucket_checks(ui, &items, &mut f.sizes);
+                        }
+                    }
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("Clear").clicked() {
+                            let f = &mut app.header_filters;
+                            match popup {
+                                FilterColumn::Name => f.names.clear(),
+                                FilterColumn::Modified => f.dates.clear(),
+                                FilterColumn::Type => f.types.clear(),
+                                FilterColumn::Size => f.sizes.clear(),
+                            }
+                            close = true;
+                        }
+                        if ui.button("Close").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            });
+            if close {
+                app.active_filter_popup = None;
+            } else if !just_opened
+                && ui.input(|i| i.pointer.any_click())
+                && let Some(click_pos) = ui.input(|i| i.pointer.interact_pos())
+                && !resp.response.rect.contains(click_pos)
+            {
+                app.active_filter_popup = None;
+            }
+        }
     }
 
     if let Some(mut r) = renaming {
@@ -1978,7 +2187,63 @@ fn map_drive_dialog(app: &mut App, ui: &mut Ui, mut m: MapDrive) {
     }
 }
 
+/// A column-filter checkbox list: one box per bucket, toggling its key in `set`.
+fn bucket_checks<T: Clone + Eq + std::hash::Hash>(
+    ui: &mut Ui,
+    items: &[(T, &str)],
+    set: &mut std::collections::HashSet<T>,
+) {
+    for (key, label) in items {
+        let mut on = set.contains(key);
+        if ui.checkbox(&mut on, *label).changed() {
+            if on {
+                set.insert(key.clone());
+            } else {
+                set.remove(key);
+            }
+        }
+    }
+}
+
 pub fn dialog(app: &mut App, ui: &mut Ui) {
+    if app.choose_columns_open {
+        let mut save = false;
+        let mut cancel = false;
+        let modal = egui::Modal::new(egui::Id::new("choose-columns")).show(ui.ctx(), |ui| {
+            ui.set_width(320.0);
+            ui.heading("Choose Details");
+            ui.add_space(4.0);
+            ui.add(egui::TextEdit::singleline(&mut app.choose_columns_search).hint_text("Search properties…"));
+            ui.separator();
+            let q = app.choose_columns_search.trim().to_lowercase();
+            egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                for p in explorer_core::Prop::ALL {
+                    if q.is_empty() || p.label().to_lowercase().contains(&q) {
+                        let mut on = app.choose_columns_selected.contains(&p);
+                        if ui.checkbox(&mut on, p.label()).changed() {
+                            if on {
+                                app.choose_columns_selected.push(p);
+                            } else {
+                                app.choose_columns_selected.retain(|&x| x != p);
+                            }
+                        }
+                    }
+                }
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                save = ui.button("OK").clicked();
+                cancel = ui.button("Cancel").clicked();
+            });
+        });
+        if save {
+            app.prop_cols = app.choose_columns_selected.clone();
+            app.choose_columns_open = false;
+        } else if cancel || modal.should_close() {
+            app.choose_columns_open = false;
+        }
+    }
+
     let Some(mut d) = app.dialog.take() else { return };
     match &mut d {
         Dialog::MapDrive(_) => {
@@ -2005,6 +2270,34 @@ pub fn dialog(app: &mut App, ui: &mut Ui) {
                 let items = std::mem::take(items);
                 app.purge_items(&items);
             } else if !no && !modal.should_close() {
+                app.dialog = Some(d);
+            }
+        }
+        Dialog::AddGalleryFolder(path_str) => {
+            let (mut ok, mut cancel) = (false, false);
+            let modal = egui::Modal::new(egui::Id::new("add-gallery-folder")).show(ui.ctx(), |ui| {
+                ui.set_width(360.0);
+                ui.heading("Add collection folder");
+                ui.add_space(6.0);
+                ui.label("Folder path:");
+                ui.add(egui::TextEdit::singleline(path_str).desired_width(340.0));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ok = ui.button("Add").clicked();
+                    cancel = ui.button("Cancel").clicked();
+                });
+            });
+            if ok {
+                let p = PathBuf::from(path_str.trim());
+                if p.is_dir() {
+                    if !app.persist.settings.gallery_folders.contains(&p) {
+                        app.persist.settings.gallery_folders.push(p);
+                        app.refresh();
+                    }
+                } else {
+                    app.status = Some(format!("Folder does not exist: {}", p.display()));
+                }
+            } else if !cancel && !modal.should_close() {
                 app.dialog = Some(d);
             }
         }
