@@ -21,7 +21,7 @@ pub use adapters::adapter_info;
 pub use admin_task::{admin_task_exists, run_admin_task, set_admin_task};
 pub use gpu::gpu_temperature;
 pub use hw::{cpu_info, disk_info, disk_temperature, memory_info};
-pub use icon::exe_icon;
+pub use icon::{default_app_icon, exe_icon};
 pub use waitchain::{set_uac_virtualization, uac_virtualization, wait_chain};
 
 pub fn app_history() -> io::Result<taskmgr_core::AppHistory> {
