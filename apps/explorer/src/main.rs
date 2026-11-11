@@ -3,6 +3,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod dnd;
+mod gallery;
 mod grid;
 mod menus;
 mod nearby;
@@ -166,6 +167,7 @@ pub enum OptionsTab {
 enum Dialog {
     MapDrive(MapDrive),
     ConfirmPurge(Vec<Entry>),
+    AddGalleryFolder(String),
 }
 
 /// A name being edited in place in the file list (F2, New folder, New ▸ type), as Explorer
@@ -209,6 +211,7 @@ struct ViewKey {
     version: u64,
     filter: String,
     search_filters: explorer_core::SearchFilters,
+    header_filters: explorer_core::HeaderFilters,
     sort: SortKey,
     ascending: bool,
     show_hidden: bool,
@@ -249,6 +252,16 @@ struct App {
     pub col_created: bool,
     pub col_attrs: bool,
     pub pane: pane::Pane,
+    pub pane_width: f32,
+    pub header_filters: explorer_core::HeaderFilters,
+    pub active_filter_popup: Option<(explorer_core::FilterColumn, egui::Pos2)>,
+    pub choose_columns_open: bool,
+    pub choose_columns_search: String,
+    pub choose_columns_selected: Vec<explorer_core::Prop>,
+    pub gallery_row_height: f32,
+    pub editing_prop: Option<pane::PropEditState>,
+    /// Whether the property store of this path accepts writes (asked once per file).
+    pub prop_write_ok: Option<(PathBuf, bool)>,
     pub group_by: explorer_core::GroupBy,
     /// Show hidden + system ("protected operating system") files too.
     pub show_protected: bool,
@@ -386,6 +399,15 @@ impl App {
             col_created: false,
             col_attrs: false,
             pane: pane::Pane::None,
+            pane_width: settings.pane_width,
+            header_filters: explorer_core::HeaderFilters::default(),
+            active_filter_popup: None,
+            choose_columns_open: false,
+            choose_columns_search: String::new(),
+            choose_columns_selected: settings.prop_cols.clone(),
+            gallery_row_height: 160.0,
+            editing_prop: None,
+            prop_write_ok: None,
             group_by: explorer_core::GroupBy::None,
             show_protected: false,
             item_checkboxes: false,
@@ -595,6 +617,7 @@ impl App {
         let privacy_recent = self.persist.settings.privacy_recent_files;
         let hide_empty = self.persist.settings.hide_empty_drives;
         let letters_before = self.persist.settings.drive_letters_before;
+        let gallery_folders = self.persist.settings.gallery_folders.clone();
         thread::Builder::new()
             .name("list".into())
             .spawn(move || {
@@ -713,11 +736,15 @@ impl App {
                     }
                     // Every picture and video in the Pictures library, newest first.
                     Place::Gallery => {
-                        let roots: Vec<PathBuf> = explorer_sys::libraries()
-                            .into_iter()
-                            .filter(|(n, _)| n == "Pictures")
-                            .flat_map(|l| l.1)
-                            .collect();
+                        let roots: Vec<PathBuf> = if !gallery_folders.is_empty() {
+                            gallery_folders
+                        } else {
+                            explorer_sys::libraries()
+                                .into_iter()
+                                .filter(|(n, _)| n == "Pictures")
+                                .flat_map(|l| l.1)
+                                .collect()
+                        };
                         gallery(&roots, &cancel, &mut |batch| {
                             let _ = tx.send(Msg::Batch(generation, batch));
                             ctx.request_repaint();
@@ -1324,6 +1351,9 @@ impl App {
         self.anchor = None;
         self.filter.clear();
         self.search_filters.clear();
+        self.header_filters.clear();
+        self.active_filter_popup = None;
+        self.editing_prop = None;
         self.address_edit = None;
         self.address_select_all = false;
         self.reveal_tree = None;
@@ -1692,6 +1722,7 @@ impl App {
             version: self.version,
             filter: self.filter.clone(),
             search_filters: self.search_filters,
+            header_filters: self.header_filters.clone(),
             sort: self.sort,
             ascending: self.ascending,
             show_hidden: self.show_hidden && !self.show_protected,
@@ -1710,7 +1741,41 @@ impl App {
             self.sort,
             self.ascending,
         );
+        if let SortKey::Prop(p) = self.sort {
+            let ascending = self.ascending;
+            let prop_strings: Vec<String> = self
+                .entries
+                .iter()
+                .map(|e| {
+                    let path = self.child(&e.name);
+                    self.props
+                        .get(&path)
+                        .and_then(|opt| opt.as_ref())
+                        .and_then(|v| {
+                            let idx = explorer_core::Prop::ALL.iter().position(|&x| x == p)?;
+                            v.get(idx)
+                        })
+                        .cloned()
+                        .unwrap_or_default()
+                })
+                .collect();
+            self.view.sort_by(|&i, &j| {
+                let (a, b) = (&self.entries[i], &self.entries[j]);
+                let dir_ord = b.is_dir.cmp(&a.is_dir);
+                if dir_ord != std::cmp::Ordering::Equal {
+                    return dir_ord;
+                }
+                let ord = explorer_core::cmp_prop_value(p, &prop_strings[i], &prop_strings[j])
+                    .then_with(|| explorer_core::natural_cmp(a.display(), b.display()));
+                if ascending { ord } else { ord.reverse() }
+            });
+        }
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+        if !self.header_filters.is_empty() {
+            let (top_types, _) = explorer_core::folder_type_buckets(&self.entries);
+            let filters = &self.header_filters;
+            self.view.retain(|&i| filters.matches(&self.entries[i], now, self.utc_offset, &top_types));
+        }
         if !self.search_filters.is_empty() {
             let filters = self.search_filters;
             self.view.retain(|&i| filters.matches(&self.entries[i], now, self.utc_offset));
@@ -2190,7 +2255,20 @@ impl App {
         } else {
             self.sort = key;
             // Names and types read best A→Z; dates and sizes newest/biggest first.
-            self.ascending = matches!(key, SortKey::Name | SortKey::Type | SortKey::Attributes);
+            self.ascending = match key {
+                SortKey::Name | SortKey::Type | SortKey::Attributes => true,
+                SortKey::Prop(p) => !p.is_numeric(),
+                _ => false,
+            };
+        }
+        if let SortKey::Prop(_) = key {
+            for e in &self.entries {
+                let path = self.child(&e.name);
+                if !self.props.contains_key(&path) {
+                    self.props_wanted.push(path);
+                }
+            }
+            self.request_props();
         }
     }
 
@@ -2568,9 +2646,30 @@ impl eframe::App for App {
 /// Most items the Gallery collects.
 const GALLERY_MAX: usize = 50_000;
 
+fn is_gallery_media(e: &Entry) -> bool {
+    matches!(
+        e.extension().as_str(),
+        "jpg"
+            | "jpeg"
+            | "png"
+            | "gif"
+            | "bmp"
+            | "webp"
+            | "tiff"
+            | "tif"
+            | "heic"
+            | "avif"
+            | "svg"
+            | "mp4"
+            | "mov"
+            | "mkv"
+            | "avi"
+            | "webm"
+    )
+}
+
 /// Pictures and videos under `roots` (all subfolders), named by full path.
 fn gallery(roots: &[PathBuf], cancel: &AtomicBool, sink: &mut dyn FnMut(Vec<Entry>)) {
-    use explorer_core::query::Kind;
     let mut queue: std::collections::VecDeque<PathBuf> = roots.iter().cloned().collect();
     let mut count = 0;
     while let Some(dir) = queue.pop_front() {
@@ -2584,7 +2683,7 @@ fn gallery(roots: &[PathBuf], cancel: &AtomicBool, sink: &mut dyn FnMut(Vec<Entr
                     if !e.link && !e.hidden {
                         queue.push_back(dir.join(&e.name));
                     }
-                } else if matches!(Kind::of(&e), Some(Kind::Picture | Kind::Video)) && !e.hidden {
+                } else if is_gallery_media(&e) && !e.hidden {
                     e.label = Some(e.name.clone());
                     e.name = dir.join(&e.name).to_string_lossy().into_owned();
                     out.push(e);

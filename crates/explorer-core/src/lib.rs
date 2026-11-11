@@ -7,6 +7,7 @@
 //! back/forward history — touches no OS API and is unit-tested on any platform.
 
 use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 pub mod query;
@@ -26,10 +27,16 @@ pub enum Prop {
     Length,
     DateTaken,
     Owner,
+    CameraModel,
+    Album,
+    Year,
+    BitRate,
+    Pages,
+    Comment,
 }
 
 impl Prop {
-    pub const ALL: [Prop; 9] = [
+    pub const ALL: [Prop; 15] = [
         Prop::Status,
         Prop::Authors,
         Prop::Title,
@@ -39,6 +46,12 @@ impl Prop {
         Prop::Length,
         Prop::DateTaken,
         Prop::Owner,
+        Prop::CameraModel,
+        Prop::Album,
+        Prop::Year,
+        Prop::BitRate,
+        Prop::Pages,
+        Prop::Comment,
     ];
 
     pub fn label(self) -> &'static str {
@@ -52,6 +65,12 @@ impl Prop {
             Prop::Length => "Length",
             Prop::DateTaken => "Date taken",
             Prop::Owner => "Owner",
+            Prop::CameraModel => "Camera model",
+            Prop::Album => "Album",
+            Prop::Year => "Year",
+            Prop::BitRate => "Bit rate",
+            Prop::Pages => "Pages",
+            Prop::Comment => "Comments",
         }
     }
 
@@ -67,12 +86,473 @@ impl Prop {
             Prop::Length => "length",
             Prop::DateTaken => "datetaken",
             Prop::Owner => "owner",
+            Prop::CameraModel => "cameramodel",
+            Prop::Album => "album",
+            Prop::Year => "year",
+            Prop::BitRate => "bitrate",
+            Prop::Pages => "pages",
+            Prop::Comment => "comment",
         }
     }
 
     pub fn parse(s: &str) -> Option<Prop> {
         Prop::ALL.into_iter().find(|p| p.key() == s.trim())
     }
+
+    pub fn is_numeric(self) -> bool {
+        matches!(self, Prop::Rating | Prop::Length | Prop::Year | Prop::BitRate | Prop::Pages)
+    }
+}
+
+/// Maps a Windows property store rating (0..99) to stars (0..5).
+pub fn rating_to_stars(rating: u32) -> u32 {
+    match rating {
+        0 => 0,
+        1..=12 => 1,
+        13..=37 => 2,
+        38..=62 => 3,
+        63..=87 => 4,
+        _ => 5,
+    }
+}
+
+/// Maps stars (1..5) to Windows property store rating (1, 25, 50, 75, 99). 0 clears.
+pub fn stars_to_rating(stars: u32) -> u32 {
+    match stars {
+        1 => 1,
+        2 => 25,
+        3 => 50,
+        4 => 75,
+        5 => 99,
+        _ => 0,
+    }
+}
+
+/// Splits a semicolon-separated tags string into individual tags.
+pub fn parse_tags(text: &str) -> Vec<String> {
+    text.split(';').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect()
+}
+
+/// Formats a list of tags as semicolon-separated text.
+pub fn format_tags(tags: &[String]) -> String {
+    tags.join("; ")
+}
+
+/// Compares two property values: numerically where numeric, otherwise case-insensitively.
+pub fn cmp_prop_value(p: Prop, a: &str, b: &str) -> Ordering {
+    let a = a.trim();
+    let b = b.trim();
+    if a.is_empty() && b.is_empty() {
+        return Ordering::Equal;
+    }
+    if a.is_empty() {
+        return Ordering::Greater;
+    }
+    if b.is_empty() {
+        return Ordering::Less;
+    }
+    if p.is_numeric() {
+        let num_a = a.parse::<f64>().ok().or_else(|| {
+            let s: String = a.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+            s.parse::<f64>().ok()
+        });
+        let num_b = b.parse::<f64>().ok().or_else(|| {
+            let s: String = b.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+            s.parse::<f64>().ok()
+        });
+        if let (Some(na), Some(nb)) = (num_a, num_b) {
+            let ord = na.partial_cmp(&nb).unwrap_or(Ordering::Equal);
+            if ord != Ordering::Equal {
+                return ord;
+            }
+        }
+    }
+    natural_cmp(a, b)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NameBucket {
+    Digits,
+    AH,
+    IP,
+    QZ,
+    Others,
+}
+
+impl NameBucket {
+    pub const ALL: [NameBucket; 5] =
+        [NameBucket::Digits, NameBucket::AH, NameBucket::IP, NameBucket::QZ, NameBucket::Others];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            NameBucket::Digits => "0-9",
+            NameBucket::AH => "A-H",
+            NameBucket::IP => "I-P",
+            NameBucket::QZ => "Q-Z",
+            NameBucket::Others => "Others",
+        }
+    }
+}
+
+pub fn name_bucket(name: &str) -> NameBucket {
+    let Some(first) = name.chars().next() else {
+        return NameBucket::Others;
+    };
+    if first.is_ascii_digit() {
+        NameBucket::Digits
+    } else {
+        match first.to_ascii_uppercase() {
+            'A'..='H' => NameBucket::AH,
+            'I'..='P' => NameBucket::IP,
+            'Q'..='Z' => NameBucket::QZ,
+            _ => NameBucket::Others,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DateModifiedBucket {
+    Today,
+    Yesterday,
+    EarlierThisWeek,
+    LastWeek,
+    EarlierThisMonth,
+    LastMonth,
+    EarlierThisYear,
+    LongAgo,
+}
+
+impl DateModifiedBucket {
+    pub const ALL: [DateModifiedBucket; 8] = [
+        DateModifiedBucket::Today,
+        DateModifiedBucket::Yesterday,
+        DateModifiedBucket::EarlierThisWeek,
+        DateModifiedBucket::LastWeek,
+        DateModifiedBucket::EarlierThisMonth,
+        DateModifiedBucket::LastMonth,
+        DateModifiedBucket::EarlierThisYear,
+        DateModifiedBucket::LongAgo,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            DateModifiedBucket::Today => "Today",
+            DateModifiedBucket::Yesterday => "Yesterday",
+            DateModifiedBucket::EarlierThisWeek => "Earlier this week",
+            DateModifiedBucket::LastWeek => "Last week",
+            DateModifiedBucket::EarlierThisMonth => "Earlier this month",
+            DateModifiedBucket::LastMonth => "Last month",
+            DateModifiedBucket::EarlierThisYear => "Earlier this year",
+            DateModifiedBucket::LongAgo => "A long time ago",
+        }
+    }
+}
+
+pub fn date_modified_bucket(unix_secs: i64, now: i64, utc_offset: i64) -> DateModifiedBucket {
+    if unix_secs <= 0 {
+        return DateModifiedBucket::LongAgo;
+    }
+    let day = |t: i64| (t + utc_offset).div_euclid(86_400);
+    let (today, d) = (day(now), day(unix_secs));
+    if d >= today {
+        DateModifiedBucket::Today
+    } else if d == today - 1 {
+        DateModifiedBucket::Yesterday
+    } else {
+        let weekday = (today + 3).rem_euclid(7);
+        let week_start = today - weekday;
+        if d >= week_start {
+            DateModifiedBucket::EarlierThisWeek
+        } else if d >= week_start - 7 {
+            DateModifiedBucket::LastWeek
+        } else {
+            let (y, m, _) = civil_from_days(today);
+            let (dy, dm, _) = civil_from_days(d);
+            if dy == y && dm == m {
+                DateModifiedBucket::EarlierThisMonth
+            } else if (dy == y && dm + 1 == m) || (dy + 1 == y && m == 1 && dm == 12) {
+                DateModifiedBucket::LastMonth
+            } else if dy == y {
+                DateModifiedBucket::EarlierThisYear
+            } else {
+                DateModifiedBucket::LongAgo
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum HeaderSizeBucket {
+    Empty,
+    Tiny,
+    Small,
+    Medium,
+    Large,
+    Huge,
+    Gigantic,
+}
+
+impl HeaderSizeBucket {
+    pub const ALL: [HeaderSizeBucket; 7] = [
+        HeaderSizeBucket::Empty,
+        HeaderSizeBucket::Tiny,
+        HeaderSizeBucket::Small,
+        HeaderSizeBucket::Medium,
+        HeaderSizeBucket::Large,
+        HeaderSizeBucket::Huge,
+        HeaderSizeBucket::Gigantic,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            HeaderSizeBucket::Empty => "Empty",
+            HeaderSizeBucket::Tiny => "Tiny (0-16 KB)",
+            HeaderSizeBucket::Small => "Small (16 KB-1 MB)",
+            HeaderSizeBucket::Medium => "Medium (1-128 MB)",
+            HeaderSizeBucket::Large => "Large (128 MB-1 GB)",
+            HeaderSizeBucket::Huge => "Huge (1-4 GB)",
+            HeaderSizeBucket::Gigantic => "Gigantic (>4 GB)",
+        }
+    }
+}
+
+pub fn header_size_bucket(size: u64) -> HeaderSizeBucket {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * KB;
+    const GB: u64 = 1024 * MB;
+    match size {
+        0 => HeaderSizeBucket::Empty,
+        s if s <= 16 * KB => HeaderSizeBucket::Tiny,
+        s if s <= MB => HeaderSizeBucket::Small,
+        s if s <= 128 * MB => HeaderSizeBucket::Medium,
+        s if s <= GB => HeaderSizeBucket::Large,
+        s if s <= 4 * GB => HeaderSizeBucket::Huge,
+        _ => HeaderSizeBucket::Gigantic,
+    }
+}
+
+pub fn folder_type_buckets(entries: &[Entry]) -> (Vec<String>, bool) {
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for e in entries {
+        if !e.is_dir {
+            *counts.entry(e.type_name()).or_default() += 1;
+        }
+    }
+    let mut list: Vec<(String, usize)> = counts.into_iter().collect();
+    list.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| natural_cmp(&a.0, &b.0)));
+    let has_others = list.len() > 12;
+    let top: Vec<String> = list.into_iter().take(12).map(|(t, _)| t).collect();
+    (top, has_others)
+}
+
+/// The Details columns that have a filter drop-down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FilterColumn {
+    Name,
+    Modified,
+    Type,
+    Size,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HeaderFilters {
+    pub names: HashSet<NameBucket>,
+    pub dates: HashSet<DateModifiedBucket>,
+    pub types: HashSet<String>,
+    pub sizes: HashSet<HeaderSizeBucket>,
+}
+
+impl HeaderFilters {
+    pub fn is_empty(&self) -> bool {
+        self.names.is_empty() && self.dates.is_empty() && self.types.is_empty() && self.sizes.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.names.clear();
+        self.dates.clear();
+        self.types.clear();
+        self.sizes.clear();
+    }
+
+    /// Whether the column behind `kind` has any box checked.
+    pub fn is_filtered(&self, kind: FilterColumn) -> bool {
+        match kind {
+            FilterColumn::Name => !self.names.is_empty(),
+            FilterColumn::Modified => !self.dates.is_empty(),
+            FilterColumn::Type => !self.types.is_empty(),
+            FilterColumn::Size => !self.sizes.is_empty(),
+        }
+    }
+
+    pub fn matches(&self, e: &Entry, now: i64, utc_offset: i64, top_types: &[String]) -> bool {
+        if !self.names.is_empty() && !self.names.contains(&name_bucket(e.display())) {
+            return false;
+        }
+        if !self.dates.is_empty() && !self.dates.contains(&date_modified_bucket(e.modified, now, utc_offset)) {
+            return false;
+        }
+        if !self.types.is_empty() {
+            if e.is_dir {
+                return false;
+            }
+            let t = e.type_name();
+            let is_top = top_types.iter().any(|tt| tt == &t);
+            let ok = self.types.contains(&t) || (self.types.contains("Others") && !is_top);
+            if !ok {
+                return false;
+            }
+        }
+        if !self.sizes.is_empty() {
+            if e.is_dir {
+                return false;
+            }
+            if !self.sizes.contains(&header_size_bucket(e.size)) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+pub fn justified_layout(
+    aspect_ratios: &[f32],
+    container_width: f32,
+    target_height: f32,
+    gap: f32,
+) -> Vec<Vec<(usize, f32)>> {
+    if aspect_ratios.is_empty() || container_width <= 0.0 || target_height <= 0.0 {
+        return Vec::new();
+    }
+    let mut rows: Vec<Vec<(usize, f32)>> = Vec::new();
+    let mut row_start = 0;
+    while row_start < aspect_ratios.len() {
+        let mut row_end = row_start + 1;
+        let mut sum_r: f32 = aspect_ratios[row_start].max(0.1);
+        while row_end < aspect_ratios.len() {
+            let next_r = aspect_ratios[row_end].max(0.1);
+            let k = (row_end - row_start + 1) as f32;
+            let total_natural = (sum_r + next_r) * target_height + (k - 1.0) * gap;
+            if total_natural > container_width {
+                let k_prev = (row_end - row_start) as f32;
+                let h_prev = (container_width - (k_prev - 1.0) * gap).max(1.0) / sum_r;
+                let h_with = (container_width - (k - 1.0) * gap).max(1.0) / (sum_r + next_r);
+                if (h_prev - target_height).abs() <= (h_with - target_height).abs() {
+                    break;
+                } else {
+                    sum_r += next_r;
+                    row_end += 1;
+                    break;
+                }
+            }
+            sum_r += next_r;
+            row_end += 1;
+        }
+
+        let is_last_row = row_end == aspect_ratios.len();
+        let k = (row_end - row_start) as f32;
+        let natural_width = sum_r * target_height + (k - 1.0) * gap;
+        if is_last_row && natural_width < container_width {
+            let row: Vec<(usize, f32)> = (row_start..row_end)
+                .map(|i| {
+                    let w = aspect_ratios[i].max(0.1) * target_height;
+                    (i, w)
+                })
+                .collect();
+            rows.push(row);
+        } else {
+            let avail_w = (container_width - (k - 1.0) * gap).max(1.0);
+            let h = avail_w / sum_r;
+            let mut row: Vec<(usize, f32)> = Vec::with_capacity(row_end - row_start);
+            let mut allocated_w = 0.0;
+            for (offset, &ar) in aspect_ratios[row_start..row_end - 1].iter().enumerate() {
+                let i = row_start + offset;
+                let w = (ar.max(0.1) * h).round();
+                allocated_w += w;
+                row.push((i, w));
+            }
+            let last_idx = row_end - 1;
+            let last_w = (avail_w - allocated_w).max(1.0);
+            row.push((last_idx, last_w));
+            rows.push(row);
+        }
+        row_start = row_end;
+    }
+    rows
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TimelineSegment {
+    pub label: String,
+    pub y_start: f32,
+    pub y_end: f32,
+    pub item_index: usize,
+    pub count: usize,
+}
+
+pub fn timeline_positions(months: &[(&str, usize)], track_height: f32) -> Vec<TimelineSegment> {
+    if months.is_empty() || track_height <= 0.0 {
+        return Vec::new();
+    }
+    let total_items: usize = months.iter().map(|(_, c)| *c).sum();
+    if total_items == 0 {
+        return Vec::new();
+    }
+    let mut segments = Vec::with_capacity(months.len());
+    let mut current_y = 0.0;
+    let mut current_idx = 0;
+    for (label, count) in months {
+        let frac = *count as f32 / total_items as f32;
+        let h = track_height * frac;
+        let y_start = current_y;
+        let y_end = current_y + h;
+        segments.push(TimelineSegment {
+            label: label.to_string(),
+            y_start,
+            y_end,
+            item_index: current_idx,
+            count: *count,
+        });
+        current_y = y_end;
+        current_idx += count;
+    }
+    segments
+}
+
+pub fn timeline_hit(segments: &[TimelineSegment], y: f32) -> Option<&TimelineSegment> {
+    if segments.is_empty() {
+        return None;
+    }
+    if y <= segments[0].y_start {
+        return segments.first();
+    }
+    if y >= segments.last().unwrap().y_end {
+        return segments.last();
+    }
+    segments.iter().find(|s| y >= s.y_start && y <= s.y_end)
+}
+
+pub fn format_month_year(unix_secs: i64, utc_offset: i64) -> String {
+    if unix_secs <= 0 {
+        return "Unknown".to_string();
+    }
+    let days = (unix_secs + utc_offset).div_euclid(86_400);
+    let (y, m, _) = civil_from_days(days);
+    const MONTHS: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+    let month_name = if (1..=12).contains(&m) { MONTHS[(m - 1) as usize] } else { "Unknown" };
+    format!("{month_name} {y}")
 }
 
 /// The Status column of a cloud-synced item (OneDrive and other Cloud Files providers), from
@@ -212,7 +692,7 @@ pub fn icon_for(e: &Entry) -> &'static str {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum SortKey {
     #[default]
     Name,
@@ -221,6 +701,7 @@ pub enum SortKey {
     Size,
     Created,
     Attributes,
+    Prop(Prop),
 }
 
 /// Win32 file attribute bits, as `FindFirstFileExW` reports them.
@@ -324,6 +805,7 @@ pub fn sorted_view_with(
             SortKey::Size => a.size.cmp(&b.size),
             SortKey::Created => a.created.cmp(&b.created),
             SortKey::Attributes => format_attributes(a.attrs).cmp(&format_attributes(b.attrs)),
+            SortKey::Prop(_) => Ordering::Equal,
         }
         .then_with(|| natural_cmp(a.display(), b.display()));
         b.is_dir.cmp(&a.is_dir).then(if ascending { by_key } else { by_key.reverse() })
@@ -381,7 +863,7 @@ pub fn format_time(unix_secs: i64, utc_offset_secs: i64) -> String {
 }
 
 /// Days since 1970-01-01 to (year, month, day). Howard Hinnant's algorithm.
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
+pub fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);
@@ -391,6 +873,17 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
     let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     (yoe + era * 400 + i64::from(m <= 2), m, d)
+}
+
+/// (year, month, day) to days since 1970-01-01; the inverse of `civil_from_days`.
+pub fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (i64::from(m) + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + i64::from(d) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
 }
 
 /// A name the user typed for a new or renamed item: rejects what Windows rejects.
@@ -1442,5 +1935,155 @@ mod tests {
         let items = vec![(d.clone(), 1, 500), (c.clone(), 5, 200), (a.clone(), 10, 100), (b.clone(), 5, 300)];
         let ranked = rank_frequent_folders(items);
         assert_eq!(ranked, vec![a, b, c, d]);
+    }
+
+    #[test]
+    fn name_buckets() {
+        assert_eq!(name_bucket("0file.txt"), NameBucket::Digits);
+        assert_eq!(name_bucket("9items"), NameBucket::Digits);
+        assert_eq!(name_bucket("apple.jpg"), NameBucket::AH);
+        assert_eq!(name_bucket("Hat.png"), NameBucket::AH);
+        assert_eq!(name_bucket("image.png"), NameBucket::IP);
+        assert_eq!(name_bucket("Photos"), NameBucket::IP);
+        assert_eq!(name_bucket("quick.rs"), NameBucket::QZ);
+        assert_eq!(name_bucket("Zoo"), NameBucket::QZ);
+        assert_eq!(name_bucket("_hidden"), NameBucket::Others);
+        assert_eq!(name_bucket(""), NameBucket::Others);
+    }
+
+    #[test]
+    fn date_modified_buckets() {
+        // Wednesday 2026-11-25 12:00 UTC (week started Monday 2026-11-23).
+        let now = days_from_civil(2026, 11, 25) * 86_400 + 12 * 3600;
+        let day_sec = |y, m, d| days_from_civil(y, m, d) * 86_400 + 3600;
+
+        assert_eq!(date_modified_bucket(day_sec(2026, 11, 25), now, 0), DateModifiedBucket::Today);
+        assert_eq!(date_modified_bucket(day_sec(2026, 11, 24), now, 0), DateModifiedBucket::Yesterday);
+        assert_eq!(date_modified_bucket(day_sec(2026, 11, 23), now, 0), DateModifiedBucket::EarlierThisWeek);
+        assert_eq!(date_modified_bucket(day_sec(2026, 11, 20), now, 0), DateModifiedBucket::LastWeek);
+        assert_eq!(date_modified_bucket(day_sec(2026, 11, 10), now, 0), DateModifiedBucket::EarlierThisMonth);
+        assert_eq!(date_modified_bucket(day_sec(2026, 10, 15), now, 0), DateModifiedBucket::LastMonth);
+        assert_eq!(date_modified_bucket(day_sec(2026, 5, 1), now, 0), DateModifiedBucket::EarlierThisYear);
+        assert_eq!(date_modified_bucket(day_sec(2025, 11, 25), now, 0), DateModifiedBucket::LongAgo);
+        assert_eq!(date_modified_bucket(0, now, 0), DateModifiedBucket::LongAgo);
+    }
+
+    #[test]
+    fn header_size_buckets() {
+        assert_eq!(header_size_bucket(0), HeaderSizeBucket::Empty);
+        assert_eq!(header_size_bucket(1024), HeaderSizeBucket::Tiny);
+        assert_eq!(header_size_bucket(16 * 1024), HeaderSizeBucket::Tiny);
+        assert_eq!(header_size_bucket(16 * 1024 + 1), HeaderSizeBucket::Small);
+        assert_eq!(header_size_bucket(1024 * 1024), HeaderSizeBucket::Small);
+        assert_eq!(header_size_bucket(1024 * 1024 + 1), HeaderSizeBucket::Medium);
+        assert_eq!(header_size_bucket(128 * 1024 * 1024), HeaderSizeBucket::Medium);
+        assert_eq!(header_size_bucket(128 * 1024 * 1024 + 1), HeaderSizeBucket::Large);
+        assert_eq!(header_size_bucket(1024 * 1024 * 1024), HeaderSizeBucket::Large);
+        assert_eq!(header_size_bucket(1024 * 1024 * 1024 + 1), HeaderSizeBucket::Huge);
+        assert_eq!(header_size_bucket(4 * 1024 * 1024 * 1024), HeaderSizeBucket::Huge);
+        assert_eq!(header_size_bucket(4 * 1024 * 1024 * 1024 + 1), HeaderSizeBucket::Gigantic);
+    }
+
+    #[test]
+    fn rating_mapping_and_tags() {
+        assert_eq!(stars_to_rating(0), 0);
+        assert_eq!(stars_to_rating(1), 1);
+        assert_eq!(stars_to_rating(2), 25);
+        assert_eq!(stars_to_rating(3), 50);
+        assert_eq!(stars_to_rating(4), 75);
+        assert_eq!(stars_to_rating(5), 99);
+
+        assert_eq!(rating_to_stars(0), 0);
+        assert_eq!(rating_to_stars(1), 1);
+        assert_eq!(rating_to_stars(12), 1);
+        assert_eq!(rating_to_stars(25), 2);
+        assert_eq!(rating_to_stars(50), 3);
+        assert_eq!(rating_to_stars(75), 4);
+        assert_eq!(rating_to_stars(99), 5);
+
+        let tags = parse_tags("vacation; family; 2026; ; scenic ");
+        assert_eq!(tags, vec!["vacation", "family", "2026", "scenic"]);
+        assert_eq!(format_tags(&tags), "vacation; family; 2026; scenic");
+
+        assert_eq!(cmp_prop_value(Prop::Rating, "50", "25"), Ordering::Greater);
+        assert_eq!(cmp_prop_value(Prop::Pages, "12", "120"), Ordering::Less);
+        assert_eq!(cmp_prop_value(Prop::Title, "Beta", "alpha"), Ordering::Greater);
+    }
+
+    #[test]
+    fn header_filters_rule() {
+        let now = days_from_civil(2026, 11, 25) * 86_400 + 12 * 3600;
+        let day_sec = |y, m, d| days_from_civil(y, m, d) * 86_400 + 3600;
+
+        let file = Entry {
+            name: "apple.txt".into(),
+            is_dir: false,
+            size: 500,
+            modified: day_sec(2026, 11, 25),
+            ..Default::default()
+        };
+        let folder = Entry {
+            name: "Archive".into(),
+            is_dir: true,
+            size: 0,
+            modified: day_sec(2026, 11, 25),
+            ..Default::default()
+        };
+
+        let mut f = HeaderFilters::default();
+        assert!(f.matches(&file, now, 0, &[]));
+        assert!(f.matches(&folder, now, 0, &[]));
+
+        // Name filter applies to all items
+        f.names.insert(NameBucket::AH);
+        assert!(f.matches(&file, now, 0, &[]));
+        assert!(f.matches(&folder, now, 0, &[]));
+
+        f.names.clear();
+        f.names.insert(NameBucket::QZ);
+        assert!(!f.matches(&file, now, 0, &[]));
+        assert!(!f.matches(&folder, now, 0, &[]));
+
+        // Size filter applies to files only (folder is excluded)
+        f.names.clear();
+        f.sizes.insert(HeaderSizeBucket::Tiny);
+        assert!(f.matches(&file, now, 0, &[]));
+        assert!(!f.matches(&folder, now, 0, &[]));
+
+        // Type filter applies to files only
+        f.sizes.clear();
+        f.types.insert("Text Document".into());
+        assert!(f.matches(&file, now, 0, &["Text Document".into()]));
+        assert!(!f.matches(&folder, now, 0, &["Text Document".into()]));
+    }
+
+    #[test]
+    fn justified_layout_rows() {
+        let aspect_ratios = vec![1.0, 1.5, 1.0, 1.0, 1.5, 1.0];
+        let rows = justified_layout(&aspect_ratios, 1000.0, 160.0, 4.0);
+        assert_eq!(rows.len(), 2);
+        // Row 1 fills 1000.0 width
+        let row1_total: f32 = rows[0].iter().map(|(_, w)| *w).sum::<f32>() + (rows[0].len() - 1) as f32 * 4.0;
+        assert!((row1_total - 1000.0).abs() < 1.0, "row 1 width {row1_total}");
+        // Row 2 is left-aligned at target height 160.0 * 1.0 = 160.0
+        assert_eq!(rows[1].len(), 1);
+        assert_eq!(rows[1][0].1, 160.0);
+    }
+
+    #[test]
+    fn timeline_scrubber_mapping() {
+        let months = vec![("November 2026", 10), ("October 2026", 30)];
+        let segs = timeline_positions(&months, 100.0);
+        assert_eq!(segs.len(), 2);
+        assert_eq!(segs[0].label, "November 2026");
+        assert_eq!(segs[0].y_start, 0.0);
+        assert_eq!(segs[0].y_end, 25.0);
+        assert_eq!(segs[1].y_start, 25.0);
+        assert_eq!(segs[1].y_end, 100.0);
+
+        assert_eq!(timeline_hit(&segs, 10.0).unwrap().label, "November 2026");
+        assert_eq!(timeline_hit(&segs, 50.0).unwrap().label, "October 2026");
+        assert_eq!(timeline_hit(&segs, -5.0).unwrap().label, "November 2026");
+        assert_eq!(timeline_hit(&segs, 150.0).unwrap().label, "October 2026");
     }
 }

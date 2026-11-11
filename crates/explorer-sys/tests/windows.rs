@@ -502,6 +502,26 @@ fn property_columns_are_read() {
 }
 
 #[test]
+fn property_write_and_read_back() {
+    use explorer_core::Prop;
+    let _g = guard("property_write_and_read_back");
+    let d = scratch("props_write");
+    let jpg = d.join("photo.jpg");
+    let script = format!(
+        "Add-Type -AssemblyName System.Drawing; $b=New-Object System.Drawing.Bitmap 32,32; $b.Save('{}', [System.Drawing.Imaging.ImageFormat]::Jpeg); $b.Dispose()",
+        jpg.display()
+    );
+    let st = std::process::Command::new("powershell").args(["-NoProfile", "-Command", &script]).status().unwrap();
+    assert!(st.success());
+    let w = watchdog("property write", 60);
+    explorer_sys::write_prop(&jpg, Prop::Title, "Round 9 Test Title").expect("write title");
+    let v = explorer_sys::read_props(&jpg, &[Prop::Title]);
+    w.store(true, Ordering::Relaxed);
+    assert_eq!(v[0], "Round 9 Test Title");
+    fs::remove_dir_all(&d).unwrap();
+}
+
+#[test]
 fn libraries_list_their_folders() {
     let _g = guard("libraries_list_their_folders");
     let libs = explorer_sys::libraries();

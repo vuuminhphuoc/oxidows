@@ -174,6 +174,28 @@ pub fn read_props(path: &Path, props: &[explorer_core::Prop]) -> Vec<String> {
     }
 }
 
+/// Writes `value` to `prop` on `path` through the Windows property store.
+pub fn write_prop(path: &Path, prop: explorer_core::Prop, value: &str) -> io::Result<()> {
+    #[cfg(windows)]
+    return props::write_prop(path, prop, value);
+    #[cfg(not(windows))]
+    {
+        let _ = (path, prop, value);
+        Err(io::Error::new(io::ErrorKind::Unsupported, "property writing needs Windows"))
+    }
+}
+
+/// Whether `path` supports writing metadata through the Windows property store.
+pub fn can_write_props(path: &Path) -> bool {
+    #[cfg(windows)]
+    return props::can_write_props(path);
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        false
+    }
+}
+
 /// The libraries (display name, folders), e.g. ("Documents", [C:\\Users\\a\\Documents]).
 /// Without library files (or off Windows) the four standard ones are made from the known
 /// folders.
