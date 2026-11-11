@@ -504,6 +504,7 @@ impl State {
         let cols = self.columns.clone();
         let row_h = 20.0;
         let mut clicked = None;
+        let ctx = ui.ctx().clone();
         let mut table = TableBuilder::new(ui);
         if let Some(pid) = self.scroll_to.take()
             && let Some(i) = view.iter().position(|p| p.pid == pid)
@@ -547,13 +548,20 @@ impl State {
             .body(|body| {
                 body.rows(row_h, view.len(), |mut row| {
                     let p = view[row.index()];
-                    row.set_selected(self.selected.as_ref().is_some_and(|(pid, _)| *pid == p.pid));
+                    let is_sel = self.selected.as_ref().is_some_and(|(pid, _)| *pid == p.pid);
+                    row.set_selected(is_sel);
+                    if is_sel {
+                        row.set_selected(true);
+                    }
                     for &c in &cols {
                         row.col(|ui| c.cell(ui, p, net_on, &self.icons));
                     }
                     let resp = row.response();
                     if resp.clicked() {
                         self.selected = Some((p.pid, p.name.clone()));
+                    }
+                    if resp.hovered() {
+                        ctx.request_repaint();
                     }
                     resp.context_menu(|ui| process_menu(ui, &self.status, rows, p, true, self.confirm_efficiency));
                 });

@@ -278,6 +278,7 @@ pub fn cpu_info() -> taskmgr_core::CpuInfo {
         cores: field("cpu cores").and_then(|v| v.parse().ok()).unwrap_or(logical),
         logical,
         virtualization: Some(text.contains(" vmx") || text.contains(" svm")),
+        numa_nodes: vec![0; logical as usize],
         ..Default::default()
     }
 }
@@ -326,6 +327,9 @@ pub fn is_running(name: &str) -> bool {
 pub fn shutdown() {}
 pub fn adapter_info(_name: &str) -> taskmgr_core::AdapterInfo {
     taskmgr_core::AdapterInfo::default()
+}
+pub fn default_app_icon() -> Option<crate::IconImage> {
+    None
 }
 pub mod tray {
     pub fn install(_hwnd: isize) -> bool {

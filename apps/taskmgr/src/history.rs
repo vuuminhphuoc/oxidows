@@ -311,6 +311,8 @@ impl State {
                     scroll_to = Some(new_i);
                 }
                 let cols = self.columns.clone();
+                let ctx = ui.ctx().clone();
+                let pointer_pos = ui.input(|i| i.pointer.hover_pos());
                 let mut table = TableBuilder::new(ui)
                     .resizable(true)
                     .sense(egui::Sense::click())
@@ -348,7 +350,9 @@ impl State {
                     .body(|body| {
                         body.rows(22.0, apps.len(), |mut row| {
                             let a = &apps[row.index()];
-                            row.set_selected(self.selected.as_deref() == Some(a.name.as_str()));
+                            let is_sel = self.selected.as_deref() == Some(a.name.as_str());
+                            row.set_selected(is_sel);
+                            let _ = pointer_pos;
                             for &c in &cols {
                                 row.col(|ui| match c {
                                     Col::Name => {
@@ -371,8 +375,12 @@ impl State {
                                     }
                                 });
                             }
-                            if row.response().clicked() {
+                            let resp = row.response();
+                            if resp.clicked() {
                                 pick = Some(a.name.clone());
+                            }
+                            if resp.hovered() {
+                                ctx.request_repaint();
                             }
                         });
                     });

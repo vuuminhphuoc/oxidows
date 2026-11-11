@@ -37,17 +37,17 @@ fn text(w: &[u16]) -> String {
     String::from_utf16_lossy(&w[..n])
 }
 
-/// The connected SSID of the Wi-Fi interface whose description is `description`.
-fn ssid(description: &str) -> Option<String> {
+/// The connected SSID and signal quality of the Wi-Fi interface whose description is `description`.
+fn wifi_info(description: &str) -> (Option<String>, Option<u32>) {
     let mut client = null_mut();
     let mut ver = 0u32;
     // SAFETY: out-pointers to locals; every WLAN allocation is freed and the handle closed.
     unsafe {
         if WlanOpenHandle(2, null(), &mut ver, &mut client) != 0 {
-            return None;
+            return (None, None);
         }
         let mut list: *mut WLAN_INTERFACE_INFO_LIST = null_mut();
-        let mut out = None;
+        let mut out = (None, None);
         if WlanEnumInterfaces(client, null(), &mut list) == 0 && !list.is_null() {
             let items = std::slice::from_raw_parts((*list).InterfaceInfo.as_ptr(), (*list).dwNumberOfItems as usize);
             for i in items {
@@ -70,7 +70,9 @@ fn ssid(description: &str) -> Option<String> {
                     let c = &*data.cast::<WLAN_CONNECTION_ATTRIBUTES>();
                     let s = &c.wlanAssociationAttributes.dot11Ssid;
                     let n = (s.uSSIDLength as usize).min(32);
-                    out = Some(String::from_utf8_lossy(&s.ucSSID[..n]).into_owned());
+                    let ssid = String::from_utf8_lossy(&s.ucSSID[..n]).into_owned();
+                    let quality = c.wlanAssociationAttributes.wlanSignalQuality;
+                    out = (Some(ssid), Some(quality));
                     WlanFreeMemory(data);
                 }
             }
@@ -105,6 +107,14 @@ pub fn adapter_info(name: &str) -> AdapterInfo {
             let ad = &*a;
             if pwstr(ad.FriendlyName) == name {
                 info.dns_suffix = pwstr(ad.DnsSuffix);
+                info.connection_type = match ad.IfType {
+                    6 => "Ethernet",
+                    71 => "Wi-Fi",
+                    243 | 244 => "Cellular",
+                    251 => "Bluetooth",
+                    _ => "Other",
+                }
+                .to_string();
                 let description = pwstr(ad.Description);
                 let mut u = ad.FirstUnicastAddress;
                 while !u.is_null() {
@@ -124,7 +134,9 @@ pub fn adapter_info(name: &str) -> AdapterInfo {
                     }
                     u = (*u).Next;
                 }
-                info.ssid = ssid(&description);
+                let (ssid, signal) = wifi_info(&description);
+                info.ssid = ssid;
+                info.signal_strength = signal;
                 break;
             }
             a = ad.Next;

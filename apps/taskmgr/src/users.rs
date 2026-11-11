@@ -319,6 +319,7 @@ impl State {
             scroll_to = Some(line_idx);
         }
         let cols = self.columns.clone();
+        let ctx = ui.ctx().clone();
         let mut table = TableBuilder::new(ui)
             .resizable(true)
             .sense(egui::Sense::click())
@@ -363,7 +364,9 @@ impl State {
                     Line::User(i) => {
                         let UserLine { u, disk, net, gpu, display_user } = &users[i];
                         let (disk, net, gpu) = (*disk, *net, *gpu);
-                        row.set_selected(self.selected == Some(u.session_id));
+                        let is_sel = self.selected == Some(u.session_id);
+                        row.set_selected(is_sel);
+                        // Row hover and selection handled via TableRow
                         let open = self.expanded.contains(&u.session_id);
                         for &c in &cols {
                             row.col(|ui| match c {
@@ -408,9 +411,13 @@ impl State {
                                 }
                             });
                         }
-                        if row.response().clicked() {
+                        let resp = row.response();
+                        if resp.clicked() {
                             self.selected = Some(u.session_id);
                             toggle = Some(u.session_id);
+                        }
+                        if resp.hovered() {
+                            ctx.request_repaint();
                         }
                     }
                     Line::Proc(i) => {

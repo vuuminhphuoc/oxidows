@@ -3,27 +3,79 @@
 use egui::{Color32, Pos2, Rect, Sense, Shape, Stroke, Ui, Vec2};
 use taskmgr_core::Ring;
 
+#[derive(Clone, Copy, Debug)]
+pub struct AxisLabels<'a> {
+    pub top_left: &'a str,
+    pub top_right: &'a str,
+    pub bottom_left: &'a str,
+    pub bottom_right: &'a str,
+}
+
+impl<'a> AxisLabels<'a> {
+    pub const PERCENT: Self =
+        Self { top_left: "% Utilization", top_right: "100%", bottom_left: "60 seconds", bottom_right: "0" };
+
+    pub fn with_top(top_left: &'a str, top_right: &'a str) -> Self {
+        Self { top_left, top_right, bottom_left: "60 seconds", bottom_right: "0" }
+    }
+}
+
 pub fn area(ui: &mut Ui, size: Vec2, ring: &Ring, max: f32, color: Color32, grid: bool) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(size, Sense::hover());
-    paint(ui, rect, &[(ring, color)], max, grid);
+    area_labeled(ui, size, ring, max, color, grid, None)
+}
+
+pub fn area_labeled(
+    ui: &mut Ui,
+    size: Vec2,
+    ring: &Ring,
+    max: f32,
+    color: Color32,
+    grid: bool,
+    labels: Option<AxisLabels<'_>>,
+) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    paint(ui, rect, &[(ring, color)], max, grid, labels);
     resp
 }
 
 /// Utilization with its kernel-mode part drawn darker on top ("Show kernel times").
 pub fn with_kernel(ui: &mut Ui, size: Vec2, ring: &Ring, kernel: &Ring, color: Color32, grid: bool) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(size, Sense::hover());
-    paint(ui, rect, &[(ring, color), (kernel, color.gamma_multiply(0.6))], 100.0, grid);
+    with_kernel_labeled(ui, size, ring, kernel, color, grid, None)
+}
+
+pub fn with_kernel_labeled(
+    ui: &mut Ui,
+    size: Vec2,
+    ring: &Ring,
+    kernel: &Ring,
+    color: Color32,
+    grid: bool,
+    labels: Option<AxisLabels<'_>>,
+) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    paint(ui, rect, &[(ring, color), (kernel, color.gamma_multiply(0.6))], 100.0, grid, labels);
     resp
 }
 
 /// Several series on one set of axes (network send + receive).
+#[allow(dead_code)]
 pub fn multi(ui: &mut Ui, size: Vec2, series: &[(&Ring, Color32)], max: f32) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(size, Sense::hover());
-    paint(ui, rect, series, max, true);
+    multi_labeled(ui, size, series, max, None)
+}
+
+pub fn multi_labeled(
+    ui: &mut Ui,
+    size: Vec2,
+    series: &[(&Ring, Color32)],
+    max: f32,
+    labels: Option<AxisLabels<'_>>,
+) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    paint(ui, rect, series, max, true, labels);
     resp
 }
 
-fn paint(ui: &Ui, rect: Rect, series: &[(&Ring, Color32)], max: f32, grid: bool) {
+fn paint(ui: &Ui, rect: Rect, series: &[(&Ring, Color32)], max: f32, grid: bool, labels: Option<AxisLabels<'_>>) {
     let painter = ui.painter_at(rect);
     let border = series.first().map_or(Color32::GRAY, |(_, c)| *c);
     painter.rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
@@ -62,6 +114,46 @@ fn paint(ui: &Ui, rect: Rect, series: &[(&Ring, Color32)], max: f32, grid: bool)
         }
     }
     painter.rect_stroke(rect, 0.0, Stroke::new(1.0, border), egui::StrokeKind::Inside);
+    if let Some(lbl) = labels {
+        let font = egui::FontId::proportional(11.0);
+        let color = ui.visuals().weak_text_color();
+        if !lbl.top_left.is_empty() {
+            painter.text(
+                Pos2::new(rect.left() + 6.0, rect.top() + 4.0),
+                egui::Align2::LEFT_TOP,
+                lbl.top_left,
+                font.clone(),
+                color,
+            );
+        }
+        if !lbl.top_right.is_empty() {
+            painter.text(
+                Pos2::new(rect.right() - 6.0, rect.top() + 4.0),
+                egui::Align2::RIGHT_TOP,
+                lbl.top_right,
+                font.clone(),
+                color,
+            );
+        }
+        if !lbl.bottom_left.is_empty() {
+            painter.text(
+                Pos2::new(rect.left() + 6.0, rect.bottom() - 4.0),
+                egui::Align2::LEFT_BOTTOM,
+                lbl.bottom_left,
+                font.clone(),
+                color,
+            );
+        }
+        if !lbl.bottom_right.is_empty() {
+            painter.text(
+                Pos2::new(rect.right() - 6.0, rect.bottom() - 4.0),
+                egui::Align2::RIGHT_BOTTOM,
+                lbl.bottom_right,
+                font,
+                color,
+            );
+        }
+    }
 }
 
 /// Hover readout for a graph drawn by the functions above: a thin line at the sample under the

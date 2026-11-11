@@ -619,6 +619,8 @@ impl State {
         let mut toggle_group = None;
         let mut toggle_app = None;
         let cols = self.columns.clone();
+        let pointer_pos = ui.input(|i| i.pointer.hover_pos());
+        let ctx = ui.ctx().clone();
         let mut table = TableBuilder::new(ui)
             .resizable(true)
             .sense(egui::Sense::click())
@@ -722,6 +724,16 @@ impl State {
                             }
                         }
                     });
+                    let paint_heat = |ui: &mut Ui, fraction: f32| {
+                        let r = ui.max_rect();
+                        ui.painter().rect_filled(r, 0.0, heat(ui, fraction));
+                        let cell_hovered = pointer_pos.is_some_and(|pos| r.y_range().contains(pos.y));
+                        if cell_hovered && !is_sel {
+                            ui.painter().rect_filled(r, 0.0, ui.visuals().widgets.hovered.bg_fill);
+                        } else if is_sel {
+                            ui.painter().rect_filled(r, 0.0, ui.visuals().selection.bg_fill.gamma_multiply(0.4));
+                        }
+                    };
                     for &col in &cols {
                         row.col(|ui| match col {
                             PCol::Type => {
@@ -760,15 +772,11 @@ impl State {
                                 ui.label(&p.info.command_line).on_hover_text(&p.info.command_line);
                             }
                             PCol::Cpu => {
-                                ui.painter().rect_filled(ui.max_rect(), 0.0, heat(ui, p.cpu_pct / 100.0));
+                                paint_heat(ui, p.cpu_pct / 100.0);
                                 ui.label(format!("{:.1}%", p.cpu_pct));
                             }
                             PCol::Memory => {
-                                ui.painter().rect_filled(
-                                    ui.max_rect(),
-                                    0.0,
-                                    heat(ui, p.memory as f32 / mem_total * 8.0),
-                                );
+                                paint_heat(ui, p.memory as f32 / mem_total * 8.0);
                                 ui.label(if percent {
                                     format!("{:.1}%", p.memory as f32 * 100.0 / mem_total)
                                 } else {
@@ -776,7 +784,7 @@ impl State {
                                 });
                             }
                             PCol::Disk => {
-                                ui.painter().rect_filled(ui.max_rect(), 0.0, heat(ui, (p.disk_bps / 10e6) as f32));
+                                paint_heat(ui, (p.disk_bps / 10e6) as f32);
                                 ui.label(if percent {
                                     format!("{:.1}%", disk_pct(p.disk_bps))
                                 } else {
@@ -785,11 +793,7 @@ impl State {
                             }
                             PCol::Network => {
                                 if net_on {
-                                    ui.painter().rect_filled(
-                                        ui.max_rect(),
-                                        0.0,
-                                        heat(ui, (p.net_bps * 8.0 / 10e6) as f32),
-                                    );
+                                    paint_heat(ui, (p.net_bps * 8.0 / 10e6) as f32);
                                     ui.label(if percent {
                                         format!("{:.1}%", net_pct(p.net_bps))
                                     } else {
@@ -800,19 +804,19 @@ impl State {
                                 }
                             }
                             PCol::Gpu => {
-                                ui.painter().rect_filled(ui.max_rect(), 0.0, heat(ui, p.gpu_pct / 100.0));
+                                paint_heat(ui, p.gpu_pct / 100.0);
                                 ui.label(format!("{:.0}%", p.gpu_pct));
                             }
                             PCol::GpuEngine => {
                                 ui.label(&p.gpu_engine);
                             }
                             PCol::Power => {
-                                ui.painter().rect_filled(ui.max_rect(), 0.0, heat(ui, p.power / 25.0));
+                                paint_heat(ui, p.power / 25.0);
                                 ui.label(taskmgr_core::power_label(p.power))
                                     .on_hover_text("Estimated from CPU, GPU, disk and network use");
                             }
                             PCol::PowerTrend => {
-                                ui.painter().rect_filled(ui.max_rect(), 0.0, heat(ui, p.power_trend / 25.0));
+                                paint_heat(ui, p.power_trend / 25.0);
                                 ui.label(taskmgr_core::power_label(p.power_trend))
                                     .on_hover_text("Estimated from CPU, GPU, disk and network use");
                             }
@@ -821,6 +825,9 @@ impl State {
                     let resp = row.response();
                     if resp.clicked() {
                         self.selected = Some((p.pid, p.name.clone()));
+                    }
+                    if resp.hovered() {
+                        ctx.request_repaint();
                     }
                     // Actions on a grouped app act on its root process, not the totals row.
                     let target = match lines[row.index()] {

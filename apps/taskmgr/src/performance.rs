@@ -19,6 +19,14 @@ const NET_TX: Color32 = Color32::from_rgb(220, 140, 40);
 const GPU: Color32 = Color32::from_rgb(10, 140, 120);
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum CpuViewMode {
+    #[default]
+    Overall,
+    LogicalProcessors,
+    NumaNodes,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 enum Res {
     #[default]
     Cpu,
@@ -36,10 +44,14 @@ pub struct State {
     selected: Res,
     /// Only the resource list, without tabs or details (double-click to leave).
     pub summary: bool,
+    /// Graph-only view (double-click or context menu to leave).
+    pub graph_summary: bool,
     /// One graph per logical processor (saved as `cpu_logical`).
     pub per_core: bool,
     /// Draw kernel-mode time over the CPU graphs (saved as `cpu_kernel`).
     pub kernel: bool,
+    /// Overall utilization / Logical processors / NUMA nodes.
+    pub cpu_view: CpuViewMode,
     cpu: CpuInfo,
     /// Addresses of the shown adapter, re-read every few seconds.
     adapter: Option<(String, Instant, AdapterInfo)>,
@@ -50,12 +62,107 @@ pub struct State {
     /// Temperatures by "disk N" / GPU LUID, re-read every two seconds.
     temps: std::collections::HashMap<String, (Instant, Option<f32>)>,
     fps: crate::fps::State,
+    /// Selected engine per slot (up to 4) per GPU index.
+    gpu_slots: std::collections::HashMap<usize, [String; 4]>,
+    /// 60 s history rings per engine name: (gpu_index, engine_name) -> Ring.
+    gpu_engine_history: std::collections::HashMap<(usize, String), Ring>,
+    /// 60 s history rings for dedicated and shared memory: gpu_index -> (dedicated, shared).
+    gpu_mem_history: std::collections::HashMap<usize, (Ring, Ring)>,
+    last_uptime: Option<Duration>,
 }
 
 impl State {
     /// Starts with the CPU page's "Logical processors" / "Show kernel times" checkboxes as saved.
     pub fn with_cpu_view(per_core: bool, kernel: bool) -> Self {
-        Self { per_core, kernel, ..Self::default() }
+        let cpu_view = if per_core { CpuViewMode::LogicalProcessors } else { CpuViewMode::Overall };
+        Self { per_core, kernel, cpu_view, ..Self::default() }
+    }
+
+    fn attach_graph_menu(&mut self, _ui: &mut Ui, resp: &egui::Response, summary_text: &str, is_cpu: bool) {
+        let summary_clone = summary_text.to_string();
+        let mut numa_count = self.cpu.numa_nodes.clone();
+        numa_count.sort_unstable();
+        numa_count.dedup();
+        let has_numa = numa_count.len() > 1;
+
+        resp.context_menu(|ui| {
+            ui.checkbox(&mut self.graph_summary, "Graph summary view");
+            if is_cpu {
+                ui.menu_button("Change graph to", |ui| {
+                    if ui.radio_value(&mut self.cpu_view, CpuViewMode::Overall, "Overall utilization").clicked() {
+                        self.per_core = false;
+                        ui.close();
+                    }
+                    if ui
+                        .radio_value(&mut self.cpu_view, CpuViewMode::LogicalProcessors, "Logical processors")
+                        .clicked()
+                    {
+                        self.per_core = true;
+                        ui.close();
+                    }
+                    ui.add_enabled_ui(has_numa, |ui| {
+                        if ui.radio_value(&mut self.cpu_view, CpuViewMode::NumaNodes, "NUMA nodes").clicked() {
+                            self.per_core = false;
+                            ui.close();
+                        }
+                    });
+                });
+                ui.checkbox(&mut self.kernel, "Show kernel times");
+            }
+            if ui.button("Copy").clicked() {
+                ui.ctx().copy_text(summary_clone);
+                ui.close();
+            }
+        });
+    }
+
+    fn update_gpu_history(&mut self, snap: &Snapshot) {
+        if self.last_uptime == Some(snap.system.uptime) {
+            return;
+        }
+        self.last_uptime = Some(snap.system.uptime);
+        let s = &snap.system;
+        if s.gpus.is_empty() {
+            let (ded_ring, shared_ring) = self.gpu_mem_history.entry(usize::MAX).or_default();
+            ded_ring.push(s.gpu_dedicated_used.unwrap_or(0) as f32);
+            shared_ring.push(s.gpu_shared_used.unwrap_or(0) as f32);
+            let known_keys: Vec<String> = self
+                .gpu_engine_history
+                .keys()
+                .filter(|(idx, _)| *idx == usize::MAX)
+                .map(|(_, name)| name.clone())
+                .collect();
+            for name in known_keys {
+                let val = s.gpu_engines.iter().find(|(n, _)| n == &name).map(|(_, v)| *v).unwrap_or(0.0);
+                self.gpu_engine_history.get_mut(&(usize::MAX, name)).unwrap().push(val);
+            }
+            for (name, val) in &s.gpu_engines {
+                self.gpu_engine_history.entry((usize::MAX, name.clone())).or_insert_with(|| {
+                    let mut r = Ring::default();
+                    r.push(*val);
+                    r
+                });
+            }
+        } else {
+            for (i, g) in s.gpus.iter().enumerate() {
+                let (ded_ring, shared_ring) = self.gpu_mem_history.entry(i).or_default();
+                ded_ring.push(g.dedicated_used.unwrap_or(0) as f32);
+                shared_ring.push(g.shared_used.unwrap_or(0) as f32);
+                let known_keys: Vec<String> =
+                    self.gpu_engine_history.keys().filter(|(idx, _)| *idx == i).map(|(_, name)| name.clone()).collect();
+                for name in known_keys {
+                    let val = g.engines.iter().find(|(n, _)| n == &name).map(|(_, v)| *v).unwrap_or(0.0);
+                    self.gpu_engine_history.get_mut(&(i, name)).unwrap().push(val);
+                }
+                for (name, val) in &g.engines {
+                    self.gpu_engine_history.entry((i, name.clone())).or_insert_with(|| {
+                        let mut r = Ring::default();
+                        r.push(*val);
+                        r
+                    });
+                }
+            }
+        }
     }
 
     fn temp(&mut self, key: String, read: impl FnOnce() -> Option<f32>) -> Option<f32> {
@@ -89,19 +196,24 @@ impl Default for State {
         };
         Self {
             summary: std::env::var_os("OXI_TASKMGR_SUMMARY").is_some(),
+            graph_summary: false,
             selected,
             per_core: false,
             kernel: false,
+            cpu_view: CpuViewMode::Overall,
             cpu: taskmgr_sys::cpu_info(),
             adapter: None,
             disk_info: Default::default(),
             memory: None,
             temps: Default::default(),
             fps: Default::default(),
+            gpu_slots: Default::default(),
+            gpu_engine_history: Default::default(),
+            gpu_mem_history: Default::default(),
+            last_uptime: None,
         }
     }
 }
-
 fn pct(used: u64, total: u64) -> f32 {
     if total == 0 { 0.0 } else { (used as f64 * 100.0 / total as f64) as f32 }
 }
@@ -288,9 +400,17 @@ impl State {
             self.selected = Res::Cpu;
         }
 
+        self.update_gpu_history(snap);
         if self.summary {
             egui::CentralPanel::default().show(ui, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| self.list(ui, &entries));
+            });
+            return;
+        }
+        if self.graph_summary {
+            egui::CentralPanel::default().show(ui, |ui| {
+                let avail_h = ui.available_height();
+                egui::ScrollArea::vertical().show(ui, |ui| self.detail(ui, snap, avail_h, true));
             });
             return;
         }
@@ -300,18 +420,22 @@ impl State {
 
         egui::CentralPanel::default().show(ui, |ui| {
             let avail_h = ui.available_height();
-            egui::ScrollArea::vertical().show(ui, |ui| self.detail(ui, snap, avail_h));
+            egui::ScrollArea::vertical().show(ui, |ui| self.detail(ui, snap, avail_h, false));
         });
     }
 
-    fn detail(&mut self, ui: &mut Ui, snap: &Snapshot, avail_h: f32) {
+    fn detail(&mut self, ui: &mut Ui, snap: &Snapshot, avail_h: f32, graph_only: bool) {
         let s = &snap.system;
         let h = &snap.history;
         let net_max = |rx: &Ring, tx: &Ring| rx.max().max(tx.max()).max(1024.0);
         let disk_max = h.disk_bps.max().max(1024.0 * 1024.0);
         {
             let w = ui.available_width() - 8.0;
-            let big = Vec2::new(w, (avail_h - 290.0).max(140.0));
+            let big = if graph_only {
+                Vec2::new(w, (avail_h - 40.0).max(180.0))
+            } else {
+                Vec2::new(w, (avail_h - 290.0).max(140.0))
+            };
             let summary = match self.selected {
                 Res::Cpu => self.cpu_view(ui, snap, w, big),
                 Res::Fps => self.fps.view(ui, snap, big),
@@ -326,44 +450,59 @@ impl State {
                             m
                         })
                         .clone();
-                    header(ui, "Memory", &format_bytes(s.mem_total as f64));
+                    let total_str = format_bytes(s.mem_total as f64);
+                    header(ui, "Memory", &total_str);
                     ui.label(RichText::new("Memory usage over 60 seconds").small().weak());
-                    let g = graph::area(ui, big, &h.mem_pct, 100.0, MEM, true);
-                    graph::hover(ui, &g, "Memory", &[("In use", &h.mem_pct)], pct_text);
-                    composition(ui, snap);
-                    stats(
+                    let g = graph::area_labeled(
                         ui,
-                        &[
-                            ("In use", format_bytes(s.mem_used as f64)),
-                            ("Available", format_bytes(s.mem_total.saturating_sub(s.mem_used) as f64)),
-                            (
-                                "Committed",
-                                format!(
-                                    "{} / {}",
-                                    format_bytes(s.commit_used as f64),
-                                    format_bytes(s.commit_limit as f64)
-                                ),
-                            ),
-                            ("Cached", opt_bytes(s.mem_cached)),
-                            ("Paged pool", opt_bytes(s.mem_paged_pool)),
-                            ("Non-paged pool", opt_bytes(s.mem_nonpaged_pool)),
-                            ("Hardware reserved", opt_bytes(s.mem_hw_reserved)),
-                            ("Speed", if m.speed_mts == 0 { "-".into() } else { format!("{} MT/s", m.speed_mts) }),
-                            (
-                                "Slots used",
-                                if m.slots_total == 0 {
-                                    "-".into()
-                                } else {
-                                    format!("{} of {}", m.slots_used, m.slots_total)
-                                },
-                            ),
-                            ("Form factor", if m.form_factor.is_empty() { "-".into() } else { m.form_factor }),
-                        ],
-                    )
+                        big,
+                        &h.mem_pct,
+                        100.0,
+                        MEM,
+                        true,
+                        Some(graph::AxisLabels::with_top("Memory usage", &total_str)),
+                    );
+                    graph::hover(ui, &g, "Memory", &[("In use", &h.mem_pct)], pct_text);
+                    if g.double_clicked() {
+                        self.graph_summary = !self.graph_summary;
+                    }
+                    let mut items = vec![
+                        ("In use", format_bytes(s.mem_used as f64)),
+                        ("Available", format_bytes(s.mem_total.saturating_sub(s.mem_used) as f64)),
+                        (
+                            "Committed",
+                            format!("{} / {}", format_bytes(s.commit_used as f64), format_bytes(s.commit_limit as f64)),
+                        ),
+                        ("Cached", opt_bytes(s.mem_cached)),
+                    ];
+                    if let Some(comp) = s.mem_compressed {
+                        items.push(("Compressed", format_bytes(comp as f64)));
+                    }
+                    items.extend([
+                        ("Paged pool", opt_bytes(s.mem_paged_pool)),
+                        ("Non-paged pool", opt_bytes(s.mem_nonpaged_pool)),
+                        ("Hardware reserved", opt_bytes(s.mem_hw_reserved)),
+                        ("Speed", if m.speed_mts == 0 { "-".into() } else { format!("{} MT/s", m.speed_mts) }),
+                        (
+                            "Slots used",
+                            if m.slots_total == 0 {
+                                "-".into()
+                            } else {
+                                format!("{} of {}", m.slots_used, m.slots_total)
+                            },
+                        ),
+                        ("Form factor", if m.form_factor.is_empty() { "-".into() } else { m.form_factor }),
+                    ]);
+                    let copy_text = items.iter().map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>().join("\n");
+                    self.attach_graph_menu(ui, &g, &copy_text, false);
+                    if graph_only {
+                        return;
+                    }
+                    composition(ui, snap);
+                    stats(ui, &items)
                 }
                 Res::Disk(i) => match s.disks.get(i) {
                     Some(d) => {
-                        // PDH names a disk "0 C: D:": the number, then its volumes.
                         let mut parts = d.name.split_whitespace();
                         let number = parts.next().and_then(|n| n.parse::<u32>().ok());
                         let letters: Vec<String> = parts.map(|l| l.to_uppercase()).collect();
@@ -383,28 +522,6 @@ impl State {
                             .unwrap_or_default();
                         header(ui, &disk_title(&d.name), &info.model);
                         ui.label(RichText::new("Active time over 60 seconds").small().weak());
-                        if let Some(ring) = h.disks.get(i) {
-                            let g = graph::area(ui, Vec2::new(big.x, big.y * 0.6), ring, 100.0, DISK, true);
-                            graph::hover(ui, &g, "", &[("Active time", ring)], pct_text);
-                        }
-                        // Task Manager's second graph: read (solid) and write on one scale.
-                        if let Some((r, w)) = h.disk_io.get(i) {
-                            let max = r.max().max(w.max()).max(1024.0 * 1024.0);
-                            ui.label(
-                                RichText::new(format!("Disk transfer rate (max {}/s)", format_bytes(max as f64)))
-                                    .small()
-                                    .weak(),
-                            );
-                            let g = graph::multi(ui, Vec2::new(big.x, big.y * 0.4), &[(r, DISK), (w, DISK_WRITE)], max);
-                            graph::hover(ui, &g, "", &[("Read", r), ("Write", w)], bytes_per_sec);
-                        }
-                        let sys = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into()).to_uppercase();
-                        let is_sys = letters.contains(&sys);
-                        let pagefile =
-                            letters.iter().any(|l| std::path::Path::new(&format!("{l}\\pagefile.sys")).exists());
-                        let yes_no = |b: bool| if b { "Yes" } else { "No" }.to_string();
-                        let temp =
-                            number.and_then(|n| self.temp(format!("disk {n}"), || taskmgr_sys::disk_temperature(n)));
                         let mut items = vec![
                             ("Active time", format!("{:.0}%", d.active_pct)),
                             ("Average response time", format!("{:.1} ms", d.response_ms)),
@@ -423,19 +540,98 @@ impl State {
                                     (false, false) => format!("{} ({})", info.kind, info.bus),
                                 },
                             ),
-                            ("System disk", yes_no(is_sys)),
-                            ("Page file", yes_no(pagefile)),
+                            (
+                                "System disk",
+                                if letters.contains(
+                                    &std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into()).to_uppercase(),
+                                ) {
+                                    "Yes"
+                                } else {
+                                    "No"
+                                }
+                                .to_string(),
+                            ),
+                            (
+                                "Page file",
+                                if letters.iter().any(|l| std::path::Path::new(&format!("{l}\\pagefile.sys")).exists())
+                                {
+                                    "Yes"
+                                } else {
+                                    "No"
+                                }
+                                .to_string(),
+                            ),
                         ];
-                        // Task Manager lists the temperature only for drives that report one.
+                        let temp =
+                            number.and_then(|n| self.temp(format!("disk {n}"), || taskmgr_sys::disk_temperature(n)));
                         if temp.is_some() {
                             items.push(("Temperature", celsius(temp)));
+                        }
+                        let copy_text = items.iter().map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>().join("\n");
+
+                        if let Some(ring) = h.disks.get(i) {
+                            let g = graph::area_labeled(
+                                ui,
+                                Vec2::new(big.x, big.y * 0.6),
+                                ring,
+                                100.0,
+                                DISK,
+                                true,
+                                Some(graph::AxisLabels::with_top("% Active time", "100%")),
+                            );
+                            graph::hover(ui, &g, "", &[("Active time", ring)], pct_text);
+                            if g.double_clicked() {
+                                self.graph_summary = !self.graph_summary;
+                            }
+                            self.attach_graph_menu(ui, &g, &copy_text, false);
+                        }
+                        if let Some((r, w)) = h.disk_io.get(i) {
+                            let max = r.max().max(w.max()).max(1024.0 * 1024.0);
+                            let max_str = format!("{}/s", format_bytes(max as f64));
+                            ui.label(RichText::new(format!("Disk transfer rate (max {max_str})")).small().weak());
+                            let g = graph::multi_labeled(
+                                ui,
+                                Vec2::new(big.x, big.y * 0.4),
+                                &[(r, DISK), (w, DISK_WRITE)],
+                                max,
+                                Some(graph::AxisLabels::with_top("Disk transfer rate", &max_str)),
+                            );
+                            graph::hover(ui, &g, "", &[("Read", r), ("Write", w)], bytes_per_sec);
+                            if g.double_clicked() {
+                                self.graph_summary = !self.graph_summary;
+                            }
+                            self.attach_graph_menu(ui, &g, &copy_text, false);
+                        }
+                        if graph_only {
+                            return;
                         }
                         stats(ui, &items)
                     }
                     None => {
                         header(ui, "Disk", "");
-                        let g = graph::area(ui, big, &h.disk_bps, disk_max, DISK, true);
+                        let copy_text = format!(
+                            "Active time: {}\nRead speed: {}/s\nWrite speed: {}/s",
+                            s.disk_active_pct.map_or("n/a".into(), |p| format!("{p:.0}%")),
+                            format_bytes(s.disk_read_bps),
+                            format_bytes(s.disk_write_bps)
+                        );
+                        let g = graph::area_labeled(
+                            ui,
+                            big,
+                            &h.disk_bps,
+                            disk_max,
+                            DISK,
+                            true,
+                            Some(graph::AxisLabels::PERCENT),
+                        );
                         graph::hover(ui, &g, "", &[("Transfer rate", &h.disk_bps)], bytes_per_sec);
+                        if g.double_clicked() {
+                            self.graph_summary = !self.graph_summary;
+                        }
+                        self.attach_graph_menu(ui, &g, &copy_text, false);
+                        if graph_only {
+                            return;
+                        }
                         stats(
                             ui,
                             &[
@@ -474,16 +670,6 @@ impl State {
                         ),
                     };
                     header(ui, &name, &desc);
-                    if let Some((r, t)) = rings {
-                        let max = net_max(r, t);
-                        ui.label(
-                            RichText::new(format!("Throughput, scale {}", format_bits_per_sec(max as f64)))
-                                .small()
-                                .weak(),
-                        );
-                        let g = graph::multi(ui, big, &[(r, NET), (t, NET_TX)], max);
-                        graph::hover(ui, &g, "", &[("Send", t), ("Receive", r)], bits_per_sec);
-                    }
                     let mut items = vec![
                         ("Send", format_bits_per_sec(tx)),
                         ("Receive", format_bits_per_sec(rx)),
@@ -492,6 +678,19 @@ impl State {
                     if let Some((n, _, info)) = &self.adapter
                         && *n == alias
                     {
+                        if !info.connection_type.is_empty() {
+                            items.push(("Connection type", info.connection_type.clone()));
+                        }
+                        if let Some(q) = info.signal_strength {
+                            let bars = match q {
+                                0 => "0 bars",
+                                1..=25 => "1 bar",
+                                26..=50 => "2 bars",
+                                51..=75 => "3 bars",
+                                _ => "4 bars",
+                            };
+                            items.push(("Signal strength", format!("{q}% ({bars})")));
+                        }
                         if let Some(ssid) = &info.ssid {
                             items.push(("SSID", ssid.clone()));
                         }
@@ -505,35 +704,56 @@ impl State {
                             items.push(("IPv6 address", info.ipv6.join(", ")));
                         }
                     }
+                    let copy_text = items.iter().map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>().join("\n");
+                    if let Some((r, t)) = rings {
+                        let max = net_max(r, t);
+                        let max_str = format_bits_per_sec(max as f64);
+                        ui.label(RichText::new(format!("Throughput, scale {max_str}")).small().weak());
+                        let g = graph::multi_labeled(
+                            ui,
+                            big,
+                            &[(r, NET), (t, NET_TX)],
+                            max,
+                            Some(graph::AxisLabels::with_top("Throughput", &max_str)),
+                        );
+                        graph::hover(ui, &g, "", &[("Send", t), ("Receive", r)], bits_per_sec);
+                        if g.double_clicked() {
+                            self.graph_summary = !self.graph_summary;
+                        }
+                        self.attach_graph_menu(ui, &g, &copy_text, false);
+                    }
+                    if graph_only {
+                        return;
+                    }
                     stats(ui, &items)
                 }
                 Res::Gpu(i) => {
                     let one = s.gpus.get(i);
-                    let ring = h.gpus.get(i).unwrap_or(&h.gpu_pct);
                     let title = match one {
                         Some(_) => taskmgr_core::gpu_titles(&s.gpus)[i].clone(),
                         None => "GPU".into(),
                     };
                     header(ui, &title, one.map_or("", |g| g.name.as_str()));
-                    ui.label(RichText::new("Busiest engine over 60 seconds").small().weak());
-                    let g = graph::area(ui, big, ring, 100.0, GPU, true);
-                    graph::hover(ui, &g, "", &[("Utilization", ring)], pct_text);
                     let of_total = |used: Option<u64>, total: u64| match (used, total) {
                         (Some(u), t) if t > 0 => format!("{} / {}", format_bytes(u as f64), format_bytes(t as f64)),
                         (u, _) => opt_bytes(u),
                     };
-                    let (util, ded, shared, engines) = match one {
+                    let (util, ded, shared, engines, ded_total, shared_total) = match one {
                         Some(g) => (
                             format!("{:.0}%", g.util),
                             of_total(g.dedicated_used, g.dedicated_total),
                             of_total(g.shared_used, g.shared_total),
                             &g.engines,
+                            g.dedicated_total,
+                            g.shared_total,
                         ),
                         None => (
                             s.gpu_pct.map_or("n/a".into(), |g| format!("{g:.0}%")),
                             opt_bytes(s.gpu_dedicated_used),
                             opt_bytes(s.gpu_shared_used),
                             &s.gpu_engines,
+                            0,
+                            0,
                         ),
                     };
                     let mut items =
@@ -554,12 +774,123 @@ impl State {
                             }
                         }
                     }
-                    let engines: Vec<(String, String)> =
+                    let engines_text: Vec<(String, String)> =
                         engines.iter().map(|(n, v)| (n.clone(), format!("{v:.0}%"))).collect();
-                    items.extend(engines.iter().map(|(n, v)| (n.as_str(), v.clone())));
+                    items.extend(engines_text.iter().map(|(n, v)| (n.as_str(), v.clone())));
+                    let copy_text = items.iter().map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>().join("\n");
+
+                    // Four engine graphs in 2x2 grid with dropdown ComboBox above each
+                    let mut available_engines: Vec<String> = engines.iter().map(|(n, _)| n.clone()).collect();
+                    if available_engines.is_empty() {
+                        available_engines =
+                            vec!["3D".into(), "Copy".into(), "Video Encode".into(), "Video Decode".into()];
+                    }
+                    let mut slots = self
+                        .gpu_slots
+                        .get(&i)
+                        .cloned()
+                        .unwrap_or_else(|| taskmgr_core::pick_default_gpu_engines(&available_engines));
+                    for slot in slots.iter_mut() {
+                        if !available_engines.contains(slot)
+                            && let Some(first) = available_engines.first()
+                        {
+                            *slot = first.clone();
+                        }
+                    }
+
+                    let col_w = (w - 8.0) / 2.0;
+                    let cell_h = if graph_only { (avail_h - 120.0).max(180.0) / 2.0 } else { 105.0 };
+
+                    egui::Grid::new(("gpu_engine_grid", i)).spacing([8.0, 8.0]).show(ui, |ui| {
+                        for row in 0..2 {
+                            for col in 0..2 {
+                                let slot_idx = row * 2 + col;
+                                ui.vertical(|ui| {
+                                    ui.set_width(col_w);
+                                    let current_engine = &mut slots[slot_idx];
+                                    egui::ComboBox::from_id_salt(("gpu_eng_cb", i, slot_idx))
+                                        .selected_text(current_engine.as_str())
+                                        .width(col_w - 8.0)
+                                        .show_ui(ui, |ui| {
+                                            for eng in &available_engines {
+                                                ui.selectable_value(current_engine, eng.clone(), eng);
+                                            }
+                                        });
+                                    let ring = self
+                                        .gpu_engine_history
+                                        .get(&(i, current_engine.clone()))
+                                        .cloned()
+                                        .unwrap_or_default();
+                                    let g = graph::area_labeled(
+                                        ui,
+                                        Vec2::new(col_w, cell_h),
+                                        &ring,
+                                        100.0,
+                                        GPU,
+                                        true,
+                                        Some(graph::AxisLabels::PERCENT),
+                                    );
+                                    graph::hover(ui, &g, current_engine, &[("Utilization", &ring)], pct_text);
+                                    if g.double_clicked() {
+                                        self.graph_summary = !self.graph_summary;
+                                    }
+                                    self.attach_graph_menu(ui, &g, &copy_text, false);
+                                });
+                            }
+                            ui.end_row();
+                        }
+                    });
+                    self.gpu_slots.insert(i, slots);
+
+                    // Memory graphs: Dedicated and Shared
+                    ui.add_space(8.0);
+                    let (ded_ring, shared_ring) = self.gpu_mem_history.get(&i).cloned().unwrap_or_default();
+                    let ded_total_str = format_bytes(ded_total as f64);
+                    header(ui, "Dedicated GPU memory usage", &ded_total_str);
+                    let ded_max = if ded_total > 0 { ded_total as f32 } else { ded_ring.max().max(1.0) };
+                    let g_ded = graph::area_labeled(
+                        ui,
+                        Vec2::new(w, if graph_only { 110.0 } else { 80.0 }),
+                        &ded_ring,
+                        ded_max,
+                        GPU,
+                        true,
+                        Some(graph::AxisLabels::with_top("Dedicated GPU memory usage", &ded_total_str)),
+                    );
+                    graph::hover(ui, &g_ded, "Dedicated GPU memory", &[("In use", &ded_ring)], bytes_per_sec);
+                    if g_ded.double_clicked() {
+                        self.graph_summary = !self.graph_summary;
+                    }
+                    self.attach_graph_menu(ui, &g_ded, &copy_text, false);
+
+                    ui.add_space(6.0);
+                    let shared_total_str = format_bytes(shared_total as f64);
+                    header(ui, "Shared GPU memory usage", &shared_total_str);
+                    let shared_max = if shared_total > 0 { shared_total as f32 } else { shared_ring.max().max(1.0) };
+                    let g_shared = graph::area_labeled(
+                        ui,
+                        Vec2::new(w, if graph_only { 110.0 } else { 80.0 }),
+                        &shared_ring,
+                        shared_max,
+                        GPU,
+                        true,
+                        Some(graph::AxisLabels::with_top("Shared GPU memory usage", &shared_total_str)),
+                    );
+                    graph::hover(ui, &g_shared, "Shared GPU memory", &[("In use", &shared_ring)], bytes_per_sec);
+                    if g_shared.double_clicked() {
+                        self.graph_summary = !self.graph_summary;
+                    }
+                    self.attach_graph_menu(ui, &g_shared, &copy_text, false);
+
+                    if graph_only {
+                        return;
+                    }
                     stats(ui, &items)
                 }
             };
+            if graph_only {
+                return;
+            }
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 if ui.button("Copy").on_hover_text("Copy these figures as text").clicked() {
@@ -582,15 +913,94 @@ impl State {
     fn cpu_view(&mut self, ui: &mut Ui, snap: &Snapshot, w: f32, big: Vec2) -> String {
         let s = &snap.system;
         let h = &snap.history;
+        let c = &self.cpu;
+        let items = vec![
+            ("Utilization", format!("{:.0}%", s.cpu_pct)),
+            ("Speed", s.cpu_mhz.map_or("-".into(), |m| format!("{:.2} GHz", m / 1000.0))),
+            ("Processes", s.process_count.to_string()),
+            ("Threads", s.thread_count.to_string()),
+            ("Handles", s.handle_count.to_string()),
+            ("Up time", format_uptime(s.uptime)),
+            ("Base speed", if c.base_mhz == 0 { "-".into() } else { format!("{:.2} GHz", c.base_mhz as f32 / 1000.0) }),
+            ("Sockets", if c.sockets == 0 { "-".into() } else { c.sockets.to_string() }),
+            ("Cores", if c.cores == 0 { "-".into() } else { c.cores.to_string() }),
+            ("Logical processors", c.logical.max(s.cores_pct.len() as u32).to_string()),
+            (
+                "Virtualization",
+                c.virtualization.map_or("-".into(), |v| if v { "Enabled".into() } else { "Disabled".into() }),
+            ),
+            ("L1 cache", cache(c.l1_bytes)),
+            ("L2 cache", cache(c.l2_bytes)),
+            ("L3 cache", cache(c.l3_bytes)),
+        ];
+        let summary_text = items.iter().map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>().join("\n");
+
         ui.horizontal(|ui| {
             header(ui, "CPU", &self.cpu.name);
         });
         ui.horizontal(|ui| {
             ui.label(RichText::new("% Utilization over 60 seconds").small().weak());
-            ui.checkbox(&mut self.per_core, "Logical processors");
+            let mut is_logical = self.cpu_view == CpuViewMode::LogicalProcessors || self.per_core;
+            if ui.checkbox(&mut is_logical, "Logical processors").clicked() {
+                self.per_core = is_logical;
+                self.cpu_view = if is_logical { CpuViewMode::LogicalProcessors } else { CpuViewMode::Overall };
+            }
             ui.checkbox(&mut self.kernel, "Show kernel times");
         });
-        if self.per_core && !h.cores.is_empty() {
+
+        let is_numa = self.cpu_view == CpuViewMode::NumaNodes;
+        let is_logical = self.cpu_view == CpuViewMode::LogicalProcessors || self.per_core;
+
+        if is_numa && !self.cpu.numa_nodes.is_empty() {
+            let node_averages = taskmgr_core::group_by_numa_node(&s.cores_pct, &self.cpu.numa_nodes);
+            let n = node_averages.len();
+            let cols = (n as f32).sqrt().ceil() as usize;
+            let rows = n.div_ceil(cols);
+            let gap = 4.0;
+            let cell =
+                Vec2::new((w - gap * (cols - 1) as f32) / cols as f32, (big.y - gap * (rows - 1) as f32) / rows as f32);
+            egui::Grid::new("numa_nodes").spacing([gap, gap]).show(ui, |ui| {
+                for (i, &(node_id, _avg)) in node_averages.iter().enumerate() {
+                    let title = format!("NUMA node {node_id}");
+                    let node_cores: Vec<usize> = self
+                        .cpu
+                        .numa_nodes
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, nid)| **nid == node_id)
+                        .map(|(c, _)| c)
+                        .collect();
+                    let mut node_ring = Ring::default();
+                    if !node_cores.is_empty() && !h.cores.is_empty() {
+                        let len = h.cores[0].len();
+                        for step in 0..len {
+                            let mut sum = 0.0;
+                            let mut cnt = 0;
+                            for &c in &node_cores {
+                                if let Some(r) = h.cores.get(c)
+                                    && let Some(v) = r.iter().nth(step)
+                                {
+                                    sum += v;
+                                    cnt += 1;
+                                }
+                            }
+                            if cnt > 0 {
+                                node_ring.push(sum / cnt as f32);
+                            }
+                        }
+                    }
+                    let g = graph::area(ui, cell, &node_ring, 100.0, CPU, false);
+                    graph::hover(ui, &g, &title, &[("Utilization", &node_ring)], pct_text);
+                    if g.double_clicked() {
+                        self.graph_summary = !self.graph_summary;
+                    }
+                    self.attach_graph_menu(ui, &g, &summary_text, true);
+                    if (i + 1) % cols == 0 {
+                        ui.end_row();
+                    }
+                }
+            });
+        } else if is_logical && !h.cores.is_empty() {
             let n = h.cores.len();
             let cols = (n as f32).sqrt().ceil() as usize;
             let rows = n.div_ceil(cols);
@@ -604,10 +1014,18 @@ impl State {
                         Some(k) => {
                             let g = graph::with_kernel(ui, cell, ring, k, CPU, false);
                             graph::hover(ui, &g, &title, &[("Utilization", ring), ("Kernel", k)], pct_text);
+                            if g.double_clicked() {
+                                self.graph_summary = !self.graph_summary;
+                            }
+                            self.attach_graph_menu(ui, &g, &summary_text, true);
                         }
                         None => {
                             let g = graph::area(ui, cell, ring, 100.0, CPU, false);
                             graph::hover(ui, &g, &title, &[("Utilization", ring)], pct_text);
+                            if g.double_clicked() {
+                                self.graph_summary = !self.graph_summary;
+                            }
+                            self.attach_graph_menu(ui, &g, &summary_text, true);
                         }
                     }
                     if (i + 1) % cols == 0 {
@@ -616,38 +1034,22 @@ impl State {
                 }
             });
         } else if self.kernel {
-            let g = graph::with_kernel(ui, big, &h.cpu, &h.cpu_kernel, CPU, true);
+            let g =
+                graph::with_kernel_labeled(ui, big, &h.cpu, &h.cpu_kernel, CPU, true, Some(graph::AxisLabels::PERCENT));
             graph::hover(ui, &g, "", &[("Utilization", &h.cpu), ("Kernel", &h.cpu_kernel)], pct_text);
+            if g.double_clicked() {
+                self.graph_summary = !self.graph_summary;
+            }
+            self.attach_graph_menu(ui, &g, &summary_text, true);
         } else {
-            let g = graph::area(ui, big, &h.cpu, 100.0, CPU, true);
+            let g = graph::area_labeled(ui, big, &h.cpu, 100.0, CPU, true, Some(graph::AxisLabels::PERCENT));
             graph::hover(ui, &g, "", &[("Utilization", &h.cpu)], pct_text);
+            if g.double_clicked() {
+                self.graph_summary = !self.graph_summary;
+            }
+            self.attach_graph_menu(ui, &g, &summary_text, true);
         }
-        let c = &self.cpu;
-        stats(
-            ui,
-            &[
-                ("Utilization", format!("{:.0}%", s.cpu_pct)),
-                ("Speed", s.cpu_mhz.map_or("-".into(), |m| format!("{:.2} GHz", m / 1000.0))),
-                ("Processes", s.process_count.to_string()),
-                ("Threads", s.thread_count.to_string()),
-                ("Handles", s.handle_count.to_string()),
-                ("Up time", format_uptime(s.uptime)),
-                (
-                    "Base speed",
-                    if c.base_mhz == 0 { "-".into() } else { format!("{:.2} GHz", c.base_mhz as f32 / 1000.0) },
-                ),
-                ("Sockets", if c.sockets == 0 { "-".into() } else { c.sockets.to_string() }),
-                ("Cores", if c.cores == 0 { "-".into() } else { c.cores.to_string() }),
-                ("Logical processors", c.logical.max(s.cores_pct.len() as u32).to_string()),
-                (
-                    "Virtualization",
-                    c.virtualization.map_or("-".into(), |v| if v { "Enabled".into() } else { "Disabled".into() }),
-                ),
-                ("L1 cache", cache(c.l1_bytes)),
-                ("L2 cache", cache(c.l2_bytes)),
-                ("L3 cache", cache(c.l3_bytes)),
-            ],
-        )
+        stats(ui, &items)
     }
 }
 
@@ -689,13 +1091,23 @@ fn composition(ui: &mut Ui, snap: &Snapshot) {
     let w = rect.width();
     let used_r = egui::Rect::from_min_size(rect.min, Vec2::new(w * used, rect.height()));
     p.rect_filled(used_r, 0.0, MEM.gamma_multiply(0.6));
+    if let Some(comp) = s.mem_compressed {
+        let comp_w = (w * (comp as f32 / total)).min(used_r.width());
+        let comp_r = egui::Rect::from_min_size(
+            egui::Pos2::new(used_r.right() - comp_w, used_r.top()),
+            Vec2::new(comp_w, rect.height()),
+        );
+        p.rect_filled(comp_r, 0.0, MEM.gamma_multiply(0.85));
+    }
     let cached_w = (w * cached).min(w - used_r.width());
     let cached_r = egui::Rect::from_min_size(used_r.right_top(), Vec2::new(cached_w, rect.height()));
     p.rect_filled(cached_r, 0.0, MEM.gamma_multiply(0.25));
     p.rect_stroke(rect, 0.0, egui::Stroke::new(1.0, MEM), egui::StrokeKind::Inside);
+    let comp_str = s.mem_compressed.map_or(String::new(), |c| format!(" (Compressed {})", format_bytes(c as f64)));
     resp.on_hover_text(format!(
-        "In use {} · Cached {} · Free {}",
+        "In use {}{} · Cached {} · Free {}",
         format_bytes(s.mem_used as f64),
+        comp_str,
         opt_bytes(s.mem_cached),
         format_bytes(s.mem_total.saturating_sub(s.mem_used).saturating_sub(s.mem_cached.unwrap_or(0)) as f64)
     ));
@@ -705,17 +1117,37 @@ fn composition(ui: &mut Ui, snap: &Snapshot) {
 pub fn stats(ui: &mut Ui, items: &[(&str, String)]) -> String {
     ui.add_space(8.0);
     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-    egui::Grid::new("stats").min_col_width(120.0).spacing([24.0, 6.0]).show(ui, |ui| {
-        for (i, (k, v)) in items.iter().enumerate() {
-            ui.vertical(|ui| {
+
+    if items.is_empty() {
+        return String::new();
+    }
+
+    let primary_count = if items.len() > 2 { 2 } else { 1 };
+    let (primary, params) = items.split_at(primary_count.min(items.len()));
+
+    ui.horizontal(|ui| {
+        ui.vertical(|ui| {
+            ui.set_min_width(140.0);
+            for (k, v) in primary {
                 ui.label(RichText::new(*k).small().weak());
-                ui.label(RichText::new(v).size(17.0));
-            });
-            if (i + 1) % 4 == 0 {
-                ui.end_row();
+                ui.label(RichText::new(v).size(24.0));
+                ui.add_space(4.0);
             }
-        }
+        });
+        ui.add_space(16.0);
+        egui::Grid::new("stats_params").min_col_width(120.0).spacing([20.0, 6.0]).show(ui, |ui| {
+            for (i, (k, v)) in params.iter().enumerate() {
+                ui.vertical(|ui| {
+                    ui.label(RichText::new(*k).small().weak());
+                    ui.label(RichText::new(v).size(15.0));
+                });
+                if (i + 1) % 2 == 0 {
+                    ui.end_row();
+                }
+            }
+        });
     });
+
     items.iter().map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>().join("\n")
 }
 

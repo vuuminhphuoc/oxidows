@@ -7,7 +7,9 @@ use windows_sys::Win32::System::Registry::{
     HKEY_LOCAL_MACHINE, RRF_NOEXPAND, RRF_RT_REG_DWORD, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ, RegGetValueW,
 };
 use windows_sys::Win32::System::SystemInformation::{GetLogicalProcessorInformationEx, RelationAll};
-use windows_sys::Win32::System::Threading::{GetActiveProcessorCount, IsProcessorFeaturePresent};
+use windows_sys::Win32::System::Threading::{
+    GetActiveProcessorCount, GetNumaHighestNodeNumber, GetNumaNodeProcessorMaskEx, IsProcessorFeaturePresent,
+};
 
 const CPU_KEY: &str = r"HARDWARE\DESCRIPTION\System\CentralProcessor\0";
 const PF_VIRT_FIRMWARE_ENABLED: u32 = 21;
@@ -114,6 +116,24 @@ pub fn cpu_info() -> CpuInfo {
             off += size;
         }
     }
+    let mut numa_nodes = vec![0u32; info.logical as usize];
+    let mut highest = 0u32;
+    // SAFETY: out-pointer for highest node.
+    if unsafe { GetNumaHighestNodeNumber(&mut highest) } != 0 && highest > 0 {
+        for node in 0..=highest as u16 {
+            let mut mask: windows_sys::Win32::System::SystemInformation::GROUP_AFFINITY = unsafe { std::mem::zeroed() };
+            // SAFETY: out-pointer for node processor mask.
+            if unsafe { GetNumaNodeProcessorMaskEx(node, &mut mask) } != 0 {
+                let m = mask.Mask;
+                for bit in 0..64 {
+                    if (m & (1 << bit)) != 0 && bit < numa_nodes.len() {
+                        numa_nodes[bit] = node as u32;
+                    }
+                }
+            }
+        }
+    }
+    info.numa_nodes = numa_nodes;
     info
 }
 
