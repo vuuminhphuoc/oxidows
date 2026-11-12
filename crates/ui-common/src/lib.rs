@@ -23,7 +23,7 @@ pub use renderer::{Renderer, choose as choose_renderer, relaunch_with};
 pub use sort::{
     SORT_HEADER_HEIGHT, SORT_HEADER_TOTAL_HEIGHT, SortBy, cmp_text, sort_header, sort_header_drag, sort_header_total,
 };
-pub use theme::{Palette, Theme, apply_with_transparency, setup, setup_with_transparency};
+pub use theme::{Palette, Theme, setup, setup_with_transparency};
 pub use update::{AppInfo, Updater};
 pub use widgets::*;
 

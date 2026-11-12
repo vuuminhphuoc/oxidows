@@ -97,7 +97,6 @@ pub fn tab_bar(app: &mut App, ui: &mut Ui) {
                 let r = ui
                     .add(
                         egui::Button::selectable(active, Icon::FolderFilled.with(short))
-                            .frame_when_inactive(false)
                             .fill(egui::Color32::TRANSPARENT)
                             .min_size(egui::vec2(120.0, 28.0))
                             .sense(Sense::click_and_drag()),

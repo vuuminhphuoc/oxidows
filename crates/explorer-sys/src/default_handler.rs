@@ -140,6 +140,7 @@ pub fn handler_in(root: &str) -> crate::FolderHandler {
         crate::FolderHandler::Other(if command.is_empty() { verb } else { crate::command_exe(&command) })
     }
 }
+
 /// Where a Win+E command another program had goes while ours is in, to be put back on undo.
 const PREVIOUS: &str = "oxidows.Previous";
 
@@ -223,7 +224,7 @@ pub fn unset_default_in(root: &str) -> io::Result<()> {
         delete_if_empty(&format!(r"{root}\{class}"));
     }
     // The parents only if nothing else of the user's is in them.
-    for k in [format!(r"{win_e}\shell"), win_e, format!(r"{root}\CLSID")] {
+    for k in [format!(r"{win_e}\shell"), win_e] {
         delete_if_empty(&k);
     }
     Ok(())

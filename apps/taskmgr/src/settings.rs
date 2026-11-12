@@ -242,7 +242,7 @@ impl Settings {
     }
 
     pub fn apply_theme(&self, ctx: &egui::Context) {
-        ui_common::apply_with_transparency(ctx, self.theme, self.transparency && ui_common::mica::is_supported());
+        ui_common::theme::apply(ctx, self.theme);
     }
 
     pub fn apply_on_top(&self, ctx: &egui::Context) {

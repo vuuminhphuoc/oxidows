@@ -129,13 +129,6 @@ pub fn setup_with_transparency(ctx: &egui::Context, theme: Theme, transparent: b
     apply(ctx, theme);
 }
 
-/// Switches theme and updates transparency styles.
-pub fn apply_with_transparency(ctx: &egui::Context, theme: Theme, transparent: bool) {
-    ctx.set_style_of(egui::Theme::Light, style_with_transparency(false, transparent));
-    ctx.set_style_of(egui::Theme::Dark, style_with_transparency(true, transparent));
-    apply(ctx, theme);
-}
-
 /// Switches theme; egui keeps the window's title bar in step.
 pub fn apply(ctx: &egui::Context, theme: Theme) {
     ctx.set_theme(match theme {

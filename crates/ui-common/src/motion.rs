@@ -1,17 +1,21 @@
 //! Motion and animations for Windows 11 parity: hover fades, sliding selection indicator,
 //! and navigation pane collapse/expand.
 
+#[cfg(windows)]
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
 const CACHE_TTL: Duration = Duration::from_secs(3);
 
+#[cfg(windows)]
 #[derive(Clone, Copy)]
 struct CacheState {
     value: bool,
     last_checked: Instant,
 }
 
+#[cfg(windows)]
 static SYSTEM_ANIM_CACHE: Mutex<Option<CacheState>> = Mutex::new(None);
 
 /// Checks if a cache entry recorded at `cached_at` is still within `ttl` of `now`.
@@ -142,7 +146,8 @@ pub fn slide_indicator(ctx: &egui::Context, id: egui::Id, target_y: f32, target_
     }
 
     let elapsed = (now - state.start_time).max(0.0) as f32;
-    if elapsed < 0.15 {
+    let moving = (state.from_y - state.target_y).abs() > 0.5 || (state.from_h - state.target_h).abs() > 0.5;
+    if elapsed < 0.15 && moving {
         ctx.request_repaint();
         let t = (elapsed / 0.15).min(1.0);
         (lerp(state.from_y, state.target_y, ease_out(t)), lerp(state.from_h, state.target_h, ease_out(t)))
