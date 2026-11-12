@@ -293,10 +293,10 @@ pub fn last_bios_ms() -> Option<u32> {
     None
 }
 
-pub fn taskmgr_replacement() -> Option<String> {
+pub fn taskmgr_replacement(_root: &str) -> Option<String> {
     None
 }
-pub fn set_taskmgr_replacement(_exe: Option<&str>) -> io::Result<()> {
+pub fn set_taskmgr_replacement(_exe: Option<&str>, _root: &str) -> io::Result<()> {
     unsupported()
 }
 pub fn single_instance(_wait_for_previous: bool) -> bool {

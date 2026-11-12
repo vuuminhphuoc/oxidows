@@ -313,8 +313,6 @@ pub fn set_startup_enabled(item: &StartupItem, enabled: bool) -> io::Result<()> 
 
 use windows_sys::Win32::System::Registry::{REG_SZ, RegDeleteKeyExW, RegDeleteValueW};
 
-const IFEO_ROOT: &str = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options";
-const IFEO: &str = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\taskmgr.exe";
 /// Where the `Debugger` this user had before (e.g. Process Explorer's) waits to be put back.
 const PREVIOUS: &str = "oxidows.PreviousDebugger";
 /// The `Debugger` we wrote, to know it is ours on undo even if the exe was renamed.
@@ -325,8 +323,9 @@ fn value(k: &Key, name: &str) -> Option<String> {
 }
 
 /// The `Debugger` value Windows runs instead of taskmgr.exe, if any.
-pub fn taskmgr_replacement() -> Option<String> {
-    let k = open(HKEY_LOCAL_MACHINE, IFEO, KEY_READ)?;
+/// `root` is the Image File Execution Options key (a scratch key in tests).
+pub fn taskmgr_replacement(root: &str) -> Option<String> {
+    let k = open(HKEY_LOCAL_MACHINE, &format!(r"{root}\taskmgr.exe"), KEY_READ)?;
     value(&k, "Debugger").filter(|v| !v.trim().is_empty())
 }
 
@@ -352,8 +351,10 @@ use crate::is_oxidows_debugger as is_oxidows;
 /// A replacement that was there before (Process Explorer, System Informer) is kept aside and
 /// put back on undo; with none, undo removes the value, and the key too when nothing else is
 /// in it, leaving the registry as Windows had it.
-pub fn set_taskmgr_replacement(exe: Option<&str>) -> io::Result<()> {
-    let path = wide(IFEO);
+///
+/// `root` is the Image File Execution Options key (a scratch key in tests).
+pub fn set_taskmgr_replacement(exe: Option<&str>, root: &str) -> io::Result<()> {
+    let path = wide(&format!(r"{root}\taskmgr.exe"));
     let mut k = null_mut();
     // SAFETY: NUL-terminated path, out-pointer to a local.
     let r = unsafe {
@@ -406,7 +407,7 @@ pub fn set_taskmgr_replacement(exe: Option<&str>) -> io::Result<()> {
     if exe.is_none() && values(&k).is_empty() && subkeys(&k).is_empty() {
         drop(k);
         let name = wide("taskmgr.exe");
-        if let Some(parent) = open(HKEY_LOCAL_MACHINE, IFEO_ROOT, KEY_READ) {
+        if let Some(parent) = open(HKEY_LOCAL_MACHINE, root, KEY_READ) {
             // SAFETY: valid parent key and NUL-terminated subkey name. Best effort.
             unsafe { RegDeleteKeyExW(parent.0, name.as_ptr(), KEY_WOW64_64KEY, 0) };
         }
