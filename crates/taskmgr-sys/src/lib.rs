@@ -351,9 +351,18 @@ pub fn classify_debugger(debugger: Option<&str>, me: &str) -> TaskmgrHandler {
     }
 }
 
+/// The registry key (under HKLM) whose `taskmgr.exe` subkey holds the `Debugger` value.
+pub const IFEO_ROOT: &str = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options";
+
 pub fn taskmgr_handler() -> TaskmgrHandler {
+    taskmgr_handler_in(IFEO_ROOT)
+}
+
+/// [`taskmgr_handler`] reading `root` instead of the real IFEO key, so tests never touch the
+/// machine's own Task Manager setting.
+pub fn taskmgr_handler_in(root: &str) -> TaskmgrHandler {
     let me = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
-    classify_debugger(imp::taskmgr_replacement().as_deref(), &me)
+    classify_debugger(imp::taskmgr_replacement(root).as_deref(), &me)
 }
 
 /// True when Ctrl+Shift+Esc / taskmgr.exe currently opens this exe.
@@ -364,11 +373,16 @@ pub fn replaces_taskmgr() -> bool {
 /// Makes Ctrl+Shift+Esc open this exe (`true`) or gives it back (`false`): to Windows Task
 /// Manager, or to the tool that had it before. Needs admin; see [`set_replaces_taskmgr_as_admin`].
 pub fn set_replaces_taskmgr(on: bool) -> io::Result<()> {
+    set_replaces_taskmgr_in(on, IFEO_ROOT)
+}
+
+/// [`set_replaces_taskmgr`] writing under `root` instead of the real IFEO key (for tests).
+pub fn set_replaces_taskmgr_in(on: bool, root: &str) -> io::Result<()> {
     if on {
         let me = std::env::current_exe()?;
-        imp::set_taskmgr_replacement(Some(&me.display().to_string()))
+        imp::set_taskmgr_replacement(Some(&me.display().to_string()), root)
     } else {
-        imp::set_taskmgr_replacement(None)
+        imp::set_taskmgr_replacement(None, root)
     }
 }
 

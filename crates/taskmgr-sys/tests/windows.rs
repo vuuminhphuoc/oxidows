@@ -4,22 +4,39 @@
 
 use std::process::Command;
 
-use taskmgr_sys::{TaskmgrHandler, set_replaces_taskmgr, set_replaces_taskmgr_as_admin, taskmgr_handler};
+use taskmgr_sys::{TaskmgrHandler, set_replaces_taskmgr_in, taskmgr_handler_in};
 
-const KEY: &str = r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\taskmgr.exe";
+/// The test works on a scratch copy of the IFEO key, so it never touches this machine's real
+/// Ctrl+Shift+Esc setting (a developer's PC may have its own takeover or Process Explorer).
+fn scratch_root() -> String {
+    format!(r"SOFTWARE\oxidows-test\{}\IFEO", std::process::id())
+}
 
 fn reg(args: &[&str]) -> (bool, String) {
     let out = Command::new("reg").args(args).output().unwrap();
     (out.status.success(), String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// Leaves the runner's Ctrl+Shift+Esc alone even when an assert fails half-way.
-struct Cleanup;
+/// Removes the scratch key before and after the test, even when an assert fails half-way.
+struct Cleanup(String);
+impl Cleanup {
+    fn new() -> Self {
+        let c = Cleanup(format!(r"SOFTWARE\oxidows-test\{}", std::process::id()));
+        c.clear();
+        c
+    }
+    fn clear(&self) {
+        let _ = reg(&["delete", &format!(r"HKLM\{}", self.0), "/f"]);
+        // The shared parent only if no other run's key is in it; RegDeleteKeyW fails on a non-empty key.
+        use windows_sys::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RegDeleteKeyW};
+        let parent: Vec<u16> = r"SOFTWARE\oxidows-test".encode_utf16().chain(Some(0)).collect();
+        // SAFETY: NUL-terminated key path under a predefined root.
+        unsafe { RegDeleteKeyW(HKEY_LOCAL_MACHINE, parent.as_ptr()) };
+    }
+}
 impl Drop for Cleanup {
     fn drop(&mut self) {
-        for v in ["Debugger", "oxidows.PreviousDebugger", "oxidows.Debugger"] {
-            let _ = reg(&["delete", KEY, "/v", v, "/f"]);
-        }
+        self.clear();
     }
 }
 
@@ -29,37 +46,40 @@ fn taskmgr_takeover_and_undo() {
         eprintln!("skipped: needs an elevated runner");
         return;
     }
-    assert_eq!(taskmgr_handler(), TaskmgrHandler::BuiltIn, "the runner should start with Windows Task Manager");
-    let _c = Cleanup;
+    let root = scratch_root();
+    let _c = Cleanup::new();
+    let key = format!(r"HKLM\{root}\taskmgr.exe");
+    let key = key.as_str();
+    assert_eq!(taskmgr_handler_in(&root), TaskmgrHandler::BuiltIn, "the scratch key starts empty");
 
     // Clean start: take over, undo, and nothing of ours is left.
-    set_replaces_taskmgr_as_admin(true).unwrap();
-    assert_eq!(taskmgr_handler(), TaskmgrHandler::ThisExe);
-    let (_, q) = reg(&["query", KEY, "/v", "Debugger"]);
+    set_replaces_taskmgr_in(true, &root).unwrap();
+    assert_eq!(taskmgr_handler_in(&root), TaskmgrHandler::ThisExe);
+    let (_, q) = reg(&["query", key, "/v", "Debugger"]);
     let me = std::env::current_exe().unwrap().display().to_string();
     assert!(q.to_lowercase().contains(&me.to_lowercase()), "{q}");
-    set_replaces_taskmgr_as_admin(false).unwrap();
-    assert_eq!(taskmgr_handler(), TaskmgrHandler::BuiltIn);
-    let (exists, q) = reg(&["query", KEY]);
-    assert!(!exists || !q.contains("Debugger") && !q.contains("oxidows"), "left behind: {q}");
+    set_replaces_taskmgr_in(false, &root).unwrap();
+    assert_eq!(taskmgr_handler_in(&root), TaskmgrHandler::BuiltIn);
+    let (exists, q) = reg(&["query", key]);
+    assert!(!exists || !q.contains("Debugger") && !q.contains("oxidows."), "left behind: {q}");
 
     // Another tool had it (Process Explorer): undo gives it back to that tool.
     let procexp = r"C:\Sys\procexp64.exe";
-    assert!(reg(&["add", KEY, "/v", "Debugger", "/d", &format!("\"{procexp}\""), "/f"]).0);
-    assert_eq!(taskmgr_handler(), TaskmgrHandler::OtherTool(procexp.into()));
-    set_replaces_taskmgr(true).unwrap();
-    assert_eq!(taskmgr_handler(), TaskmgrHandler::ThisExe);
-    set_replaces_taskmgr(false).unwrap();
-    assert_eq!(taskmgr_handler(), TaskmgrHandler::OtherTool(procexp.into()));
-    let (_, q) = reg(&["query", KEY]);
-    assert!(!q.contains("oxidows"), "left behind: {q}");
+    assert!(reg(&["add", key, "/v", "Debugger", "/d", &format!("\"{procexp}\""), "/f"]).0);
+    assert_eq!(taskmgr_handler_in(&root), TaskmgrHandler::OtherTool(procexp.into()));
+    set_replaces_taskmgr_in(true, &root).unwrap();
+    assert_eq!(taskmgr_handler_in(&root), TaskmgrHandler::ThisExe);
+    set_replaces_taskmgr_in(false, &root).unwrap();
+    assert_eq!(taskmgr_handler_in(&root), TaskmgrHandler::OtherTool(procexp.into()));
+    let (_, q) = reg(&["query", key]);
+    assert!(!q.contains("oxidows."), "left behind: {q}");
 
     // Undo never takes out a tool that came after us.
-    assert!(reg(&["delete", KEY, "/v", "Debugger", "/f"]).0);
-    set_replaces_taskmgr(true).unwrap();
-    assert!(reg(&["add", KEY, "/v", "Debugger", "/d", &format!("\"{procexp}\""), "/f"]).0);
-    set_replaces_taskmgr(false).unwrap();
-    assert_eq!(taskmgr_handler(), TaskmgrHandler::OtherTool(procexp.into()));
+    assert!(reg(&["delete", key, "/v", "Debugger", "/f"]).0);
+    set_replaces_taskmgr_in(true, &root).unwrap();
+    assert!(reg(&["add", key, "/v", "Debugger", "/d", &format!("\"{procexp}\""), "/f"]).0);
+    set_replaces_taskmgr_in(false, &root).unwrap();
+    assert_eq!(taskmgr_handler_in(&root), TaskmgrHandler::OtherTool(procexp.into()));
 }
 
 /// Settings > Run as administrator > Always, without a prompt: the task is accepted by Task
