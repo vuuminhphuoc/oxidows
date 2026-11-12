@@ -189,6 +189,8 @@ pub struct Settings {
     pub show_libraries: bool,
     /// Search: Always search file names and contents in non-indexed locations.
     pub search_contents: bool,
+    /// Transparency effects: Mica backdrop.
+    pub transparency: bool,
 }
 /// Nearby sharing (LocalSend protocol).
 #[derive(Clone, PartialEq, Debug, Default)]
@@ -241,6 +243,7 @@ impl Default for Settings {
             nav_expand_to_open: false,
             show_libraries: true,
             search_contents: false,
+            transparency: false,
         }
     }
 }
@@ -391,6 +394,7 @@ impl Settings {
                 "share_quick_save" => s.share.quick_save = flag(v),
                 "hotspot_pass" => s.share.hotspot_pass = v.to_string(),
                 "theme" => s.theme = Theme::parse(v),
+                "transparency" => s.transparency = flag(v),
                 "favorite" if !v.is_empty() => s.favorites.push(PathBuf::from(v)),
                 "favorites" if !v.is_empty() => {
                     for p in v.split(',') {
@@ -504,6 +508,7 @@ impl Settings {
             self.show_libraries,
             self.search_contents,
         ));
+        out.push_str(&format!("transparency={}\n", self.transparency));
         for p in &self.favorites {
             out.push_str(&format!("favorite={}\n", p.display()));
         }
@@ -758,6 +763,7 @@ mod tests {
             pane: Pane::Details,
             pane_width: 280.0,
             theme: Theme::Light,
+            transparency: true,
             folders: BTreeMap::new(),
             pinned: Vec::new(),
             show_protected: false,

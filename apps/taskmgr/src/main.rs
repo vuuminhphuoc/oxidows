@@ -258,6 +258,7 @@ struct App {
     updater: ui_common::Updater,
     /// Whether Ctrl+Shift+Esc opens this exe; None where that cannot be changed.
     default_app: ui_common::default_app::DefaultApp,
+    hwnd: isize,
     tray: bool,
     /// Navigation pane expanded (icons and labels) or collapsed to icons.
     nav_open: bool,
@@ -399,7 +400,8 @@ impl App {
             }
         }
         let settings = settings::Settings::load();
-        ui_common::setup(&cc.egui_ctx, settings.theme);
+        let transparent = settings.transparency && ui_common::mica::is_supported();
+        ui_common::setup_with_transparency(&cc.egui_ctx, settings.theme, transparent);
         if settings.always_on_top {
             settings.apply_on_top(&cc.egui_ctx);
         }
@@ -467,6 +469,7 @@ impl App {
                 version: env!("CARGO_PKG_VERSION"),
             }),
             default_app: ui_common::default_app::DefaultApp::new(cfg!(windows).then(taskmgr_handler)),
+            hwnd: 0,
             tray: false,
             nav_open: true,
             status,
@@ -682,7 +685,8 @@ impl App {
     fn nav(&mut self, ui: &mut egui::Ui) {
         // Narrow windows get the icon strip, as Task Manager does.
         let open = self.nav_open && ui.ctx().content_rect().width() >= 720.0;
-        let width = if open { 200.0 } else { 52.0 };
+        let target_width = if open { 200.0 } else { 52.0 };
+        let width = ui_common::motion::animate_value(ui.ctx(), egui::Id::new("taskmgr_nav_width"), target_width, 0.15);
         egui::Panel::left("nav").resizable(false).exact_size(width).show(ui, |ui| {
             ui.add_space(4.0);
             let menu = ui_common::Icon::Menu;
@@ -692,10 +696,16 @@ impl App {
                 self.nav_open = !open;
             }
             ui.add_space(4.0);
+            let show_labels = open && width > 100.0;
+            let mut selected_rect = None;
             let mut item = |ui: &mut egui::Ui, t: Tab| {
-                let label = if open { t.label() } else { "" };
-                let r = ui_common::nav_item(ui, Some(t.icon()), label, self.tab == t);
-                let r = if open { r } else { r.on_hover_text(t.label()) };
+                let label = if show_labels { t.label() } else { "" };
+                let is_sel = self.tab == t;
+                let r = ui_common::nav_item_opt(ui, Some(t.icon()), label, is_sel, egui::Sense::click(), false);
+                if is_sel {
+                    selected_rect = Some(r.rect);
+                }
+                let r = if show_labels { r } else { r.on_hover_text(t.label()) };
                 if r.clicked() {
                     self.tab = t;
                 }
@@ -707,6 +717,18 @@ impl App {
                 ui.add_space(6.0);
                 item(ui, Tab::Settings);
             });
+            if let Some(rect) = selected_rect {
+                let p = ui_common::Palette::of(ui);
+                let (bar_y, bar_h) = ui_common::motion::slide_indicator(
+                    ui.ctx(),
+                    egui::Id::new("taskmgr_nav_indicator"),
+                    rect.center().y,
+                    16.0,
+                );
+                let bar_rect =
+                    egui::Rect::from_center_size(egui::pos2(rect.left() + 1.5, bar_y), egui::vec2(3.0, bar_h));
+                ui.painter().rect_filled(bar_rect, 1.5, p.accent);
+            }
         });
     }
 
@@ -893,13 +915,20 @@ impl eframe::App for App {
         if ui.ctx().cumulative_pass_nr() >= 2 && FOCUS_ON_START.swap(false, Ordering::Relaxed) {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
         }
-        if !self.tray
+        if self.hwnd == 0
             && let Ok(h) = raw_window_handle::HasWindowHandle::window_handle(frame)
+            && let raw_window_handle::RawWindowHandle::Win32(w) = h.as_raw()
         {
-            self.tray = true; // one attempt
-            if let raw_window_handle::RawWindowHandle::Win32(w) = h.as_raw() {
-                taskmgr_sys::tray::install(w.hwnd.get());
+            self.hwnd = w.hwnd.get();
+            if !self.tray {
+                self.tray = true;
+                taskmgr_sys::tray::install(self.hwnd);
             }
+            ui_common::mica::apply(
+                self.hwnd,
+                self.settings.transparency && ui_common::mica::is_supported(),
+                ui.visuals().dark_mode,
+            );
         }
         if self.status.used.swap(false, Ordering::Relaxed) && self.settings.minimize_on_use {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Minimized(true));
@@ -1178,18 +1207,24 @@ fn take_handed_args() {
 }
 
 fn run(renderer: ui_common::Renderer) -> eframe::Result {
+    let settings = settings::Settings::load();
+    let transparent = settings.transparency && ui_common::mica::is_supported();
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("Task Manager (oxidows)")
+        .with_icon(Arc::new(
+            eframe::icon_data::from_png_bytes(ui_common::app_icon::TASKMGR_PNG).expect("embedded icon is a PNG"),
+        ))
+        .with_inner_size([1000.0, 660.0])
+        .with_min_inner_size([560.0, 360.0]);
+    if transparent {
+        viewport = viewport.with_transparent(true);
+    }
     let mut options = eframe::NativeOptions {
         renderer: match renderer {
             ui_common::Renderer::Glow => eframe::Renderer::Glow,
             ui_common::Renderer::Wgpu => eframe::Renderer::Wgpu,
         },
-        viewport: egui::ViewportBuilder::default()
-            .with_title("Task Manager (oxidows)")
-            .with_icon(Arc::new(
-                eframe::icon_data::from_png_bytes(ui_common::app_icon::TASKMGR_PNG).expect("embedded icon is a PNG"),
-            ))
-            .with_inner_size([1000.0, 660.0])
-            .with_min_inner_size([560.0, 360.0]),
+        viewport,
         ..Default::default()
     };
     // OXI_PRESENT=immediate|mailbox|fifo|novsync: tuning knob for software rendering (WARP).

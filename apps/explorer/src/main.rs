@@ -369,7 +369,8 @@ struct App {
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, start: PathBuf, settings: settings::Settings) -> Self {
-        ui_common::setup(&cc.egui_ctx, settings.theme);
+        let transparent = settings.transparency && ui_common::mica::is_supported();
+        ui_common::setup_with_transparency(&cc.egui_ctx, settings.theme, transparent);
         let (tx, rx) = channel();
         let mut app = Self {
             ctx: cc.egui_ctx.clone(),
@@ -2535,13 +2536,17 @@ impl App {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        if self.hwnd == 0 {
-            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-            if let Ok(h) = frame.window_handle()
-                && let RawWindowHandle::Win32(w) = h.as_raw()
-            {
-                self.hwnd = w.hwnd.get();
-            }
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        if self.hwnd == 0
+            && let Ok(h) = frame.window_handle()
+            && let RawWindowHandle::Win32(w) = h.as_raw()
+        {
+            self.hwnd = w.hwnd.get();
+            ui_common::mica::apply(
+                self.hwnd,
+                self.persist.settings.transparency && ui_common::mica::is_supported(),
+                ui.visuals().dark_mode,
+            );
         }
         self.drain();
         self.sync_cut_state();
@@ -3102,6 +3107,13 @@ impl App {
                                 &mut self.persist.settings.never_thumbnails,
                                 "Always show icons, never thumbnails",
                             );
+                            if ui_common::mica::is_supported() {
+                                ui.checkbox(
+                                    &mut self.persist.settings.transparency,
+                                    "Show transparency effects in the app",
+                                )
+                                .on_hover_text("Takes effect after restart");
+                            }
                             if ui.checkbox(&mut self.item_checkboxes, "Use check boxes to select items").changed() {
                                 self.persist.settings.item_checkboxes = self.item_checkboxes;
                             }
@@ -3183,19 +3195,24 @@ fn run(renderer: ui_common::Renderer) -> eframe::Result {
             settings::StartPage::ThisPc => PathBuf::from(explorer_core::THIS_PC),
             settings::StartPage::Home => PathBuf::from(explorer_core::HOME),
         });
+    let transparent = settings.transparency && ui_common::mica::is_supported();
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("File Explorer (oxidows)")
+        .with_icon(Arc::new(
+            eframe::icon_data::from_png_bytes(ui_common::app_icon::EXPLORER_PNG).expect("embedded icon is a PNG"),
+        ))
+        .with_inner_size(settings.size)
+        .with_maximized(settings.maximized)
+        .with_min_inner_size([520.0, 320.0]);
+    if transparent {
+        viewport = viewport.with_transparent(true);
+    }
     let options = eframe::NativeOptions {
         renderer: match renderer {
             ui_common::Renderer::Glow => eframe::Renderer::Glow,
             ui_common::Renderer::Wgpu => eframe::Renderer::Wgpu,
         },
-        viewport: egui::ViewportBuilder::default()
-            .with_title("File Explorer (oxidows)")
-            .with_icon(Arc::new(
-                eframe::icon_data::from_png_bytes(ui_common::app_icon::EXPLORER_PNG).expect("embedded icon is a PNG"),
-            ))
-            .with_inner_size(settings.size)
-            .with_maximized(settings.maximized)
-            .with_min_inner_size([520.0, 320.0]),
+        viewport,
         ..Default::default()
     };
     eframe::run_native("oxi-explorer", options, Box::new(|cc| Ok(Box::new(App::new(cc, start, settings)))))

@@ -37,6 +37,10 @@ as the feature.
 | Arrow pointer over column headers (no hand) | done | |
 | Title-bar search box, per-page command bar, no status bar | done | |
 | Keyboard focus ring on table rows | won't | No shared table wrapper in ui-common (pages construct TableBuilder directly) |
+| Faded hover backgrounds (command buttons, menus, view toggles, sort headers, nav items, performance list items) | 🟡 | `ui_common::motion::fade` over 0.10 s; lerp(none, hover, fade); disabled when `OXI_NO_ANIM` set; pure logic unit-tested, live window GUI not yet verified |
+| Navigation indicator sliding animation | 🟡 | Slides blue bar y position and height to newly selected item over 0.15 s (ease-out); live window GUI not yet verified |
+| Navigation pane collapse/expand width animation | 🟡 | Hamburger button animates width between 52 px and 200 px over 0.15 s; live window GUI not yet verified |
+| Mica backdrop and Transparency effects setting | 🟡 | Optional "Transparency effects" in Settings, Windows 11 build 22621+, semi-transparent panels ~0.75 alpha, applied on restart; live window GUI not yet verified |
 
 ## Processes
 

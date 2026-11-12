@@ -13,10 +13,22 @@ pub const TOOL_SIZE: Vec2 = vec2(32.0, 28.0);
 /// selected row a fill plus a short accent bar at the left edge. Takes the full width; with
 /// `label` empty only the icon shows (a collapsed navigation pane) and `tooltip` names it.
 pub fn nav_item(ui: &mut Ui, icon: Option<Icon>, label: &str, selected: bool) -> Response {
-    nav_item_sense(ui, icon, label, selected, Sense::click())
+    nav_item_opt(ui, icon, label, selected, Sense::click(), true)
 }
 
 pub fn nav_item_sense(ui: &mut Ui, icon: Option<Icon>, label: &str, selected: bool, sense: Sense) -> Response {
+    nav_item_opt(ui, icon, label, selected, sense, true)
+}
+
+/// A navigation row with control over whether the static selection indicator bar is drawn.
+pub fn nav_item_opt(
+    ui: &mut Ui,
+    icon: Option<Icon>,
+    label: &str,
+    selected: bool,
+    sense: Sense,
+    draw_indicator: bool,
+) -> Response {
     let width = ui.available_width().max(NAV_HEIGHT);
     let (rect, resp) = ui.allocate_exact_size(vec2(width, NAV_HEIGHT), sense);
     if !ui.is_rect_visible(rect) {
@@ -24,18 +36,17 @@ pub fn nav_item_sense(ui: &mut Ui, icon: Option<Icon>, label: &str, selected: bo
     }
     let p = Palette::of(ui);
     let painter = ui.painter();
-    let fill = if selected {
-        Some(p.hover)
-    } else if resp.hovered() {
-        Some(theme::mix(p.chrome, p.hover, 0.6))
-    } else {
-        None
-    };
     let body = rect.shrink2(vec2(0.0, 1.0));
-    if let Some(f) = fill {
-        painter.rect_filled(body, 4.0, f);
-    }
     if selected {
+        painter.rect_filled(body, 4.0, p.hover);
+    } else {
+        let t = crate::motion::fade(ui.ctx(), resp.id, resp.hovered());
+        if t > 0.0 {
+            let hover_color = theme::mix(p.chrome, p.hover, 0.6);
+            painter.rect_filled(body, 4.0, crate::motion::lerp_color(egui::Color32::TRANSPARENT, hover_color, t));
+        }
+    }
+    if selected && draw_indicator {
         let bar = egui::Rect::from_center_size(egui::pos2(body.left() + 1.5, body.center().y), vec2(3.0, 16.0));
         painter.rect_filled(bar, 1.5, p.accent);
     }
@@ -79,8 +90,24 @@ pub const COMMAND_HEIGHT: f32 = 32.0;
 /// until hovered, a darker fill while pressed. `tooltip` names it and its shortcut.
 pub fn command_button(ui: &mut Ui, icon: Icon, label: &str, enabled: bool, tooltip: &str) -> Response {
     let text = icon.with_sized(label, 16.0, theme::BODY);
-    let b = Button::new(text).frame_when_inactive(false).min_size(vec2(COMMAND_HEIGHT, COMMAND_HEIGHT));
+    let bg_slot = ui.painter().add(egui::Shape::Noop);
+    let b = Button::new(text)
+        .frame_when_inactive(false)
+        .fill(egui::Color32::TRANSPARENT)
+        .min_size(vec2(COMMAND_HEIGHT, COMMAND_HEIGHT));
     let r = ui.add_enabled(enabled, b);
+    if ui.is_rect_visible(r.rect) {
+        let p = Palette::of(ui);
+        if r.is_pointer_button_down_on() {
+            ui.painter().set(bg_slot, egui::epaint::RectShape::filled(r.rect, 4.0, theme::mix(p.hover, p.text, 0.08)));
+        } else {
+            let t = crate::motion::fade(ui.ctx(), r.id, r.hovered() && enabled);
+            if t > 0.0 {
+                let fill = crate::motion::lerp_color(egui::Color32::TRANSPARENT, p.hover, t);
+                ui.painter().set(bg_slot, egui::epaint::RectShape::filled(r.rect, 4.0, fill));
+            }
+        }
+    }
     if tooltip.is_empty() { r } else { r.on_hover_text(tooltip) }
 }
 
@@ -104,10 +131,24 @@ pub fn command_menu<R>(
         job.append(label, 8.0, fmt(egui::FontId::proportional(theme::BODY)));
     }
     job.append(&Icon::ChevronDown.glyph(), 8.0, fmt(Icon::font(10.0)));
+    let bg_slot = ui.painter().add(egui::Shape::Noop);
     let b = Button::new(egui::WidgetText::LayoutJob(job.into()))
         .frame_when_inactive(false)
+        .fill(egui::Color32::TRANSPARENT)
         .min_size(vec2(COMMAND_HEIGHT, COMMAND_HEIGHT));
     let (r, _) = egui::containers::menu::MenuButton::from_button(b).ui(ui, add);
+    if ui.is_rect_visible(r.rect) {
+        let p = Palette::of(ui);
+        if r.is_pointer_button_down_on() {
+            ui.painter().set(bg_slot, egui::epaint::RectShape::filled(r.rect, 4.0, theme::mix(p.hover, p.text, 0.08)));
+        } else {
+            let t = crate::motion::fade(ui.ctx(), r.id, r.hovered());
+            if t > 0.0 {
+                let fill = crate::motion::lerp_color(egui::Color32::TRANSPARENT, p.hover, t);
+                ui.painter().set(bg_slot, egui::epaint::RectShape::filled(r.rect, 4.0, fill));
+            }
+        }
+    }
     if tooltip.is_empty() { r } else { r.on_hover_text(tooltip) }
 }
 
@@ -122,17 +163,15 @@ pub fn view_toggle(ui: &mut Ui, icon: crate::ViewIcon, label: &str, on: bool, to
     let h = ui.spacing().interact_size.y.max(24.0);
     let (rect, resp) = ui.allocate_exact_size(vec2(16.0 + 16.0 + text_w, h), Sense::click());
     if ui.is_rect_visible(rect) {
-        let fill = if resp.is_pointer_button_down_on() {
-            Some(theme::mix(p.hover, p.text, 0.08))
-        } else if resp.hovered() {
-            Some(p.hover)
+        let t = crate::motion::fade(ui.ctx(), resp.id, resp.hovered());
+        if resp.is_pointer_button_down_on() {
+            ui.painter().rect_filled(rect, 4.0, theme::mix(p.hover, p.text, 0.08));
         } else if on {
-            Some(theme::mix(p.chrome, p.hover, 0.7))
-        } else {
-            None
-        };
-        if let Some(f) = fill {
-            ui.painter().rect_filled(rect, 4.0, f);
+            let base = theme::mix(p.chrome, p.hover, 0.7);
+            let fill = if t > 0.0 { crate::motion::lerp_color(base, p.hover, t) } else { base };
+            ui.painter().rect_filled(rect, 4.0, fill);
+        } else if t > 0.0 {
+            ui.painter().rect_filled(rect, 4.0, crate::motion::lerp_color(egui::Color32::TRANSPARENT, p.hover, t));
         }
         let icon_rect =
             egui::Rect::from_min_size(egui::pos2(rect.left() + 8.0, rect.center().y - 8.0), vec2(16.0, 16.0));
@@ -165,5 +204,5 @@ pub fn secondary(ui: &mut Ui, text: impl Into<String>) -> Response {
 /// The frame of an app's main content (lists, tables, pages): the lighter surface Windows 11
 /// draws content on, beside the navigation and toolbars on the window background.
 pub fn content_frame(style: &egui::Style) -> egui::Frame {
-    egui::Frame::central_panel(style).fill(Palette::get(style.visuals.dark_mode).content)
+    egui::Frame::central_panel(style).fill(style.visuals.extreme_bg_color)
 }

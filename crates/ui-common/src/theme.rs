@@ -65,8 +65,12 @@ pub struct Palette {
 
 impl Palette {
     pub fn get(dark: bool) -> Self {
+        Self::get_with_transparency(dark, false)
+    }
+
+    pub fn get_with_transparency(dark: bool, transparent: bool) -> Self {
         let accent = accent_color();
-        if dark {
+        let mut p = if dark {
             Palette {
                 accent: lighten(accent, 0.45),
                 on_accent: Color32::from_rgb(0, 0, 0),
@@ -98,7 +102,12 @@ impl Palette {
                 success: Color32::from_rgb(0x0f, 0x7b, 0x0f),
                 warning: Color32::from_rgb(0x9d, 0x5d, 0x00),
             }
+        };
+        if transparent {
+            p.content = crate::mica::apply_transparency(p.content, true);
+            p.chrome = crate::mica::apply_transparency(p.chrome, true);
         }
+        p
     }
 
     /// The palette of the theme `ui` is drawn in.
@@ -109,9 +118,21 @@ impl Palette {
 
 /// Fonts, both themes' styles and the chosen theme: the one call an app makes at start-up.
 pub fn setup(ctx: &egui::Context, theme: Theme) {
+    setup_with_transparency(ctx, theme, false);
+}
+
+/// Like [`setup`], but configures semi-transparent panel fills for Mica when `transparent` is true.
+pub fn setup_with_transparency(ctx: &egui::Context, theme: Theme, transparent: bool) {
     fonts::install(ctx);
-    ctx.set_style_of(egui::Theme::Light, style(false));
-    ctx.set_style_of(egui::Theme::Dark, style(true));
+    ctx.set_style_of(egui::Theme::Light, style_with_transparency(false, transparent));
+    ctx.set_style_of(egui::Theme::Dark, style_with_transparency(true, transparent));
+    apply(ctx, theme);
+}
+
+/// Switches theme and updates transparency styles.
+pub fn apply_with_transparency(ctx: &egui::Context, theme: Theme, transparent: bool) {
+    ctx.set_style_of(egui::Theme::Light, style_with_transparency(false, transparent));
+    ctx.set_style_of(egui::Theme::Dark, style_with_transparency(true, transparent));
     apply(ctx, theme);
 }
 
@@ -125,7 +146,11 @@ pub fn apply(ctx: &egui::Context, theme: Theme) {
 }
 
 pub fn style(dark: bool) -> Style {
-    let p = Palette::get(dark);
+    style_with_transparency(dark, false)
+}
+
+pub fn style_with_transparency(dark: bool, transparent: bool) -> Style {
+    let p = Palette::get_with_transparency(dark, transparent);
     let mut s = Style { visuals: visuals(&p, dark), ..Style::default() };
     let semibold = FontFamily::Name(fonts::SEMIBOLD.into());
     s.text_styles = [
