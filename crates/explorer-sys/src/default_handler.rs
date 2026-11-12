@@ -13,8 +13,8 @@ use windows_sys::Win32::System::Registry::{
 };
 
 const VERB: &str = "oxi-explorer";
-/// The CLSID behind Win+E ("This PC" / Home, opened in a new window).
-const WIN_E: &str = r"Software\Classes\CLSID\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}";
+pub const DEFAULT_ROOT: &str = r"Software\Classes";
+const WIN_E_SUBKEY: &str = r"CLSID\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}";
 
 fn w(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
@@ -110,7 +110,12 @@ fn delete_if_empty(key: &str) {
 
 /// Whether folders currently open in oxi-explorer.
 pub fn is_default() -> bool {
-    get(r"Software\Classes\Directory\shell", None).as_deref() == Some(VERB)
+    is_default_in(DEFAULT_ROOT)
+}
+
+/// Internal variant that scopes registry checks to `root`.
+pub fn is_default_in(root: &str) -> bool {
+    get(&format!(r"{root}\Directory\shell"), None).as_deref() == Some(VERB)
 }
 
 /// Verbs Windows itself uses as a folder's default; a user value of one of these is no takeover.
@@ -119,8 +124,13 @@ const BUILT_IN_VERBS: [&str; 5] = ["", "none", "open", "explore", "opennewwindow
 /// Who opens folders now: `Ours(exe)` when our verb is the default (with the exe it starts),
 /// `Other(command)` when some other program's verb is, `BuiltIn` otherwise.
 pub fn handler() -> crate::FolderHandler {
-    let shell = r"Software\Classes\Directory\shell";
-    let Some(verb) = get(shell, None) else { return crate::FolderHandler::BuiltIn };
+    handler_in(DEFAULT_ROOT)
+}
+
+/// Internal variant that checks folder handler under `root`.
+pub fn handler_in(root: &str) -> crate::FolderHandler {
+    let shell = format!(r"{root}\Directory\shell");
+    let Some(verb) = get(&shell, None) else { return crate::FolderHandler::BuiltIn };
     let command = get(&format!(r"{shell}\{verb}\command"), None).unwrap_or_default();
     if verb == VERB {
         crate::FolderHandler::Ours(crate::command_exe(&command))
@@ -141,9 +151,15 @@ fn is_ours(command: &str, exe: Option<&str>) -> bool {
 }
 
 pub fn set_default(exe: &Path) -> io::Result<()> {
+    set_default_in(exe, DEFAULT_ROOT)
+}
+
+/// Internal variant that writes association keys under `root`.
+pub fn set_default_in(exe: &Path, root: &str) -> io::Result<()> {
     let open = format!("\"{}\" \"%1\"", exe.display());
+    let win_e = format!(r"{root}\{WIN_E_SUBKEY}");
     for class in ["Directory", "Drive"] {
-        let shell = format!(r"Software\Classes\{class}\shell");
+        let shell = format!(r"{root}\{class}\shell");
         // Keep whatever default verb this user had, to put it back on undo.
         if let Some(old) = get(&shell, None).filter(|v| v != VERB) {
             set(&format!(r"{shell}\{VERB}"), Some("PreviousDefault"), &old)?;
@@ -152,7 +168,7 @@ pub fn set_default(exe: &Path) -> io::Result<()> {
         set(&format!(r"{shell}\{VERB}\command"), None, &open)?;
         set(&shell, None, VERB)?;
     }
-    let cmd = format!(r"{WIN_E}\shell\opennewwindow\command");
+    let cmd = format!(r"{win_e}\shell\opennewwindow\command");
     // Another file manager's Win+E (Files, Directory Opus) comes back on undo.
     let me = exe.display().to_string();
     if let Some(old) = get(&cmd, None).filter(|v| !is_ours(v, Some(&me))) {
@@ -164,10 +180,16 @@ pub fn set_default(exe: &Path) -> io::Result<()> {
 }
 
 pub fn unset_default() -> io::Result<()> {
+    unset_default_in(DEFAULT_ROOT)
+}
+
+/// Internal variant that cleans up association keys under `root`.
+pub fn unset_default_in(root: &str) -> io::Result<()> {
+    let win_e = format!(r"{root}\{WIN_E_SUBKEY}");
     // The exe we set, to know our Win+E command below even if the exe was renamed.
-    let our_exe = get(r"Software\Classes\Directory\shell\oxi-explorer\command", None).map(|c| crate::command_exe(&c));
+    let our_exe = get(&format!(r"{root}\Directory\shell\oxi-explorer\command"), None).map(|c| crate::command_exe(&c));
     for class in ["Directory", "Drive"] {
-        let shell = format!(r"Software\Classes\{class}\shell");
+        let shell = format!(r"{root}\{class}\shell");
         let previous = get(&format!(r"{shell}\{VERB}"), Some("PreviousDefault")).filter(|v| !v.is_empty());
         delete_tree(&format!(r"{shell}\{VERB}"))?;
         if get(&shell, None).as_deref() == Some(VERB) {
@@ -183,7 +205,7 @@ pub fn unset_default() -> io::Result<()> {
             }
         }
     }
-    let cmd = format!(r"{WIN_E}\shell\opennewwindow\command");
+    let cmd = format!(r"{win_e}\shell\opennewwindow\command");
     let ours = get(&cmd, None).is_some_and(|v| is_ours(&v, our_exe.as_deref()));
     match get(&cmd, Some(PREVIOUS)).filter(|v| !v.is_empty()) {
         Some(old) if ours => {
@@ -194,15 +216,15 @@ pub fn unset_default() -> io::Result<()> {
         }
         // Someone else's since: leave it.
         Some(_) => {}
-        None if ours => delete_tree(&format!(r"{WIN_E}\shell\opennewwindow"))?,
+        None if ours => delete_tree(&format!(r"{win_e}\shell\opennewwindow"))?,
         None => {}
     }
     for class in ["Directory", "Drive"] {
-        delete_if_empty(&format!(r"Software\Classes\{class}\shell"));
-        delete_if_empty(&format!(r"Software\Classes\{class}"));
+        delete_if_empty(&format!(r"{root}\{class}\shell"));
+        delete_if_empty(&format!(r"{root}\{class}"));
     }
     // The parents only if nothing else of the user's is in them.
-    for k in [format!(r"{WIN_E}\shell"), WIN_E.to_string()] {
+    for k in [format!(r"{win_e}\shell"), win_e] {
         delete_if_empty(&k);
     }
     Ok(())

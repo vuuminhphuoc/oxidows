@@ -93,13 +93,27 @@ pub fn tab_bar(app: &mut App, ui: &mut Ui) {
                 } else {
                     title.clone()
                 };
+                let bg_slot = ui.painter().add(egui::Shape::Noop);
                 let r = ui
                     .add(
                         egui::Button::selectable(active, Icon::FolderFilled.with(short))
+                            .fill(egui::Color32::TRANSPARENT)
                             .min_size(egui::vec2(120.0, 28.0))
                             .sense(Sense::click_and_drag()),
                     )
                     .on_hover_text(&title);
+                if ui.is_rect_visible(r.rect) {
+                    let p = ui_common::Palette::of(ui);
+                    if active {
+                        ui.painter().set(bg_slot, egui::epaint::RectShape::filled(r.rect, 4.0, p.hover));
+                    } else {
+                        let t = ui_common::motion::fade(ui.ctx(), r.id, r.hovered());
+                        if t > 0.0 {
+                            let fill = ui_common::motion::lerp_color(egui::Color32::TRANSPARENT, p.hover, t);
+                            ui.painter().set(bg_slot, egui::epaint::RectShape::filled(r.rect, 4.0, fill));
+                        }
+                    }
+                }
                 rects.push(r.rect);
                 if app.drag.is_some() && !active && r.contains_pointer() {
                     app.frame_hover = Some((crate::dnd::HoverTarget::Tab(i), None));

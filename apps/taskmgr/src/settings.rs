@@ -70,6 +70,7 @@ pub struct Settings {
     /// Minimize after "Switch to".
     pub minimize_on_use: bool,
     pub theme: Theme,
+    pub transparency: bool,
     pub run_as_admin: AdminMode,
     pub group_by_type: bool,
     /// Memory, Disk and Network on the Processes page as percentages.
@@ -113,6 +114,7 @@ impl Default for Settings {
             hide_when_minimized: false,
             minimize_on_use: false,
             theme: Theme::System,
+            transparency: false,
             run_as_admin: AdminMode::Off,
             group_by_type: true,
             values_pct: false,
@@ -179,6 +181,7 @@ impl Settings {
                 "sort_details" => s.sort_details = v.to_string(),
                 "sort_services" => s.sort_services = v.to_string(),
                 "theme" => s.theme = Theme::parse(v),
+                "transparency" => s.transparency = v == "true",
                 "cpu_logical" => s.cpu_logical = v == "true",
                 "cpu_kernel" => s.cpu_kernel = v == "true",
                 "run_as_admin" => s.run_as_admin = AdminMode::parse(v),
@@ -209,6 +212,7 @@ impl Settings {
             self.confirm_efficiency_mode,
         );
         t.push_str(&format!("cpu_logical={}\ncpu_kernel={}\n", self.cpu_logical, self.cpu_kernel));
+        t.push_str(&format!("transparency={}\n", self.transparency));
         for (k, v) in [
             ("sort_processes", &self.sort_processes),
             ("sort_history", &self.sort_history),
@@ -288,6 +292,12 @@ pub fn show(
             }
         });
         ui.end_row();
+        if ui_common::mica::is_supported() {
+            ui.label("Transparency effects");
+            ui.checkbox(&mut s.transparency, "Show transparency effects in the app")
+                .on_hover_text("Takes effect after restart");
+            ui.end_row();
+        }
 
         ui.label("Window management");
         ui.vertical(|ui| {
@@ -422,6 +432,7 @@ mod tests {
             hide_when_minimized: true,
             minimize_on_use: true,
             theme: Theme::Dark,
+            transparency: true,
             run_as_admin: AdminMode::Task,
             group_by_type: false,
             values_pct: true,

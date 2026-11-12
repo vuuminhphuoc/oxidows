@@ -241,15 +241,14 @@ impl State {
                 })
                 .response
                 .interact(egui::Sense::click());
-            let fill = if sel {
-                Some(pal.selected)
-            } else if r.hovered() {
-                Some(pal.hover)
+            if sel {
+                ui.painter().set(bg, egui::Shape::rect_filled(r.rect, 4.0, pal.selected));
             } else {
-                None
-            };
-            if let Some(f) = fill {
-                ui.painter().set(bg, egui::Shape::rect_filled(r.rect, 4.0, f));
+                let t = ui_common::motion::fade(ui.ctx(), r.id, r.hovered());
+                if t > 0.0 {
+                    let fill = ui_common::motion::lerp_color(egui::Color32::TRANSPARENT, pal.hover, t);
+                    ui.painter().set(bg, egui::Shape::rect_filled(r.rect, 4.0, fill));
+                }
             }
             let r = r.on_hover_text(format!("{}\n{}", e.title, e.value));
             if r.clicked() {

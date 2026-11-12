@@ -48,7 +48,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Back / Forward right-click lists recent locations | ✅ | |
 | Address bar fits long paths (hidden segments in the “…” menu) | ✅ | |
 | Sort chevron above the column title, plain header text | ✅ | shared with Task Manager |
-| Tabs in the title bar, Mica background | ❌ | own row under the system title bar |
+| Tabs in the title bar, Mica background | 🟡 | Own row under the system title bar; optional Mica backdrop ("Transparency effects" in Folder Options > View, Windows 11 build 22621+, semi-transparent panels ~0.75 alpha, applied on restart; live window GUI not yet verified) |
 | Windows 11 context menu with “Show more options” | ✅ | top icon row (Cut, Copy, Rename, Share, Delete), common verbs; Shift+right-click opens classic shell menu |
 | Rename in place (not in a dialog) | ✅ | the name turns into a text box in every view; Enter or clicking elsewhere keeps it, Esc cancels; a bad name shows a tip and stays editable |
 | Header filter drop-downs, More… column chooser | 🟡 | Pure filter bucket logic (Name, Date modified, Type, Size) unit-tested in explorer-core; hover chevron and filter popups, checked indicator on filtered columns, More… chooser dialog with the 15 properties explorer-core knows (not every Windows property), sorting by properties; popup opening and filtering seen on Linux, not on Windows |
@@ -63,6 +63,8 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Item tip when the pointer rests on a file (type, size, date modified) or folder (date created) | ✅ | |
 | No zebra stripes in lists; hover fill shows | ✅ | |
 | Drag hover opens a folder in the tree / switches tab | 🟡 | 600 ms hover timer unit-tested; expands collapsed tree folders and switches tabs; drag-hover open folder in list/grid skipped (navigating drops drag); live GUI not yet verified |
+| Faded hover backgrounds (command buttons, menus, view toggles, sort headers, navigation pane, tab hover) | 🟡 | `ui_common::motion::fade` over 0.10 s; lerp(none, hover, fade); disabled when `OXI_NO_ANIM` set; pure logic unit-tested, live window GUI not yet verified |
+| Navigation pane indicator sliding animation | ➖ | Skipped (Windows 11 Explorer sidebar has no animated blue bar indicator) |
 
 ## Views and columns
 

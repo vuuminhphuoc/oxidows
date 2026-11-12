@@ -534,52 +534,80 @@ fn libraries_list_their_folders() {
 #[test]
 fn default_file_manager_round_trip() {
     let _g = guard("default_file_manager_round_trip");
-    let reg = |key: &str| {
-        let out = std::process::Command::new("reg").args(["query", key, "/ve"]).output().unwrap();
-        String::from_utf8_lossy(&out.stdout).into_owned()
-    };
-    assert!(!explorer_sys::is_default_file_manager());
-    let exe = Path::new(r"C:\Tools\oxi-explorer.exe");
-    explorer_sys::set_default_file_manager(Some(exe)).unwrap();
-    assert!(explorer_sys::is_default_file_manager());
-    let cmd = reg(r"HKCU\Software\Classes\Directory\shell\oxi-explorer\command");
-    assert!(cmd.contains(r#""C:\Tools\oxi-explorer.exe" "%1""#), "{cmd}");
-    let win_e = reg(r"HKCU\Software\Classes\CLSID\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}\shell\opennewwindow\command");
-    assert!(win_e.contains("oxi-explorer.exe"), "{win_e}");
-    explorer_sys::set_default_file_manager(None).unwrap();
-    assert!(!explorer_sys::is_default_file_manager());
-    assert!(!reg(r"HKCU\Software\Classes\Directory\shell\oxi-explorer\command").contains("oxi-explorer.exe"));
-    assert!(
-        !reg(r"HKCU\Software\Classes\CLSID\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}\shell\opennewwindow\command")
-            .contains("oxi")
-    );
-    assert_eq!(explorer_sys::folder_handler(), explorer_sys::FolderHandler::BuiltIn);
-    // Nothing we made is left: not even the empty keys.
-    let exists = |key: &str| std::process::Command::new("reg").args(["query", key]).output().unwrap().status.success();
-    assert!(!exists(r"HKCU\Software\Classes\CLSID\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}"));
-    assert!(!exists(r"HKCU\Software\Classes\Directory\shell\oxi-explorer"));
+    let pid = std::process::id();
+    let scratch_base = format!(r"Software\oxidows-test\{pid}");
+    let root = format!(r"{scratch_base}\Classes");
 
+    // Clean up before starting in case a previous run crashed or was interrupted.
+    let delete_scratch = || {
+        let _ = std::process::Command::new("reg").args(["delete", &format!(r"HKCU\{scratch_base}"), "/f"]).output();
+        // Delete parent Software\oxidows-test only if empty; RegDeleteKeyW fails harmlessly if subkeys remain.
+        use windows_sys::Win32::System::Registry::{HKEY, HKEY_CURRENT_USER, RegDeleteKeyW};
+        let wide_parent: Vec<u16> = r"Software\oxidows-test".encode_utf16().chain(Some(0)).collect();
+        unsafe { RegDeleteKeyW(HKEY_CURRENT_USER as HKEY, wide_parent.as_ptr()) };
+    };
+    delete_scratch();
+
+    struct ScratchCleanup<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for ScratchCleanup<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let _cleanup = ScratchCleanup(delete_scratch);
+
+    let reg_data = |subkey: &str| {
+        let key = format!(r"HKCU\{root}\{subkey}");
+        let out = std::process::Command::new("reg").args(["query", &key, "/ve"]).output().unwrap();
+        let s = String::from_utf8_lossy(&out.stdout);
+        s.lines().find_map(|line| line.split_once("REG_SZ").map(|(_, val)| val.trim().to_string())).unwrap_or_default()
+    };
+    let exists = |subkey: &str| {
+        let key = format!(r"HKCU\{root}\{subkey}");
+        std::process::Command::new("reg").args(["query", &key]).output().unwrap().status.success()
+    };
+
+    assert!(!explorer_sys::is_default_file_manager_in(&root));
+    let exe = Path::new(r"C:\Tools\oxi-explorer.exe");
+    explorer_sys::set_default_file_manager_in(Some(exe), &root).unwrap();
+    assert!(explorer_sys::is_default_file_manager_in(&root));
+    let cmd = reg_data(r"Directory\shell\oxi-explorer\command");
+    assert!(cmd.contains(r#""C:\Tools\oxi-explorer.exe" "%1""#), "{cmd}");
+    let win_e_sub = r"CLSID\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}\shell\opennewwindow\command";
+    let win_e = reg_data(win_e_sub);
+    assert!(win_e.contains("oxi-explorer.exe"), "{win_e}");
+    explorer_sys::set_default_file_manager_in(None, &root).unwrap();
+    assert!(!explorer_sys::is_default_file_manager_in(&root));
+    assert!(!reg_data(r"Directory\shell\oxi-explorer\command").to_lowercase().contains("oxi"));
+    assert!(!reg_data(win_e_sub).to_lowercase().contains("oxi"));
+    assert_eq!(explorer_sys::folder_handler_in(&root), explorer_sys::FolderHandler::BuiltIn);
+    // Nothing we made is left: not even the empty keys.
+    assert!(!exists(r"CLSID\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}"));
+    assert!(!exists(r"Directory\shell\oxi-explorer"));
     // A renamed exe is still ours, and the state says which copy.
     let renamed = Path::new(r"C:\Tools\files-rs.exe");
-    explorer_sys::set_default_file_manager(Some(renamed)).unwrap();
-    assert_eq!(explorer_sys::folder_handler(), explorer_sys::FolderHandler::Ours(renamed.display().to_string()));
-    explorer_sys::set_default_file_manager(None).unwrap();
-    assert!(!exists(r"HKCU\Software\Classes\CLSID\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}"));
+    explorer_sys::set_default_file_manager_in(Some(renamed), &root).unwrap();
+    assert_eq!(
+        explorer_sys::folder_handler_in(&root),
+        explorer_sys::FolderHandler::Ours(renamed.display().to_string())
+    );
+    explorer_sys::set_default_file_manager_in(None, &root).unwrap();
+    assert!(!exists(r"CLSID\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}"));
 
     // Another file manager's Win+E comes back on undo.
-    let win_e = r"HKCU\Software\Classes\CLSID\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}\shell\opennewwindow\command";
+    let win_e_full = format!(r"HKCU\{root}\{win_e_sub}");
     let add = std::process::Command::new("reg")
-        .args(["add", win_e, "/ve", "/d", r"C:\Files\files.exe", "/f"])
+        .args(["add", &win_e_full, "/ve", "/d", r"C:\Files\files.exe", "/f"])
         .output()
         .unwrap();
     assert!(add.status.success());
-    explorer_sys::set_default_file_manager(Some(exe)).unwrap();
-    assert!(reg(win_e).contains("oxi-explorer.exe"));
-    explorer_sys::set_default_file_manager(None).unwrap();
-    let back = reg(win_e);
-    assert!(back.contains(r"C:\Files\files.exe") && !back.contains("oxi"), "{back}");
+    explorer_sys::set_default_file_manager_in(Some(exe), &root).unwrap();
+    assert!(reg_data(win_e_sub).contains("oxi-explorer.exe"));
+    explorer_sys::set_default_file_manager_in(None, &root).unwrap();
+    let back = reg_data(win_e_sub);
+    assert!(back.contains(r"C:\Files\files.exe") && !back.to_lowercase().contains("oxi"), "{back}");
     let _ = std::process::Command::new("reg")
-        .args(["delete", r"HKCU\Software\Classes\CLSID\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}", "/f"])
+        .args(["delete", &format!(r"HKCU\{root}\CLSID\{{52205fd8-5dfb-447d-801a-d0b52f2e83e1}}"), "/f"])
         .output();
 }
 

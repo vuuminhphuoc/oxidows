@@ -265,6 +265,42 @@ pub fn set_default_file_manager(exe: Option<&Path>) -> io::Result<()> {
     }
 }
 
+/// Internal variant of [`folder_handler`] that reads from `root` instead of `Software\Classes`.
+pub fn folder_handler_in(root: &str) -> FolderHandler {
+    #[cfg(windows)]
+    return default_handler::handler_in(root);
+    #[cfg(not(windows))]
+    {
+        let _ = root;
+        FolderHandler::BuiltIn
+    }
+}
+
+/// Internal variant of [`is_default_file_manager`] that reads from `root`.
+pub fn is_default_file_manager_in(root: &str) -> bool {
+    #[cfg(windows)]
+    return default_handler::is_default_in(root);
+    #[cfg(not(windows))]
+    {
+        let _ = root;
+        false
+    }
+}
+
+/// Internal variant of [`set_default_file_manager`] that writes to `root`.
+pub fn set_default_file_manager_in(exe: Option<&Path>, root: &str) -> io::Result<()> {
+    #[cfg(windows)]
+    return match exe {
+        Some(exe) => default_handler::set_default_in(exe, root),
+        None => default_handler::unset_default_in(root),
+    };
+    #[cfg(not(windows))]
+    {
+        let _ = (exe, root);
+        Err(io::Error::new(io::ErrorKind::Unsupported, "only on Windows"))
+    }
+}
+
 /// Lists a shell namespace folder (`::shell\\…`, or This PC / Network by CLSID): phones,
 /// Control Panel, media servers. Items are named by full path (`::shell\\…` or a real path)
 /// with their display name as `label`. Off Windows: `Unsupported`.

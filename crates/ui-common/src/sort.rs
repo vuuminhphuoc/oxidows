@@ -95,8 +95,10 @@ pub fn sort_header_total_opts(
     }
     let p = Palette::of(ui);
     let painter = ui.painter_at(rect);
-    if resp.hovered() {
-        painter.rect_filled(rect, 2.0, theme::mix(p.content, p.hover, 0.7));
+    let t = crate::motion::fade(ui.ctx(), resp.id, resp.hovered());
+    if t > 0.0 {
+        let hover_color = theme::mix(p.content, p.hover, 0.7);
+        painter.rect_filled(rect, 2.0, crate::motion::lerp_color(egui::Color32::TRANSPARENT, hover_color, t));
     }
     let color = if sorted.is_some() { p.text } else { p.text_secondary };
     if let Some(descending) = sorted {
