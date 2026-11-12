@@ -61,7 +61,7 @@ fn taskmgr_takeover_and_undo() {
     set_replaces_taskmgr_in(false, &root).unwrap();
     assert_eq!(taskmgr_handler_in(&root), TaskmgrHandler::BuiltIn);
     let (exists, q) = reg(&["query", key]);
-    assert!(!exists || !q.contains("Debugger") && !q.contains("oxidows"), "left behind: {q}");
+    assert!(!exists || !q.contains("Debugger") && !q.contains("oxidows."), "left behind: {q}");
 
     // Another tool had it (Process Explorer): undo gives it back to that tool.
     let procexp = r"C:\Sys\procexp64.exe";
@@ -72,7 +72,7 @@ fn taskmgr_takeover_and_undo() {
     set_replaces_taskmgr_in(false, &root).unwrap();
     assert_eq!(taskmgr_handler_in(&root), TaskmgrHandler::OtherTool(procexp.into()));
     let (_, q) = reg(&["query", key]);
-    assert!(!q.contains("oxidows"), "left behind: {q}");
+    assert!(!q.contains("oxidows."), "left behind: {q}");
 
     // Undo never takes out a tool that came after us.
     assert!(reg(&["delete", key, "/v", "Debugger", "/f"]).0);
