@@ -1045,18 +1045,26 @@ pub fn drive_label(d: &explorer_sys::Drive, letters_before: bool) -> String {
 
 /// The used-space bar and "X free of Y" under a drive or phone in the navigation pane.
 fn space_bar(ui: &mut Ui, total: u64, free: u64) {
-    let used = 1.0 - free as f32 / total as f32;
-    ui.horizontal(|ui| {
-        ui.add_space(24.0);
-        ui.add(egui::ProgressBar::new(used).desired_width(ui.available_width() - 4.0).desired_height(5.0).fill({
-            let p = ui_common::Palette::of(ui);
-            if used > 0.9 { p.danger } else { p.accent }
-        }));
-    });
-    ui.horizontal(|ui| {
-        ui.add_space(24.0);
-        ui.label(RichText::new(format!("{} free of {}", format_bytes(free), format_bytes(total))).small().weak());
-    });
+    let used = (1.0 - free as f32 / total as f32).clamp(0.0, 1.0);
+    // Drawn directly: a ProgressBar or label in `ui.horizontal` is at least a button tall, which left a
+    // gap above and below the bar.
+    let p = ui_common::Palette::of(ui);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 5.0), Sense::hover());
+    let track = egui::Rect::from_min_max(
+        egui::pos2(rect.left() + 24.0, rect.top()),
+        egui::pos2(rect.right() - 4.0, rect.bottom()),
+    );
+    ui.painter().rect_filled(track, 2.5, ui.visuals().extreme_bg_color);
+    let fill = egui::Rect::from_min_size(track.min, egui::vec2(track.width() * used, track.height()));
+    ui.painter().rect_filled(fill, 2.5, if used > 0.9 { p.danger } else { p.accent });
+    let font = egui::TextStyle::Small.resolve(ui.style());
+    let galley = ui.painter().layout_no_wrap(
+        format!("{} free of {}", format_bytes(free), format_bytes(total)),
+        font,
+        ui.visuals().weak_text_color(),
+    );
+    let (text_rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), galley.size().y), Sense::hover());
+    ui.painter().galley(egui::pos2(text_rect.left() + 24.0, text_rect.top()), galley, ui.visuals().weak_text_color());
 }
 
 pub fn sidebar(app: &mut App, ui: &mut Ui) {
@@ -1300,7 +1308,13 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
 pub fn status_bar(app: &mut App, ui: &mut Ui) {
     egui::Panel::bottom("status").show(ui, |ui| {
         ui.horizontal(|ui| {
-            let n = app.view.len();
+            // Home lists Quick access and Favorites, not a folder: count what is on the page.
+            let n = if app.cur.as_os_str() == explorer_core::HOME {
+                let (tiles, favorites) = home_data(app, ui);
+                tiles.len() + favorites.len()
+            } else {
+                app.view.len()
+            };
             ui.label(if n == 1 { "1 item".to_string() } else { format!("{n} items") });
             if !app.selected.is_empty() {
                 ui.separator();
@@ -2383,12 +2397,13 @@ fn home_data_stale(ctx: &egui::Context) {
     ctx.data_mut(|d| d.remove::<HomeCache>(egui::Id::new("oxi_home_cache")));
 }
 
-/// A label inside `rect`, left-aligned and vertically centred (`Ui::put` centres it).
+/// A label inside `rect`, left-aligned and vertically centred (`Ui::put` centres it). It does not move
+/// `ui`'s cursor: a scope would, and a short label would then pull the next Quick access tile back over
+/// this one.
 fn put_left(ui: &mut Ui, rect: egui::Rect, label: egui::Label) {
     let layout = egui::Layout::left_to_right(egui::Align::Center);
-    ui.scope_builder(egui::UiBuilder::new().max_rect(rect).layout(layout), |ui| {
-        ui.add(label);
-    });
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(layout));
+    child.add(label);
 }
 
 fn section_header(ui: &mut Ui, title: &str, count: usize, collapsed: bool) -> egui::Response {
