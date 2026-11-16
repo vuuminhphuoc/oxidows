@@ -19,6 +19,7 @@ Add-Type -Namespace Dnd -Name Win -MemberDefinition @'
 [DllImport("user32.dll")] public static extern void mouse_event(uint f, int dx, int dy, uint d, UIntPtr e);
 [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr h, int x, int y, int w, int hh, bool repaint);
 [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+[DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
 '@
 [Dnd.Win]::SetProcessDPIAware() | Out-Null
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
@@ -95,7 +96,12 @@ $end = (Get-Date).AddSeconds(30)
 while ((Get-Date) -lt $end -and $p.MainWindowHandle -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 100; $p.Refresh() }
 if ($p.MainWindowHandle -eq [IntPtr]::Zero) { throw "no window" }
 Start-Sleep -Seconds 3
+# The runner's own terminal windows are in the way: minimise everything, then keep ours on top.
+(New-Object -ComObject Shell.Application).MinimizeAll()
+Start-Sleep -Seconds 1
 [Dnd.Win]::MoveWindow($p.MainWindowHandle, 0, 0, $ow, $oh, $true) | Out-Null
+# HWND_TOPMOST = -1; SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW
+[Dnd.Win]::SetWindowPos($p.MainWindowHandle, [IntPtr]::new(-1), 0, 0, 0, 0, 0x0043) | Out-Null
 [Dnd.Win]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
 Start-Sleep -Seconds 2
 

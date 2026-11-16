@@ -230,8 +230,7 @@ pub struct DropHost {
 
 impl DropHost {
     /// Registers `hwnd`; `wake` is called (on the UI thread) whenever a drag moves over it, so the
-    /// app repaints and can say which folder it is over. winit's own drop handler must be off
-    /// for this window (`with_drag_and_drop(false)`).
+    /// app repaints and can say which folder it is over. winit's own drop handler is replaced.
     pub fn register(hwnd: isize, wake: impl Fn() + 'static) -> io::Result<DropHost> {
         let hwnd = HWND(hwnd as *mut std::ffi::c_void);
         crate::windows::com_init();
@@ -250,6 +249,8 @@ impl DropHost {
             dropped: false,
         }));
         let target: IDropTarget = Target { st: st.clone() }.into();
+        // winit registered its own handler when it made the window; only one can be registered.
+        let _ = unsafe { RevokeDragDrop(hwnd) };
         unsafe { RegisterDragDrop(hwnd, &target) }.map_err(to_io)?;
         Ok(DropHost { st })
     }
