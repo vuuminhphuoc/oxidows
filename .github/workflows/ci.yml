@@ -42,6 +42,17 @@ jobs:
           name: smoke-results
           path: smoke/
           if-no-files-found: ignore
+      # Real mouse input on the runner's desktop: oxi-explorer drags files out to another program
+      # and takes a drop from one (see scripts/dnd-test.ps1).
+      - name: Drag and drop test
+        shell: pwsh
+        run: ./scripts/dnd-test.ps1 -Exe target/release/oxi-explorer.exe -OutDir dnd
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dnd-results
+          path: dnd/
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         with:
           name: oxidows-windows

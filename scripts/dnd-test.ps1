@@ -238,7 +238,7 @@ Get-Content $stderr -ErrorAction SilentlyContinue | Where-Object { $_ -match "dn
 if ($hit) {
     Write-Host "Drag out worked, pressed at $hit"
     Get-Content $tlog | ForEach-Object { Write-Host "  $_" }
-    $dropLine = (Get-Content $tlog | Where-Object { $_ -like "DROP*" })[0]
+    $dropLine = @(Get-Content $tlog | Where-Object { $_ -like "DROP*" })[0]
     if ($dropLine -notmatch "dnd-sample-file-number-\d\.txt") { $failures += "drag out delivered the wrong files: $dropLine" }
 } else {
     $failures += "drag out: the other program never received a drop"
