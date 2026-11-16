@@ -159,7 +159,7 @@ if ($p.MainWindowHandle -eq [IntPtr]::Zero) { throw "no window" }
 function Oxi-Hwnd {
     foreach ($w in [DndEnum]::Of([uint32]$p.Id)) {
         $f = $w -split '\|'
-        if ($f[2] -like "File Explorer*" -and $f[5] -eq "True") { return [IntPtr][int64]$f[0] }
+        if ($f[2] -like "*File Explorer (oxidows)" -and $f[1] -eq "Window Class") { return [IntPtr][int64]$f[0] }
     }
     return $p.MainWindowHandle
 }
