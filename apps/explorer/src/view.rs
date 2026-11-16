@@ -2463,10 +2463,7 @@ fn home_page_ui(app: &mut App, ui: &mut Ui, action: &mut Option<Action>, wanted_
                 ui.horizontal(|ui| {
                     ui.add_space(8.0);
                     for (path, label, pinned) in chunk {
-                        let (rect, resp) = ui.allocate_exact_size(egui::vec2(tile_w, 56.0), Sense::click_and_drag());
-                        if resp.drag_started() {
-                            app.drag_paths(vec![path.clone()]);
-                        }
+                        let (rect, resp) = ui.allocate_exact_size(egui::vec2(tile_w, 56.0), Sense::click());
                         let hover = resp.hovered();
                         let bg = if hover {
                             ui.visuals().widgets.hovered.bg_fill
