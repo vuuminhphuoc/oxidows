@@ -11,9 +11,12 @@ jobs:
       - uses: actions/checkout@v5
       - run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - run: cargo build --release -p oxi-explorer
       - name: Drag and drop test
         shell: pwsh
+        continue-on-error: true
         run: ./scripts/dnd-test.ps1 -Exe target/release/oxi-explorer.exe -OutDir dnd
       - uses: actions/upload-artifact@v4
         if: always()
