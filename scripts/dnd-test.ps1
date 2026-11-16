@@ -13,12 +13,17 @@ param(
 )
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-Add-Type -Namespace Dnd -Name Win -MemberDefinition @'
+Add-Type -Namespace Dnd -Name Win -UsingNamespace System.Runtime.InteropServices -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
 [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
 [DllImport("user32.dll")] public static extern void mouse_event(uint f, int dx, int dy, uint d, UIntPtr e);
 [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr h, int x, int y, int w, int hh, bool repaint);
 [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+[DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(int x, int y);
+[DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr h, uint flags);
+[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+[DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+[StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
 [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
 '@
 [Dnd.Win]::SetProcessDPIAware() | Out-Null
@@ -26,8 +31,23 @@ New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $OutDir = (Resolve-Path $OutDir).Path
 $exePath = (Resolve-Path $Exe).Path
 
-# The runner's screenshots can't be downloaded, so print a small one into the log.
+function Under($x, $y) {
+    $h = [Dnd.Win]::GetAncestor([Dnd.Win]::WindowFromPoint([int]$x, [int]$y), 2)
+    $procId = [uint32]0
+    [Dnd.Win]::GetWindowThreadProcessId($h, [ref]$procId) | Out-Null
+    $name = (Get-Process -Id $procId -ErrorAction SilentlyContinue).ProcessName
+    $r = New-Object Dnd.Win+RECT
+    [Dnd.Win]::GetWindowRect($h, [ref]$r) | Out-Null
+    "$name [$($r.Left),$($r.Top) $($r.Right),$($r.Bottom)]"
+}
+function Rect-Of($proc) {
+    $r = New-Object Dnd.Win+RECT
+    [Dnd.Win]::GetWindowRect($proc.MainWindowHandle, [ref]$r) | Out-Null
+    "[$($r.Left),$($r.Top) $($r.Right),$($r.Bottom)]"
+}
+# The runner's screenshots can't be downloaded; only dump one into the log when asked (large).
 function Dump-Shot($name) {
+    if (-not $env:DND_DUMP) { return }
     $b = [Windows.Forms.Screen]::PrimaryScreen.Bounds
     $bmp = New-Object Drawing.Bitmap $b.Width, $b.Height
     $g = [Drawing.Graphics]::FromImage($bmp)
@@ -114,8 +134,13 @@ $target = Start-Process $ps -ArgumentList "-NoProfile -STA -File `"$PSScriptRoot
 if (-not (Wait-Log $tlog "READY" 30)) { throw "target window did not start" }
 Start-Sleep -Seconds 1
 Shot "before"
-Dump-Shot "before"
-Mouse-To 5 5; Write-Host "Cursor after SetCursorPos: $([Windows.Forms.Cursor]::Position)"
+$target.Refresh()
+Write-Host "oxi window $(Rect-Of $p), target window $(Rect-Of $target)"
+foreach ($pt in @(@(330, 200), @(450, 470), @(($tx + 100), 100))) {
+    Mouse-To $pt[0] $pt[1]
+    Start-Sleep -Milliseconds 200
+    Write-Host ("Point {0},{1}: cursor {2}, window under it: {3}" -f $pt[0], $pt[1], [Windows.Forms.Cursor]::Position, (Under $pt[0] $pt[1]))
+}
 
 $failures = @()
 
@@ -126,6 +151,7 @@ foreach ($y in 150..330 | Where-Object { $_ % 12 -eq 0 }) {
     foreach ($x in 330) {
         Remove-Item $tlog -ErrorAction SilentlyContinue
         Mouse-To $x $y; Start-Sleep -Milliseconds 150
+        if (-not $script:loggedPress) { $script:loggedPress = $true; Write-Host "first press at $x,$y, window under it: $(Under $x $y)" }
         Mouse-Down; Start-Sleep -Milliseconds 150
         Mouse-Glide $x $y ($x + 30) $y 6
         Mouse-Glide ($x + 30) $y $cx $cy 40
@@ -157,6 +183,7 @@ $source = Start-Process $ps -ArgumentList "-NoProfile -STA -File `"$PSScriptRoot
 if (-not (Wait-Log $slog "READY" 30)) { throw "source window did not start" }
 Start-Sleep -Seconds 1
 Mouse-To ($sx + 150) 120; Start-Sleep -Milliseconds 200
+Write-Host "drag-in press, window under it: $(Under ($sx + 150) 120); release point under: $(Under 460 470)"
 Mouse-Down; Start-Sleep -Milliseconds 150
 Mouse-Glide ($sx + 150) 120 ($sx + 120) 130 6
 Mouse-Glide ($sx + 120) 130 460 470 40
