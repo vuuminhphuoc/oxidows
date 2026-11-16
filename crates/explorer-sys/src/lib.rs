@@ -22,6 +22,10 @@ use windows as imp;
 
 #[cfg(windows)]
 mod default_handler;
+#[cfg(windows)]
+mod drop_target;
+#[cfg(windows)]
+pub use drop_target::DropHost;
 #[cfg(any(windows, test))]
 pub mod everything;
 #[cfg(windows)]
@@ -796,6 +800,27 @@ pub fn drag_out(hwnd: isize, items: &[PathBuf]) -> io::Result<DropResult> {
     {
         let _ = (hwnd, items);
         Err(io::Error::new(io::ErrorKind::Unsupported, "drag out is Windows-only"))
+    }
+}
+
+/// Stand-in so the app builds off Windows: nothing can drop on the window there.
+#[cfg(not(windows))]
+pub struct DropHost;
+
+#[cfg(not(windows))]
+impl DropHost {
+    pub fn register(_hwnd: isize, _wake: impl Fn() + 'static) -> io::Result<DropHost> {
+        Err(io::Error::new(io::ErrorKind::Unsupported, "drop target is Windows-only"))
+    }
+    pub fn active(&self) -> bool {
+        false
+    }
+    pub fn client_pos(&self) -> Option<(i32, i32)> {
+        None
+    }
+    pub fn set_target(&self, _target: Option<&Path>) {}
+    pub fn take_dropped(&self) -> bool {
+        false
     }
 }
 

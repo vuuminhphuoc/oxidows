@@ -770,6 +770,7 @@ version = "0.10.1"
 dependencies = [
  "explorer-core",
  "windows",
+ "windows-core",
  "windows-sys 0.61.2",
 ]
 

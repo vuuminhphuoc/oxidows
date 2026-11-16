@@ -13,6 +13,13 @@ use explorer_sys::FileOp;
 
 use crate::App;
 
+/// Trace for the end-to-end drag and drop test (`OXI_DND_DEBUG=1`).
+pub fn dbg_log(args: std::fmt::Arguments) {
+    if std::env::var_os("OXI_DND_DEBUG").is_some() {
+        eprintln!("dnd: {args}");
+    }
+}
+
 pub const DRAG_HOVER_DELAY: Duration = Duration::from_millis(600);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -103,8 +110,23 @@ impl App {
         }
         let paths = self.selected_paths();
         if !paths.is_empty() {
+            dbg_log(format_args!("drag_source {paths:?}"));
             self.drag = Some(Drag { paths, names: self.selected.clone(), source_dir: self.cur.clone() });
         }
+    }
+
+    /// Starts dragging `paths` (all in one folder) without touching the selection.
+    pub fn drag_paths(&mut self, paths: Vec<PathBuf>) {
+        let Some(first) = paths.first() else { return };
+        let source_dir = first.parent().map(Path::to_path_buf).unwrap_or_default();
+        let names =
+            paths.iter().filter_map(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).collect();
+        self.drag = Some(Drag { paths, names, source_dir });
+    }
+
+    /// A drag is under way: one started in this window, or files another program drags over it.
+    pub fn dragging(&self) -> bool {
+        self.drag.is_some() || self.drop_host.as_ref().is_some_and(|h| h.active())
     }
 
     /// Whether `name` (an item in the current folder) is being dragged.
@@ -128,6 +150,20 @@ impl App {
     /// End of frame: drop, leave the window, or draw what would happen.
     pub fn finish_drag(&mut self, ctx: &egui::Context) {
         let hovered = self.frame_hover.take();
+        let external = self.drop_host.as_ref().is_some_and(|h| h.active());
+        if external {
+            // Another program is dragging files over the window: the shell does the drop. Tell it
+            // which folder the pointer is over: a folder item or tree row, else this folder when
+            // over the file list.
+            self.hover_actions(ctx, hovered);
+            let pos = ctx.input(|i| i.pointer.latest_pos());
+            let over_list = pos.is_some_and(|p| self.list_rect.is_some_and(|r| r.contains(p)));
+            let target = self.drop_target.take().or_else(|| over_list.then(|| self.cur.clone()));
+            if let Some(host) = &self.drop_host {
+                host.set_target(target.as_deref());
+            }
+            return;
+        }
         if self.drag.is_none() {
             self.drag_hover.step(Instant::now(), None, DRAG_HOVER_DELAY);
             return;
@@ -143,12 +179,15 @@ impl App {
             return;
         }
         if !inside && cfg!(windows) {
+            dbg_log(format_args!("leaving the window at {pos:?}, rect {:?}", ctx.content_rect()));
             self.drag_hover.step(Instant::now(), None, DRAG_HOVER_DELAY);
             let paths = self.drag.as_ref().map(|d| d.paths.clone()).unwrap_or_default();
             self.drag = None;
             // The system takes over the mouse until the drop; the button-up never reaches us.
             self.release_pointer = true;
-            match explorer_sys::drag_out(self.hwnd, &paths) {
+            let outcome = explorer_sys::drag_out(self.hwnd, &paths);
+            dbg_log(format_args!("drag_out returned {outcome:?}"));
+            match outcome {
                 Ok(explorer_sys::DropResult::Moved) => self.status = Some(format!("Moved {} items", paths.len())),
                 Ok(_) => {}
                 Err(e) => self.status = Some(format!("Drag: {e}")),
@@ -156,29 +195,7 @@ impl App {
             self.refresh();
             return;
         }
-        let (target, tree_path) = match hovered {
-            Some((t, p)) => (Some(t), p),
-            None => (None, None),
-        };
-        let (fired, repaint_after) = self.drag_hover.step(Instant::now(), target, DRAG_HOVER_DELAY);
-        if let Some(wait) = repaint_after {
-            ctx.request_repaint_after(wait);
-        }
-        match fired {
-            Some(HoverTarget::Tab(i)) => self.switch_tab(i),
-            Some(HoverTarget::Tree(id)) => {
-                let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(ctx, id, false);
-                state.set_open(true);
-                state.store(ctx);
-                if let Some(p) = tree_path
-                    && !self.tree.contains_key(&p)
-                {
-                    self.load_tree(p);
-                }
-                ctx.request_repaint();
-            }
-            None => {}
-        }
+        self.hover_actions(ctx, hovered);
         let Some(drag) = &self.drag else { return };
         let Some(pos) = pos else { return };
         let n = drag.paths.len();
@@ -207,6 +224,33 @@ impl App {
                 egui::Frame::popup(ui.style()).show(ui, |ui| ui.add(egui::Label::new(text).extend()));
             });
         ctx.request_repaint();
+    }
+
+    /// Folder hover during a drag: after a short wait a tab is opened or a tree folder expanded.
+    fn hover_actions(&mut self, ctx: &egui::Context, hovered: Option<(HoverTarget, Option<PathBuf>)>) {
+        let (target, tree_path) = match hovered {
+            Some((t, p)) => (Some(t), p),
+            None => (None, None),
+        };
+        let (fired, repaint_after) = self.drag_hover.step(Instant::now(), target, DRAG_HOVER_DELAY);
+        if let Some(wait) = repaint_after {
+            ctx.request_repaint_after(wait);
+        }
+        match fired {
+            Some(HoverTarget::Tab(i)) => self.switch_tab(i),
+            Some(HoverTarget::Tree(id)) => {
+                let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(ctx, id, false);
+                state.set_open(true);
+                state.store(ctx);
+                if let Some(p) = tree_path
+                    && !self.tree.contains_key(&p)
+                {
+                    self.load_tree(p);
+                }
+                ctx.request_repaint();
+            }
+            None => {}
+        }
     }
 }
 

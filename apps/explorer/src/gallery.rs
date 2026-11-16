@@ -203,7 +203,7 @@ pub fn show(app: &mut App, ui: &mut Ui, action: &mut Option<Action>, shell_menus
                         let resp =
                             ui.interact(item_rect, ui.id().with(("gal_item", global_pos)), Sense::click_and_drag());
                         let resp =
-                            if app.drag.is_some() { resp } else { crate::view::with_info_tip(resp, e, app.utc_offset) };
+                            if app.dragging() { resp } else { crate::view::with_info_tip(resp, e, app.utc_offset) };
 
                         if resp.drag_started() {
                             drag_start = Some(e.name.clone());
