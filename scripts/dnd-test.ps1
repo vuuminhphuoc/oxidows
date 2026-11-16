@@ -25,6 +25,7 @@ Add-Type -Namespace Dnd -Name Win -MemberDefinition @'
 [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
 [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
 [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
 [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
 '@
 [Dnd.Win]::SetProcessDPIAware() | Out-Null
@@ -121,6 +122,13 @@ if ($p.MainWindowHandle -eq [IntPtr]::Zero) { throw "no window" }
 Start-Sleep -Seconds 3
 # The runner's own terminal windows are in the way: minimise everything, then keep ours on top.
 (New-Object -ComObject Shell.Application).MinimizeAll()
+foreach ($t in Get-Process WindowsTerminal, conhost, OpenConsole -ErrorAction SilentlyContinue) {
+    if ($t.MainWindowHandle -ne [IntPtr]::Zero) {
+        # SW_MINIMIZE = 6
+        [Dnd.Win]::ShowWindow($t.MainWindowHandle, 6) | Out-Null
+        Write-Host "minimised $($t.ProcessName) $($t.Id)"
+    }
+}
 Start-Sleep -Seconds 1
 [Dnd.Win]::MoveWindow($p.MainWindowHandle, 0, 0, $ow, $oh, $true) | Out-Null
 # HWND_TOPMOST = -1; SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW
