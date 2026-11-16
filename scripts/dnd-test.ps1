@@ -26,6 +26,10 @@ Add-Type -Namespace Dnd -Name Win -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
 [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
 [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+[DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+[DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+[DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr h, int i);
+[DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out int v, int size);
 [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
 '@
 [Dnd.Win]::SetProcessDPIAware() | Out-Null
@@ -137,6 +141,15 @@ Start-Sleep -Seconds 1
 [Dnd.Win]::SetWindowPos($p.MainWindowHandle, [IntPtr]::new(-1), 0, 0, 0, 0, 0x0043) | Out-Null
 [Dnd.Win]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
 Start-Sleep -Seconds 2
+function Describe-Window($h) {
+    $cloaked = 0
+    [Dnd.Win]::DwmGetWindowAttribute($h, 14, [ref]$cloaked, 4) | Out-Null
+    "visible=$([Dnd.Win]::IsWindowVisible($h)) iconic=$([Dnd.Win]::IsIconic($h)) style=0x{0:x} exstyle=0x{1:x} cloaked=$cloaked" -f [Dnd.Win]::GetWindowLong($h, -16), [Dnd.Win]::GetWindowLong($h, -20)
+}
+$p.Refresh()
+Write-Host "oxi: exited=$($p.HasExited) hwnd=$($p.MainWindowHandle) $(Describe-Window $p.MainWindowHandle)"
+Get-Content $stderr -ErrorAction SilentlyContinue | Select-Object -First 20 | ForEach-Object { Write-Host "  oxi stderr: $_" }
+Dump-Shot "oxi-placed"
 
 $tx = $ow + 20; $tw = [Math]::Max(300, $screen.Width - $tx - 10)
 $tlog = Join-Path $OutDir "target.log"

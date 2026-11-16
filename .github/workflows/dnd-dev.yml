@@ -17,6 +17,8 @@ jobs:
       - name: Drag and drop test
         shell: pwsh
         continue-on-error: true
+        env:
+          DND_DUMP: "1"
         run: ./scripts/dnd-test.ps1 -Exe target/release/oxi-explorer.exe -OutDir dnd
       - uses: actions/upload-artifact@v4
         if: always()
