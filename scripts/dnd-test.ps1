@@ -25,6 +25,24 @@ New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $OutDir = (Resolve-Path $OutDir).Path
 $exePath = (Resolve-Path $Exe).Path
 
+# The runner's screenshots can't be downloaded, so print a small one into the log.
+function Dump-Shot($name) {
+    $b = [Windows.Forms.Screen]::PrimaryScreen.Bounds
+    $bmp = New-Object Drawing.Bitmap $b.Width, $b.Height
+    $g = [Drawing.Graphics]::FromImage($bmp)
+    $g.CopyFromScreen($b.Location, [Drawing.Point]::Empty, $b.Size)
+    $small = New-Object Drawing.Bitmap $bmp, ([int]($b.Width / 2)), ([int]($b.Height / 2))
+    $codec = [Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object MimeType -eq "image/jpeg"
+    $ep = New-Object Drawing.Imaging.EncoderParameters 1
+    $ep.Param[0] = New-Object Drawing.Imaging.EncoderParameter ([Drawing.Imaging.Encoder]::Quality), 40L
+    $ms = New-Object IO.MemoryStream
+    $small.Save($ms, $codec, $ep)
+    $text = [Convert]::ToBase64String($ms.ToArray())
+    Write-Host "SHOT-BEGIN $name"
+    for ($i = 0; $i -lt $text.Length; $i += 3000) { Write-Host $text.Substring($i, [Math]::Min(3000, $text.Length - $i)) }
+    Write-Host "SHOT-END $name"
+    $g.Dispose(); $bmp.Dispose(); $small.Dispose()
+}
 function Shot($name) {
     $b = [Windows.Forms.Screen]::PrimaryScreen.Bounds
     $bmp = New-Object Drawing.Bitmap $b.Width, $b.Height
@@ -71,6 +89,7 @@ New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
 
 $ow = 640; $oh = 560
 $stderr = Join-Path $OutDir "explorer-stderr.txt"
+$env:OXI_DND_DEBUG = "1"
 $p = Start-Process -FilePath $exePath -ArgumentList "`"$src`"" -PassThru -RedirectStandardError $stderr
 $end = (Get-Date).AddSeconds(30)
 while ((Get-Date) -lt $end -and $p.MainWindowHandle -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 100; $p.Refresh() }
@@ -89,14 +108,16 @@ $target = Start-Process $ps -ArgumentList "-NoProfile -STA -File `"$PSScriptRoot
 if (-not (Wait-Log $tlog "READY" 30)) { throw "target window did not start" }
 Start-Sleep -Seconds 1
 Shot "before"
+Dump-Shot "before"
+Mouse-To 5 5; Write-Host "Cursor after SetCursorPos: $([Windows.Forms.Cursor]::Position)"
 
 $failures = @()
 
 # --- Drag out of oxi-explorer into the other program -------------------------------------
 $cx = $tx + $tw / 2; $cy = 160
 $hit = $null
-foreach ($y in 150..420 | Where-Object { $_ % 8 -eq 0 }) {
-    foreach ($x in 300, 360) {
+foreach ($y in 150..330 | Where-Object { $_ % 12 -eq 0 }) {
+    foreach ($x in 330) {
         Remove-Item $tlog -ErrorAction SilentlyContinue
         Mouse-To $x $y; Start-Sleep -Milliseconds 150
         Mouse-Down; Start-Sleep -Milliseconds 150
@@ -111,6 +132,8 @@ foreach ($y in 150..420 | Where-Object { $_ % 8 -eq 0 }) {
     if ($hit) { break }
 }
 Shot "after-drag-out"
+Dump-Shot "after-drag-out"
+Get-Content $stderr -ErrorAction SilentlyContinue | Where-Object { $_ -match "dnd|drop target" } | ForEach-Object { Write-Host "  app: $_" }
 if ($hit) {
     Write-Host "Drag out worked, pressed at $hit"
     Get-Content $tlog | ForEach-Object { Write-Host "  $_" }
@@ -135,6 +158,7 @@ Start-Sleep -Milliseconds 600
 Mouse-Up
 Start-Sleep -Seconds 2
 Shot "after-drag-in"
+Dump-Shot "after-drag-in"
 if (Test-Path $slog) { Get-Content $slog | ForEach-Object { Write-Host "  source: $_" } }
 $arrived = Test-Path (Join-Path $src "incoming-from-other-app.txt")
 Write-Host "Drag in: file arrived in the folder = $arrived"
@@ -142,6 +166,6 @@ if (-not $arrived) { $failures += "drag in: the dropped file never reached the f
 Stop-Process -Id $source.Id -Force -ErrorAction SilentlyContinue
 
 Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-Get-Content $stderr -ErrorAction SilentlyContinue | Select-Object -Last 20 | ForEach-Object { Write-Host "  app: $_" }
+Get-Content $stderr -ErrorAction SilentlyContinue | Where-Object { $_ -match "dnd|drop target" } | Select-Object -Last 40 | ForEach-Object { Write-Host "  app: $_" }
 if ($failures) { $failures | ForEach-Object { Write-Host "FAIL: $_" }; exit 1 }
 Write-Host "Drag and drop OK"

@@ -13,6 +13,13 @@ use explorer_sys::FileOp;
 
 use crate::App;
 
+/// Trace for the end-to-end drag and drop test (`OXI_DND_DEBUG=1`).
+pub fn dbg_log(args: std::fmt::Arguments) {
+    if std::env::var_os("OXI_DND_DEBUG").is_some() {
+        eprintln!("dnd: {args}");
+    }
+}
+
 pub const DRAG_HOVER_DELAY: Duration = Duration::from_millis(600);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -103,6 +110,7 @@ impl App {
         }
         let paths = self.selected_paths();
         if !paths.is_empty() {
+            dbg_log(format_args!("drag_source {paths:?}"));
             self.drag = Some(Drag { paths, names: self.selected.clone(), source_dir: self.cur.clone() });
         }
     }
@@ -171,12 +179,15 @@ impl App {
             return;
         }
         if !inside && cfg!(windows) {
+            dbg_log(format_args!("leaving the window at {pos:?}, rect {:?}", ctx.content_rect()));
             self.drag_hover.step(Instant::now(), None, DRAG_HOVER_DELAY);
             let paths = self.drag.as_ref().map(|d| d.paths.clone()).unwrap_or_default();
             self.drag = None;
             // The system takes over the mouse until the drop; the button-up never reaches us.
             self.release_pointer = true;
-            match explorer_sys::drag_out(self.hwnd, &paths) {
+            let outcome = explorer_sys::drag_out(self.hwnd, &paths);
+            dbg_log(format_args!("drag_out returned {outcome:?}"));
+            match outcome {
                 Ok(explorer_sys::DropResult::Moved) => self.status = Some(format!("Moved {} items", paths.len())),
                 Ok(_) => {}
                 Err(e) => self.status = Some(format!("Drag: {e}")),

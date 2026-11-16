@@ -27,6 +27,12 @@ use windows::Win32::System::SystemServices::MODIFIERKEYS_FLAGS;
 use windows::Win32::UI::Shell::{BHID_SFUIObject, IShellItem};
 use windows::core::{Ref, implement};
 
+fn dbg_log(args: std::fmt::Arguments) {
+    if std::env::var_os("OXI_DND_DEBUG").is_some() {
+        eprintln!("drop target: {args}");
+    }
+}
+
 fn to_io(e: windows::core::Error) -> io::Error {
     io::Error::other(e)
 }
@@ -134,6 +140,7 @@ impl IDropTarget_Impl for Target_Impl {
         }
         let mut effect = DROPEFFECT_NONE;
         follow(&self.st, true, &mut effect);
+        dbg_log(format_args!("enter at {},{} effect {}", pt.x, pt.y, effect.0));
         unsafe { *pdweffect = effect };
         (self.st.borrow().wake)();
         Ok(())
@@ -201,6 +208,7 @@ impl IDropTarget_Impl for Target_Impl {
                 result = e;
             }
         }
+        dbg_log(format_args!("drop -> {}", result.0));
         unsafe { *pdweffect = result };
         {
             let mut s = self.st.borrow_mut();
