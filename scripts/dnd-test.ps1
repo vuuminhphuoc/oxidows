@@ -13,13 +13,14 @@ param(
 )
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-Add-Type -Namespace Dnd -Name Win -UsingNamespace System.Runtime.InteropServices -MemberDefinition @'
+Add-Type -Namespace Dnd -Name Win -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
 [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
 [DllImport("user32.dll")] public static extern void mouse_event(uint f, int dx, int dy, uint d, UIntPtr e);
 [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr h, int x, int y, int w, int hh, bool repaint);
 [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
-[DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(int x, int y);
+[StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
+[DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT p);
 [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr h, uint flags);
 [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
 [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
@@ -32,7 +33,9 @@ $OutDir = (Resolve-Path $OutDir).Path
 $exePath = (Resolve-Path $Exe).Path
 
 function Under($x, $y) {
-    $h = [Dnd.Win]::GetAncestor([Dnd.Win]::WindowFromPoint([int]$x, [int]$y), 2)
+    $pt = New-Object Dnd.Win+POINT
+    $pt.X = [int]$x; $pt.Y = [int]$y
+    $h = [Dnd.Win]::GetAncestor([Dnd.Win]::WindowFromPoint($pt), 2)
     $procId = [uint32]0
     [Dnd.Win]::GetWindowThreadProcessId($h, [ref]$procId) | Out-Null
     $name = (Get-Process -Id $procId -ErrorAction SilentlyContinue).ProcessName
