@@ -130,6 +130,8 @@ foreach ($t in Get-Process WindowsTerminal, conhost, OpenConsole -ErrorAction Si
     }
 }
 Start-Sleep -Seconds 1
+# SW_RESTORE = 9: minimise-all also minimised our window.
+[Dnd.Win]::ShowWindow($p.MainWindowHandle, 9) | Out-Null
 [Dnd.Win]::MoveWindow($p.MainWindowHandle, 0, 0, $ow, $oh, $true) | Out-Null
 # HWND_TOPMOST = -1; SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW
 [Dnd.Win]::SetWindowPos($p.MainWindowHandle, [IntPtr]::new(-1), 0, 0, 0, 0, 0x0043) | Out-Null
@@ -141,7 +143,7 @@ $tlog = Join-Path $OutDir "target.log"
 $slog = Join-Path $OutDir "source.log"
 Remove-Item $tlog, $slog -ErrorAction SilentlyContinue
 $ps = (Get-Command powershell.exe).Source
-$target = Start-Process $ps -WindowStyle Hidden -ArgumentList "-NoProfile -STA -File `"$PSScriptRoot\dnd\target.ps1`" -Log `"$tlog`" -X $tx -Y 20 -W $tw -H 300" -PassThru
+$target = Start-Process $ps -NoNewWindow -ArgumentList "-NoProfile -STA -File `"$PSScriptRoot\dnd\target.ps1`" -Log `"$tlog`" -X $tx -Y 20 -W $tw -H 300" -PassThru
 if (-not (Wait-Log $tlog "READY" 30)) { throw "target window did not start" }
 Start-Sleep -Seconds 1
 Shot "before"
@@ -190,7 +192,7 @@ Stop-Process -Id $target.Id -Force -ErrorAction SilentlyContinue
 
 # --- Drag from another program into oxi-explorer ---------------------------------------
 $sx = $ow + 20
-$source = Start-Process $ps -WindowStyle Hidden -ArgumentList "-NoProfile -STA -File `"$PSScriptRoot\dnd\source.ps1`" -Log `"$slog`" -File `"$incoming`" -X $sx -Y 20 -W 300 -H 200" -PassThru
+$source = Start-Process $ps -NoNewWindow -ArgumentList "-NoProfile -STA -File `"$PSScriptRoot\dnd\source.ps1`" -Log `"$slog`" -File `"$incoming`" -X $sx -Y 20 -W 300 -H 200" -PassThru
 if (-not (Wait-Log $slog "READY" 30)) { throw "source window did not start" }
 Start-Sleep -Seconds 1
 Mouse-To ($sx + 150) 120; Start-Sleep -Milliseconds 200
