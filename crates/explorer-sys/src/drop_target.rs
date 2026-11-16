@@ -137,6 +137,8 @@ impl IDropTarget_Impl for Target_Impl {
             s.allowed = allowed;
             s.data = pdataobj.as_ref().cloned();
             s.bound = None;
+            // The app says where the pointer is once it has drawn a frame; until then, nowhere.
+            s.wanted = None;
         }
         let mut effect = DROPEFFECT_NONE;
         follow(&self.st, true, &mut effect);
@@ -167,6 +169,7 @@ impl IDropTarget_Impl for Target_Impl {
             let mut s = self.st.borrow_mut();
             s.active = false;
             s.data = None;
+            s.wanted = None;
             s.bound.take()
         };
         if let Some((_, t)) = bound {
@@ -199,6 +202,7 @@ impl IDropTarget_Impl for Target_Impl {
         let (bound, data, keys, pos) = {
             let mut s = self.st.borrow_mut();
             s.active = false;
+            s.wanted = None;
             (s.bound.take(), s.data.take(), s.keys, s.pos)
         };
         let mut result = DROPEFFECT_NONE;

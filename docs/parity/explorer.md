@@ -121,9 +121,10 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Undo / Redo (Ctrl+Z / Ctrl+Y) inside the app | ✅ | rename, new folder, copy, move, delete to Recycle Bin |
 | New folder (Ctrl+Shift+N) | ✅ | made at once as "New folder" and renamed in place, as in Windows 11 (also New ▸ file types) |
 | New → text file, shortcut, other registered types | ✅ | through the shell menu |
-| Drag and drop into the window | ✅ | move on same drive, copy across drives |
+| Drag and drop within the window | ✅ | move on same drive, copy across drives |
 | Drag onto folders, the navigation pane and the Recycle Bin | ✅ | Ctrl copies, Shift moves, as Explorer |
-| Drag out of the window to other programs | ✅ | system OLE drag with the shell's data object (`SHDoDragDrop`) |
+| Drag out of the window to other programs | ✅ | system OLE drag with the shell's data object (`SHDoDragDrop`), from every view, the folder tree and Home |
+| Drag in from other programs (Explorer, browser, mail, chat…) | 🟡 | the window is its own OLE drop target (`crates/explorer-sys/src/drop_target.rs`) that hands the drag to the shell's drop target of the folder under the pointer: copy / move / shortcut by Ctrl, Shift, Alt or the right-button menu, the cursor, progress and conflict dialogs, zip folders, virtual files; folders and tree rows light up under the pointer. Checked end to end on the CI runner with real mouse input (`scripts/dnd-test.ps1`) |
 | Compress to ZIP / extract | ✅ | through the shell menu |
 | Properties dialog (Alt+Enter) | ✅ | the shell's own |
 | Open in Terminal | ✅ | Windows Terminal, else cmd |
