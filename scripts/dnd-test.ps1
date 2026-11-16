@@ -32,6 +32,38 @@ Add-Type -Namespace Dnd -Name Win -MemberDefinition @'
 [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out int v, int size);
 [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
 '@
+Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class DndEnum {
+    delegate bool EnumProc(IntPtr h, IntPtr l);
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc p, IntPtr l);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+    [DllImport("user32.dll")] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+    [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int i);
+    [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
+    [StructLayout(LayoutKind.Sequential)] struct RECT { public int Left, Top, Right, Bottom; }
+    // Every top-level window of a process: "handle|class|title|style|exstyle|visible|l,t,r,b"
+    public static string[] Of(uint pid) {
+        var res = new List<string>();
+        EnumWindows((h, l) => {
+            uint p; GetWindowThreadProcessId(h, out p);
+            if (p != pid) return true;
+            var c = new StringBuilder(256); GetClassName(h, c, 256);
+            var t = new StringBuilder(256); GetWindowText(h, t, 256);
+            RECT r; GetWindowRect(h, out r);
+            res.Add(string.Format("{0}|{1}|{2}|0x{3:x}|0x{4:x}|{5}|{6},{7},{8},{9}", h.ToInt64(), c, t,
+                GetWindowLong(h, -16), GetWindowLong(h, -20), IsWindowVisible(h), r.Left, r.Top, r.Right, r.Bottom));
+            return true;
+        }, IntPtr.Zero);
+        return res.ToArray();
+    }
+}
+'@
 [Dnd.Win]::SetProcessDPIAware() | Out-Null
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $OutDir = (Resolve-Path $OutDir).Path
@@ -48,9 +80,9 @@ function Under($x, $y) {
     [Dnd.Win]::GetWindowRect($h, [ref]$r) | Out-Null
     "$name [$($r.Left),$($r.Top) $($r.Right),$($r.Bottom)]"
 }
-function Rect-Of($proc) {
+function Rect-Of($h) {
     $r = New-Object Dnd.Win+RECT
-    [Dnd.Win]::GetWindowRect($proc.MainWindowHandle, [ref]$r) | Out-Null
+    [Dnd.Win]::GetWindowRect($h, [ref]$r) | Out-Null
     "[$($r.Left),$($r.Top) $($r.Right),$($r.Bottom)]"
 }
 # The runner's screenshots can't be downloaded; only dump one into the log when asked (large).
@@ -123,7 +155,17 @@ $p = Start-Process -FilePath $exePath -ArgumentList "`"$src`"" -PassThru -Redire
 $end = (Get-Date).AddSeconds(30)
 while ((Get-Date) -lt $end -and $p.MainWindowHandle -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 100; $p.Refresh() }
 if ($p.MainWindowHandle -eq [IntPtr]::Zero) { throw "no window" }
+# MainWindowHandle may be a helper window; the real one has the title.
+function Oxi-Hwnd {
+    foreach ($w in [DndEnum]::Of([uint32]$p.Id)) {
+        $f = $w -split '\|'
+        if ($f[2] -like "File Explorer*" -and $f[5] -eq "True") { return [IntPtr][int64]$f[0] }
+    }
+    return $p.MainWindowHandle
+}
+$hw = Oxi-Hwnd
 Start-Sleep -Seconds 3
+$hw = Oxi-Hwnd
 # The runner's own terminal windows are in the way: minimise everything, then keep ours on top.
 (New-Object -ComObject Shell.Application).MinimizeAll()
 foreach ($t in Get-Process WindowsTerminal, conhost, OpenConsole -ErrorAction SilentlyContinue) {
@@ -135,11 +177,11 @@ foreach ($t in Get-Process WindowsTerminal, conhost, OpenConsole -ErrorAction Si
 }
 Start-Sleep -Seconds 1
 # SW_RESTORE = 9: minimise-all also minimised our window.
-[Dnd.Win]::ShowWindow($p.MainWindowHandle, 9) | Out-Null
-[Dnd.Win]::MoveWindow($p.MainWindowHandle, 0, 0, $ow, $oh, $true) | Out-Null
+[Dnd.Win]::ShowWindow($hw, 9) | Out-Null
+[Dnd.Win]::MoveWindow($hw, 0, 0, $ow, $oh, $true) | Out-Null
 # HWND_TOPMOST = -1; SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW
-[Dnd.Win]::SetWindowPos($p.MainWindowHandle, [IntPtr]::new(-1), 0, 0, 0, 0, 0x0043) | Out-Null
-[Dnd.Win]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
+[Dnd.Win]::SetWindowPos($hw, [IntPtr]::new(-1), 0, 0, 0, 0, 0x0043) | Out-Null
+[Dnd.Win]::SetForegroundWindow($hw) | Out-Null
 Start-Sleep -Seconds 2
 function Describe-Window($h) {
     $cloaked = 0
@@ -147,7 +189,8 @@ function Describe-Window($h) {
     "visible=$([Dnd.Win]::IsWindowVisible($h)) iconic=$([Dnd.Win]::IsIconic($h)) style=0x{0:x} exstyle=0x{1:x} cloaked=$cloaked" -f [Dnd.Win]::GetWindowLong($h, -16), [Dnd.Win]::GetWindowLong($h, -20)
 }
 $p.Refresh()
-Write-Host "oxi: exited=$($p.HasExited) hwnd=$($p.MainWindowHandle) $(Describe-Window $p.MainWindowHandle)"
+foreach ($w in [DndEnum]::Of([uint32]$p.Id)) { Write-Host "  oxi window: $w" }
+Write-Host "oxi: exited=$($p.HasExited) hwnd=$($hw) $(Describe-Window $hw)"
 Get-Content $stderr -ErrorAction SilentlyContinue | Select-Object -First 20 | ForEach-Object { Write-Host "  oxi stderr: $_" }
 Dump-Shot "oxi-placed"
 
@@ -161,7 +204,7 @@ if (-not (Wait-Log $tlog "READY" 30)) { throw "target window did not start" }
 Start-Sleep -Seconds 1
 Shot "before"
 $target.Refresh()
-Write-Host "oxi window $(Rect-Of $p), target window $(Rect-Of $target)"
+Write-Host "oxi window $(Rect-Of $hw), target window $(Rect-Of $target.MainWindowHandle)"
 foreach ($pt in @(@(330, 200), @(450, 470), @(($tx + 100), 100))) {
     Mouse-To $pt[0] $pt[1]
     Start-Sleep -Milliseconds 200
