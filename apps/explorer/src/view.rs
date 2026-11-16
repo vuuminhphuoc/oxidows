@@ -115,7 +115,7 @@ pub fn tab_bar(app: &mut App, ui: &mut Ui) {
                     }
                 }
                 rects.push(r.rect);
-                if app.drag.is_some() && !active && r.contains_pointer() {
+                if app.dragging() && !active && r.contains_pointer() {
                     app.frame_hover = Some((crate::dnd::HoverTarget::Tab(i), None));
                 }
                 if r.dragged() {
@@ -884,6 +884,8 @@ struct TreeOut {
     dragging: bool,
     drop: Option<PathBuf>,
     hover_tree: Option<(egui::Id, PathBuf)>,
+    /// A folder row was dragged away: start dragging that folder.
+    drag: Option<PathBuf>,
     /// Pinned folders (keys from `settings::folder_key`), and pin/unpin requests.
     pinned: std::collections::HashSet<String>,
     pin: Option<(PathBuf, bool)>,
@@ -933,7 +935,13 @@ fn tree_node(
                 tree_chevron(ui, openness, r, color);
             }
         });
-        ui_common::nav_item(ui, Some(icon), label, explorer_core::path_eq(path, cur))
+        ui_common::nav_item_sense(
+            ui,
+            Some(icon),
+            label,
+            explorer_core::path_eq(path, cur),
+            Sense::click_and_drag(),
+        )
     });
     let header = egui::InnerResponse { inner: row.inner, response: row.response.clone() };
     if let Some(target) = reveal
@@ -993,6 +1001,10 @@ fn tree_node(
         out.go = Some(path.clone());
     }
     drop_hover(&header.inner, out.dragging, path, &mut out.drop);
+    // Folders (not drives or a phone's items) can be dragged to other programs and folders.
+    if header.inner.drag_started() && path.parent().is_some() && !path.starts_with(explorer_core::SHELL) {
+        out.drag = Some(path.clone());
+    }
     // Drive roots keep their own menu (Disconnect); folders can be pinned (not a phone's,
     // which have no path to keep).
     if path.parent().is_some() && !path.starts_with(explorer_core::SHELL) {
@@ -1073,7 +1085,7 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
             ui.add_space(6.0);
             let mut go: Option<PathBuf> = None;
             let mut unmap: Option<char> = None;
-            let dragging = app.drag.is_some();
+            let dragging = app.dragging();
             let pinned = app.persist.settings.pinned.iter().map(|p| crate::settings::folder_key(p)).collect();
             let pane_hovered = ui.rect_contains_pointer(ui.clip_rect());
             let mut tree_out = TreeOut { dragging, pinned, pane_hovered, ..Default::default() };
@@ -1286,6 +1298,9 @@ pub fn sidebar(app: &mut App, ui: &mut Ui) {
             }
             if let Some(t) = place_drop.or(tree_out.drop) {
                 app.drop_target = Some(t);
+            }
+            if let Some(p) = tree_out.drag {
+                app.drag_paths(vec![p]);
             }
             for p in tree_out.load {
                 app.load_tree(p);
@@ -1613,7 +1628,7 @@ pub fn file_list(app: &mut App, ui: &mut Ui) {
     let text_color = ui.visuals().text_color();
     let mut wanted_icons: Vec<IconKey> = Vec::new();
     // Drag and drop, collected while drawing (the rows only borrow `app`).
-    let dragging = app.drag.is_some();
+    let dragging = app.dragging();
     let mut drag_start: Option<String> = None;
     let mut hover_target: Option<PathBuf> = None;
     // A name being edited in place: drawn by its row or tile, committed after the list.
@@ -2448,7 +2463,10 @@ fn home_page_ui(app: &mut App, ui: &mut Ui, action: &mut Option<Action>, wanted_
                 ui.horizontal(|ui| {
                     ui.add_space(8.0);
                     for (path, label, pinned) in chunk {
-                        let (rect, resp) = ui.allocate_exact_size(egui::vec2(tile_w, 56.0), Sense::click());
+                        let (rect, resp) = ui.allocate_exact_size(egui::vec2(tile_w, 56.0), Sense::click_and_drag());
+                        if resp.drag_started() {
+                            app.drag_paths(vec![path.clone()]);
+                        }
                         let hover = resp.hovered();
                         let bg = if hover {
                             ui.visuals().widgets.hovered.bg_fill
@@ -2650,7 +2668,11 @@ fn home_file_table(
 
     // Rows
     for e in items {
-        let (row_rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width() - 16.0, row_h), Sense::click());
+        let (row_rect, resp) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width() - 16.0, row_h), Sense::click_and_drag());
+        if resp.drag_started() {
+            app.drag_paths(vec![PathBuf::from(&e.name)]);
+        }
         let hover = resp.hovered();
         if hover {
             ui.painter().rect_filled(row_rect, 3.0, ui.visuals().widgets.hovered.bg_fill);

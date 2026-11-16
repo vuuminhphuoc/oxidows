@@ -279,6 +279,13 @@ struct App {
     /// Folder under the pointer during a drag (set while drawing each frame).
     pub drop_target: Option<PathBuf>,
     release_pointer: bool,
+    /// The window as an OLE drop target: files dragged in from other programs (Windows).
+    pub drop_host: Option<explorer_sys::DropHost>,
+    /// The pointer position was last supplied from such a drag (so it can be taken away again).
+    ext_pointer: bool,
+    /// The file list's area last frame; the pointer over it means "into this folder" for a drag
+    /// from another program.
+    pub list_rect: Option<egui::Rect>,
     pub redo_stack: Vec<undo::Undoable>,
     preview: Option<(PathBuf, pane::PreviewState)>,
 
@@ -422,6 +429,9 @@ impl App {
             frame_hover: None,
             drop_target: None,
             release_pointer: false,
+            drop_host: None,
+            ext_pointer: false,
+            list_rect: None,
             redo_stack: Vec::new(),
             preview: None,
             selected: HashSet::new(),
@@ -2542,6 +2552,14 @@ impl eframe::App for App {
             && let RawWindowHandle::Win32(w) = h.as_raw()
         {
             self.hwnd = w.hwnd.get();
+            // Replaces winit's drop handler (always "copy", no pointer position, files only).
+            if cfg!(windows) {
+                let wake = ui.ctx().clone();
+                match explorer_sys::DropHost::register(self.hwnd, move || wake.request_repaint()) {
+                    Ok(h) => self.drop_host = Some(h),
+                    Err(e) => eprintln!("drop target: {e}"),
+                }
+            }
             ui_common::mica::apply(
                 self.hwnd,
                 self.persist.settings.transparency && ui_common::mica::is_supported(),
@@ -2567,8 +2585,12 @@ impl eframe::App for App {
             }
         }
 
-        // Files dropped on the window from another program: move within a drive, copy across
-        // drives, as Explorer does.
+        // A drop from another program finished (the shell did the copy or move): show the result.
+        if self.drop_host.as_ref().is_some_and(|h| h.take_dropped()) {
+            self.refresh();
+        }
+        // Where the shell's drop target is not available (not Windows), files dropped on the window
+        // arrive as events: move within a drive, copy across drives.
         let dropped: Vec<PathBuf> = ui.input(|i| {
             i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect()
         });
@@ -2615,7 +2637,8 @@ impl eframe::App for App {
         view::sidebar(self, ui);
         pane::show(self, ui);
         let content = ui_common::content_frame(ui.style());
-        egui::CentralPanel::default().frame(content).show(ui, |ui| view::file_list(self, ui));
+        let list = egui::CentralPanel::default().frame(content).show(ui, |ui| view::file_list(self, ui));
+        self.list_rect = Some(list.response.rect);
         view::dialog(self, ui);
         nearby::show(self, ui);
         if self.about_open {
@@ -2632,7 +2655,19 @@ impl eframe::App for App {
         self.finish_drag(&ctx);
     }
 
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        // While another program drags files over the window the system sends no mouse messages, so
+        // the pointer is placed from the drag's own position (this is what lights up the folder
+        // under it).
+        if let Some(host) = &self.drop_host {
+            if let Some((x, y)) = host.client_pos() {
+                let ppp = ctx.pixels_per_point();
+                raw.events.push(egui::Event::PointerMoved(egui::pos2(x as f32 / ppp, y as f32 / ppp)));
+                self.ext_pointer = true;
+            } else if std::mem::take(&mut self.ext_pointer) {
+                raw.events.push(egui::Event::PointerGone);
+            }
+        }
         if std::mem::take(&mut self.release_pointer) {
             // The button went up inside the system drag loop; tell egui so it stops dragging.
             raw.events.push(egui::Event::PointerButton {

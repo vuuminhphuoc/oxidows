@@ -202,7 +202,7 @@ pub fn show(
         };
     }
 
-    let dragging = app.drag.is_some();
+    let dragging = app.dragging();
     let mut drag_start: Option<String> = None;
     let mut hover_target: Option<PathBuf> = None;
     let mut band_select: Option<(HashSet<String>, bool)> = None;
@@ -303,7 +303,7 @@ pub fn show(
             let rect = tile_rect(pos);
             let resp = ui.interact(rect, ui.id().with(("item", pos)), Sense::click_and_drag());
             let e = &app.entries[app.view[pos]];
-            let resp = if app.drag.is_some() { resp } else { crate::view::with_info_tip(resp, e, app.utc_offset) };
+            let resp = if app.dragging() { resp } else { crate::view::with_info_tip(resp, e, app.utc_offset) };
             if resp.drag_started() && !in_bin {
                 drag_start = Some(e.name.clone());
             }
