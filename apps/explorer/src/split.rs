@@ -155,7 +155,7 @@ impl Split {
         self.loading = true;
         self.replace_next = keep_old;
         if !keep_old {
-            self.entries.clear();
+            self.clear_entries();
             self.version += 1;
         }
         let (dir, generation, cancel, tx, ctx) =
@@ -191,7 +191,7 @@ impl Split {
             return;
         }
         if std::mem::take(&mut self.replace_next) {
-            self.entries.clear();
+            self.clear_entries();
         }
         for e in &batch {
             ui_common::ensure_glyphs(&self.ctx, e.display());
@@ -205,7 +205,7 @@ impl Split {
             return;
         }
         if std::mem::take(&mut self.replace_next) {
-            self.entries.clear();
+            self.clear_entries();
             self.version += 1;
         }
         self.loading = false;
@@ -296,7 +296,14 @@ impl Split {
     }
 
     fn entry_at(&self, pos: usize) -> Option<&Entry> {
-        self.view.get(pos).map(|&i| &self.entries[i])
+        self.view.get(pos).and_then(|&i| self.entries.get(i))
+    }
+
+    /// Empties the listing and the view into it together (the view holds indices into `entries`).
+    fn clear_entries(&mut self) {
+        self.entries.clear();
+        self.view.clear();
+        self.view_key = None;
     }
 
     fn select_only(&mut self, pos: usize) {
@@ -343,14 +350,19 @@ impl Split {
     pub fn selected_paths(&self) -> Vec<PathBuf> {
         self.view
             .iter()
-            .map(|&i| &self.entries[i])
+            .filter_map(|&i| self.entries.get(i))
             .filter(|e| self.selected.contains(&e.name))
             .map(|e| self.child(&e.name))
             .collect()
     }
 
     fn selected_entries(&self) -> Vec<Entry> {
-        self.view.iter().map(|&i| &self.entries[i]).filter(|e| self.selected.contains(&e.name)).cloned().collect()
+        self.view
+            .iter()
+            .filter_map(|&i| self.entries.get(i))
+            .filter(|e| self.selected.contains(&e.name))
+            .cloned()
+            .collect()
     }
 
     fn is_page(&self) -> bool {

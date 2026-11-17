@@ -158,7 +158,24 @@ impl App {
             return;
         }
         match explorer_sys::shell_drop(self.hwnd, &sources, &target, keys) {
-            Ok(explorer_sys::DropResult::Moved) => self.status = Some(format!("Moved {} items", sources.len())),
+            Ok(explorer_sys::DropResult::Moved) => {
+                // The shell reports a move even when the user chose Skip in the Replace dialog (or
+                // Cancel part-way), so count what actually left the folder.
+                let gone = || sources.iter().filter(|p| std::fs::symlink_metadata(p).is_err()).count();
+                let mut moved = gone();
+                for _ in 0..5 {
+                    if moved > 0 {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    moved = gone();
+                }
+                self.status = Some(match moved {
+                    0 => "Nothing was moved".into(),
+                    n if n == sources.len() => format!("Moved {n} items"),
+                    n => format!("Moved {n} of {} items", sources.len()),
+                });
+            }
             Ok(explorer_sys::DropResult::Copied) => self.status = Some(format!("Copied {} items", sources.len())),
             Ok(explorer_sys::DropResult::Linked) => self.status = Some("Created shortcuts".into()),
             Ok(explorer_sys::DropResult::None) => {}
