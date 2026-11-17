@@ -2555,6 +2555,7 @@ impl eframe::App for App {
             && let RawWindowHandle::Win32(w) = h.as_raw()
         {
             self.hwnd = w.hwnd.get();
+            explorer_sys::set_file_op_owner(self.hwnd);
             // Replaces winit's drop handler (always "copy", no pointer position, files only).
             if cfg!(windows) {
                 let wake = ui.ctx().clone();
