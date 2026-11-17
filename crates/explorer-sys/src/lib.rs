@@ -611,6 +611,12 @@ pub enum FileOp {
     Delete,
 }
 
+/// Makes `hwnd` the owner of the dialogs the shell raises during file operations (replace or
+/// skip, errors), so they open in front of the app. Windows only.
+pub fn set_file_op_owner(hwnd: isize) {
+    imp::set_file_op_owner(hwnd)
+}
+
 /// Runs a shell file operation and blocks until it finishes (call from a worker thread).
 /// Windows shows its own progress and "replace or skip" dialogs. Returns `Ok(false)` when the
 /// user cancelled part of it.

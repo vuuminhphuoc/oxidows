@@ -7,7 +7,7 @@ use std::mem::{size_of, zeroed};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 
 use explorer_core::Entry;
 use windows_sys::Win32::Foundation::{FILETIME, GetLastError, GlobalFree, HWND, INVALID_HANDLE_VALUE, POINT};
@@ -350,6 +350,14 @@ fn double_nul(paths: &[PathBuf]) -> Vec<u16> {
     v
 }
 
+/// The window that owns the shell's copy/move dialogs. Without an owner, a "replace or skip"
+/// dialog raised from a worker thread can open behind the app and the operation waits for it.
+static FILE_OP_OWNER: AtomicIsize = AtomicIsize::new(0);
+
+pub fn set_file_op_owner(hwnd: isize) {
+    FILE_OP_OWNER.store(hwnd, Ordering::Relaxed);
+}
+
 pub fn file_op(op: FileOp, sources: &[PathBuf], dest: Option<&Path>, interactive: bool) -> io::Result<bool> {
     if sources.is_empty() {
         return Ok(true);
@@ -371,6 +379,9 @@ pub fn file_op(op: FileOp, sources: &[PathBuf], dest: Option<&Path>, interactive
     };
     let mut s: SHFILEOPSTRUCTW = unsafe { zeroed() };
     s.wFunc = func;
+    if interactive {
+        s.hwnd = FILE_OP_OWNER.load(Ordering::Relaxed) as HWND;
+    }
     s.pFrom = from.as_ptr();
     s.pTo = to.as_ref().map_or(null(), |t| t.as_ptr());
     let quiet = if interactive { 0 } else { FOF_SILENT | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_NOCONFIRMMKDIR };

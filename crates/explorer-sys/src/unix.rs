@@ -111,6 +111,8 @@ fn copy_rec(from: &Path, to: &Path) -> io::Result<()> {
     }
 }
 
+pub fn set_file_op_owner(_hwnd: isize) {}
+
 pub fn file_op(op: FileOp, sources: &[PathBuf], dest: Option<&Path>, _interactive: bool) -> io::Result<bool> {
     for s in sources {
         let target = || -> io::Result<PathBuf> {
