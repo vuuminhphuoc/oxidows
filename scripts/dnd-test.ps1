@@ -17,6 +17,7 @@ Add-Type -Namespace Dnd -Name Win -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
 [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
 [DllImport("user32.dll")] public static extern void mouse_event(uint f, int dx, int dy, uint d, UIntPtr e);
+[DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
 [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr h, int x, int y, int w, int hh, bool repaint);
 [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
 [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
@@ -114,6 +115,8 @@ function Shot($name) {
 }
 function Mouse-To($x, $y) { [Dnd.Win]::SetCursorPos([int]$x, [int]$y) | Out-Null }
 function Mouse-Down { [Dnd.Win]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero) }
+function Key-Down($vk) { [Dnd.Win]::keybd_event([byte]$vk, 0, 0, [UIntPtr]::Zero) }
+function Key-Up($vk) { [Dnd.Win]::keybd_event([byte]$vk, 0, 2, [UIntPtr]::Zero) }
 function Mouse-Up { [Dnd.Win]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero) }
 function Mouse-Glide($x0, $y0, $x1, $y1, $steps = 25) {
     for ($i = 1; $i -le $steps; $i++) {
@@ -266,6 +269,27 @@ $arrived = Test-Path (Join-Path $src "incoming-from-other-app.txt")
 Write-Host "Drag in: file arrived in the folder = $arrived"
 if (-not $arrived) { $failures += "drag in: the dropped file never reached the folder" }
 Stop-Process -Id $source.Id -Force -ErrorAction SilentlyContinue
+
+# --- Alt-drag onto a folder inside oxi-explorer makes a shortcut (the shell decides, as in Explorer) ----
+$folder = Join-Path $src "aaa-folder"
+$pressY = if ($hit) { [int]($hit -split ",")[1] } else { 228 }
+$madeShortcut = $false
+foreach ($dy in 20..64 | Where-Object { $_ % 4 -eq 0 }) {
+    $ty = $pressY - $dy
+    if ($ty -lt 90) { break }
+    Mouse-To 330 $pressY; Start-Sleep -Milliseconds 150
+    Mouse-Down; Start-Sleep -Milliseconds 150
+    Mouse-Glide 330 $pressY 330 $ty 14
+    Key-Down 0x12; Start-Sleep -Milliseconds 250
+    Mouse-Glide 330 $ty 334 $ty 3
+    Start-Sleep -Milliseconds 700
+    Mouse-Up; Start-Sleep -Milliseconds 100; Key-Up 0x12
+    Start-Sleep -Milliseconds 1200
+    if (Get-ChildItem $folder -Filter "*.lnk" -ErrorAction SilentlyContinue) { $madeShortcut = $true; Write-Host "Alt-drag inside oxi made a shortcut, dropped $dy px above the press"; break }
+}
+Shot "after-alt-drag"
+Get-Content $stderr -ErrorAction SilentlyContinue | Where-Object { $_ -match "dnd|drop target" } | Select-Object -Last 6 | ForEach-Object { Write-Host "  app: $_" }
+if (-not $madeShortcut) { $failures += "Alt-drag inside the window did not create a shortcut in the folder" }
 
 Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
 Get-Content $stderr -ErrorAction SilentlyContinue | Where-Object { $_ -match "dnd|drop target" } | Select-Object -Last 40 | ForEach-Object { Write-Host "  app: $_" }

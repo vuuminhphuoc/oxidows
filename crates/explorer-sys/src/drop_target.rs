@@ -55,6 +55,65 @@ fn shell_target(dir: &Path) -> io::Result<IDropTarget> {
     unsafe { item.BindToHandler(None, &BHID_SFUIObject) }.map_err(to_io)
 }
 
+/// Which keys and button were down when files were dragged inside the window.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DragKeys {
+    pub ctrl: bool,
+    pub shift: bool,
+    pub alt: bool,
+    /// The drag was made with the right button: the shell asks what to do (copy, move, shortcut).
+    pub right: bool,
+}
+
+/// Drops `items` on the folder `target` the way Explorer does for a drag between its own windows:
+/// through the shell's drop target, so Alt and Ctrl+Shift make shortcuts and a right-button drag
+/// shows the Copy here / Move here / Create shortcuts here menu. Blocks while the shell asks or
+/// copies. Call on the UI thread, with the pointer where the drag was released.
+pub fn shell_drop(hwnd: isize, items: &[PathBuf], target: &Path, keys: DragKeys) -> io::Result<crate::DropResult> {
+    use windows::Win32::System::Ole::{DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_MOVE};
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    let hwnd = HWND(hwnd as *mut std::ffi::c_void);
+    crate::windows::com_init();
+    let _ = unsafe { OleInitialize(None) };
+    let data = crate::shell_menu::data_object(hwnd, items)?;
+    let drop_target = shell_target(target)?;
+    // MK_LBUTTON 1, MK_RBUTTON 2, MK_SHIFT 4, MK_CONTROL 8, MK_ALT 0x20
+    let mut flags = if keys.right { 2 } else { 1 };
+    if keys.shift {
+        flags |= 4;
+    }
+    if keys.ctrl {
+        flags |= 8;
+    }
+    if keys.alt {
+        flags |= 0x20;
+    }
+    let flags = MODIFIERKEYS_FLAGS(flags);
+    let mut p = POINT::default();
+    let _ = unsafe { GetCursorPos(&mut p) };
+    let pt = POINTL { x: p.x, y: p.y };
+    let allowed = DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK;
+    let mut effect = allowed;
+    unsafe { drop_target.DragEnter(&data, flags, pt, &mut effect) }.map_err(to_io)?;
+    let mut effect = allowed;
+    let over = unsafe { drop_target.DragOver(flags, pt, &mut effect) };
+    if over.is_err() || effect == DROPEFFECT_NONE {
+        let _ = unsafe { drop_target.DragLeave() };
+        return Ok(crate::DropResult::None);
+    }
+    let mut effect = allowed;
+    unsafe { drop_target.Drop(&data, flags, pt, &mut effect) }.map_err(to_io)?;
+    Ok(if effect.contains(DROPEFFECT_MOVE) {
+        crate::DropResult::Moved
+    } else if effect.contains(DROPEFFECT_COPY) {
+        crate::DropResult::Copied
+    } else if effect.contains(DROPEFFECT_LINK) {
+        crate::DropResult::Linked
+    } else {
+        crate::DropResult::None
+    })
+}
+
 struct State {
     hwnd: HWND,
     wake: Box<dyn Fn()>,
