@@ -548,7 +548,7 @@ impl App {
         self.loading = true;
         self.list_error = None;
         self.replace_on_next_batch = false;
-        self.entries.clear();
+        self.clear_entries();
         self.selected.clear();
         self.version += 1;
         self.deep_search = Some(query.clone());
@@ -634,7 +634,7 @@ impl App {
         self.list_error = None;
         self.replace_on_next_batch = keep_old;
         if !keep_old {
-            self.entries.clear();
+            self.clear_entries();
             self.version += 1;
         }
         let (dir, generation, cancel, tx, ctx) =
@@ -1082,7 +1082,7 @@ impl App {
                 Msg::Batch(g, batch) if g == self.generation => {
                     if self.replace_on_next_batch {
                         self.replace_on_next_batch = false;
-                        self.entries.clear();
+                        self.clear_entries();
                     }
                     for e in &batch {
                         // Chinese, Japanese or Korean names load a font that can draw them.
@@ -1099,7 +1099,7 @@ impl App {
                 Msg::Done(g, r, took) if g == self.generation => {
                     if self.replace_on_next_batch {
                         self.replace_on_next_batch = false;
-                        self.entries.clear();
+                        self.clear_entries();
                         self.version += 1;
                     }
                     self.loading = false;
@@ -1849,7 +1849,16 @@ impl App {
     }
 
     fn entry_at(&self, pos: usize) -> Option<&Entry> {
-        self.view.get(pos).map(|&i| &self.entries[i])
+        self.view.get(pos).and_then(|&i| self.entries.get(i))
+    }
+
+    /// Empties the listing and the view into it together: `view` holds indices into `entries`, and
+    /// a stale one (a tab switch empties the listing before the next `update_view`) would index out
+    /// of range.
+    fn clear_entries(&mut self) {
+        self.entries.clear();
+        self.view.clear();
+        self.view_key = None;
     }
 
     fn select_only(&mut self, pos: usize) {
@@ -1886,14 +1895,19 @@ impl App {
     pub fn selected_paths(&self) -> Vec<PathBuf> {
         self.view
             .iter()
-            .map(|&i| &self.entries[i])
+            .filter_map(|&i| self.entries.get(i))
             .filter(|e| self.selected.contains(&e.name))
             .map(|e| self.child(&e.name))
             .collect()
     }
 
     pub fn selected_entries(&self) -> Vec<Entry> {
-        self.view.iter().map(|&i| &self.entries[i]).filter(|e| self.selected.contains(&e.name)).cloned().collect()
+        self.view
+            .iter()
+            .filter_map(|&i| self.entries.get(i))
+            .filter(|e| self.selected.contains(&e.name))
+            .cloned()
+            .collect()
     }
 
     // ---- commands ------------------------------------------------------------------------
