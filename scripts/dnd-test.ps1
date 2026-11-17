@@ -261,19 +261,29 @@ Mouse-Glide ($sx + 150) 120 ($sx + 120) 130 6
 Mouse-Glide ($sx + 120) 130 460 470 40
 Start-Sleep -Milliseconds 600
 Mouse-Up
-Start-Sleep -Seconds 2
+# The shell finishes the drop on its own schedule; wait for the source's drag loop to end.
+Wait-Log $slog "RESULT" 20 | Out-Null
+$arrivedPath = Join-Path $src "incoming-from-other-app.txt"
+$end = (Get-Date).AddSeconds(10)
+while (-not (Test-Path $arrivedPath) -and (Get-Date) -lt $end) { Start-Sleep -Milliseconds 200 }
 Shot "after-drag-in"
 Dump-Shot "after-drag-in"
 if (Test-Path $slog) { Get-Content $slog | ForEach-Object { Write-Host "  source: $_" } }
-$arrived = Test-Path (Join-Path $src "incoming-from-other-app.txt")
+$arrived = Test-Path $arrivedPath
 Write-Host "Drag in: file arrived in the folder = $arrived"
-if (-not $arrived) { $failures += "drag in: the dropped file never reached the folder" }
+if (-not $arrived) {
+    $failures += "drag in: the dropped file never reached the folder"
+    Get-ChildItem $root -Recurse -File | ForEach-Object { Write-Host "  on disk: $($_.FullName)" }
+    Get-Content $stderr -ErrorAction SilentlyContinue | Where-Object { $_ -match "drop target" } | ForEach-Object { Write-Host "  app: $_" }
+}
 Stop-Process -Id $source.Id -Force -ErrorAction SilentlyContinue
 
 # --- Alt-drag onto a folder inside oxi-explorer makes a shortcut (the shell decides, as in Explorer) ----
 $folder = Join-Path $src "aaa-folder"
 $pressY = if ($hit) { [int]($hit -split ",")[1] } else { 228 }
 $madeShortcut = $false
+# Click an empty spot of the list so nothing is selected: a selected folder would be part of the drag.
+Mouse-To 330 450; Start-Sleep -Milliseconds 200; Mouse-Down; Start-Sleep -Milliseconds 80; Mouse-Up; Start-Sleep -Milliseconds 400
 foreach ($dy in 20..64 | Where-Object { $_ % 4 -eq 0 }) {
     $ty = $pressY - $dy
     if ($ty -lt 90) { break }
