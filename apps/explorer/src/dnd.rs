@@ -68,6 +68,8 @@ pub struct Drag {
     /// Names in `source_dir`, so items in that folder don't light up as their own targets.
     pub names: HashSet<String>,
     pub source_dir: PathBuf,
+    /// The button that started the drag, known from the first frame on.
+    pub button: Option<egui::PointerButton>,
 }
 fn root(p: &Path) -> Option<std::ffi::OsString> {
     p.components().next().map(|c| c.as_os_str().to_ascii_lowercase())
@@ -111,7 +113,7 @@ impl App {
         let paths = self.selected_paths();
         if !paths.is_empty() {
             dbg_log(format_args!("drag_source {paths:?}"));
-            self.drag = Some(Drag { paths, names: self.selected.clone(), source_dir: self.cur.clone() });
+            self.drag = Some(Drag { paths, names: self.selected.clone(), source_dir: self.cur.clone(), button: None });
         }
     }
 
@@ -120,7 +122,7 @@ impl App {
         let Some(first) = paths.first() else { return };
         let source_dir = first.parent().map(Path::to_path_buf).unwrap_or_default();
         let names = paths.iter().filter_map(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).collect();
-        self.drag = Some(Drag { paths, names, source_dir });
+        self.drag = Some(Drag { paths, names, source_dir, button: None });
     }
 
     /// A drag is under way: one started in this window, or files another program drags over it.
@@ -146,6 +148,25 @@ impl App {
         self.run_op(op, sources, dest);
     }
 
+    /// A drag released over `target` that the shell has to decide: Alt or Ctrl+Shift make
+    /// shortcuts, and a right-button drag asks (Copy here / Move here / Create shortcuts here).
+    fn shell_drop_into(&mut self, sources: Vec<PathBuf>, target: PathBuf, keys: explorer_sys::DragKeys) {
+        if let Some(why) = refuse(&sources, &target) {
+            if !why.is_empty() {
+                self.status = Some(why.into());
+            }
+            return;
+        }
+        match explorer_sys::shell_drop(self.hwnd, &sources, &target, keys) {
+            Ok(explorer_sys::DropResult::Moved) => self.status = Some(format!("Moved {} items", sources.len())),
+            Ok(explorer_sys::DropResult::Copied) => self.status = Some(format!("Copied {} items", sources.len())),
+            Ok(explorer_sys::DropResult::Linked) => self.status = Some("Created shortcuts".into()),
+            Ok(explorer_sys::DropResult::None) => {}
+            Err(e) => self.status = Some(format!("Drop: {e}")),
+        }
+        self.refresh();
+    }
+
     /// End of frame: drop, leave the window, or draw what would happen.
     pub fn finish_drag(&mut self, ctx: &egui::Context) {
         let hovered = self.frame_hover.take();
@@ -158,7 +179,12 @@ impl App {
             let pos = ctx.input(|i| i.pointer.latest_pos());
             let over_list = pos.is_some_and(|p| self.list_rect.is_some_and(|r| r.contains(p)));
             let over_split = pos.and_then(|p| self.split_list_target(p));
-            let target = self.drop_target.take().or(over_split).or_else(|| over_list.then(|| self.cur.clone()));
+            let target = self
+                .drop_target
+                .take()
+                .or_else(|| self.tab_drop.take())
+                .or(over_split)
+                .or_else(|| over_list.then(|| self.cur.clone()));
             if let Some(host) = &self.drop_host {
                 host.set_target(target.as_deref());
             }
@@ -168,9 +194,25 @@ impl App {
             self.drag_hover.step(Instant::now(), None, DRAG_HOVER_DELAY);
             return;
         }
-        let (down, pos, mods) = ctx.input(|i| (i.pointer.primary_down(), i.pointer.latest_pos(), i.modifiers));
+        let (primary, secondary, pos, mods) =
+            ctx.input(|i| (i.pointer.primary_down(), i.pointer.secondary_down(), i.pointer.latest_pos(), i.modifiers));
+        // The button the drag started with; the drag ends when that one is let go.
+        let button = match self.drag.as_ref().and_then(|d| d.button) {
+            Some(b) => b,
+            None => {
+                let b =
+                    if secondary && !primary { egui::PointerButton::Secondary } else { egui::PointerButton::Primary };
+                if let Some(d) = self.drag.as_mut() {
+                    d.button = Some(b);
+                }
+                b
+            }
+        };
+        let right = button == egui::PointerButton::Secondary;
+        let down = if right { secondary } else { primary };
         // With the split view open, the blank part of either pane is the folder it shows.
         if self.drop_target.is_none()
+            && self.tab_drop.is_none()
             && let Some(p) = pos
         {
             self.drop_target = self.split_drop_fallback(p);
@@ -179,8 +221,15 @@ impl App {
         if !down {
             self.drag_hover.step(Instant::now(), None, DRAG_HOVER_DELAY);
             let paths = std::mem::take(&mut self.drag).map(|d| d.paths).unwrap_or_default();
-            if let Some(t) = self.drop_target.take() {
-                self.drop_into(paths, t, mods);
+            let target = self.drop_target.take().or_else(|| self.tab_drop.take());
+            if let Some(t) = target {
+                let recycle = t == Path::new(RECYCLE_BIN);
+                if cfg!(windows) && !recycle && (right || mods.alt || (mods.ctrl && mods.shift)) {
+                    let keys = explorer_sys::DragKeys { ctrl: mods.ctrl, shift: mods.shift, alt: mods.alt, right };
+                    self.shell_drop_into(paths, t, keys);
+                } else {
+                    self.drop_into(paths, t, mods);
+                }
             }
             return;
         }
@@ -205,12 +254,19 @@ impl App {
         let Some(drag) = &self.drag else { return };
         let Some(pos) = pos else { return };
         let n = drag.paths.len();
-        let text = match &self.drop_target {
+        let target = self.drop_target.clone().or_else(|| self.tab_drop.clone());
+        let text = match &target {
             Some(t) => {
-                let verb = match pick_op(&drag.paths, t, mods) {
-                    FileOp::Copy => "Copy to",
-                    FileOp::Move => "Move to",
-                    _ => "Move to",
+                let verb = if right && t != Path::new(RECYCLE_BIN) {
+                    "Drop in"
+                } else if t != Path::new(RECYCLE_BIN) && (mods.alt || (mods.ctrl && mods.shift)) {
+                    "Create shortcut in"
+                } else {
+                    match pick_op(&drag.paths, t, mods) {
+                        FileOp::Copy => "Copy to",
+                        FileOp::Move => "Move to",
+                        _ => "Move to",
+                    }
                 };
                 let name = if t == Path::new(RECYCLE_BIN) {
                     "Recycle Bin".to_string()

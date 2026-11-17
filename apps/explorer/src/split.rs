@@ -935,7 +935,7 @@ fn apply(app: &mut App, s: &mut Split, ctx: &egui::Context, out: Out) {
         let paths = s.selected_paths();
         if !paths.is_empty() {
             let names = s.selected.clone();
-            app.drag = Some(crate::dnd::Drag { paths, names, source_dir: s.cur.clone() });
+            app.drag = Some(crate::dnd::Drag { paths, names, source_dir: s.cur.clone(), button: None });
             s.active = true;
         }
     }

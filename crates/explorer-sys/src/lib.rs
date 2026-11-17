@@ -25,7 +25,7 @@ mod default_handler;
 #[cfg(windows)]
 mod drop_target;
 #[cfg(windows)]
-pub use drop_target::DropHost;
+pub use drop_target::{DragKeys, DropHost, shell_drop};
 #[cfg(any(windows, test))]
 pub mod everything;
 #[cfg(windows)]
@@ -611,6 +611,12 @@ pub enum FileOp {
     Delete,
 }
 
+/// Makes `hwnd` the owner of the dialogs the shell raises during file operations (replace or
+/// skip, errors), so they open in front of the app. Windows only.
+pub fn set_file_op_owner(hwnd: isize) {
+    imp::set_file_op_owner(hwnd)
+}
+
 /// Runs a shell file operation and blocks until it finishes (call from a worker thread).
 /// Windows shows its own progress and "replace or skip" dialogs. Returns `Ok(false)` when the
 /// user cancelled part of it.
@@ -806,6 +812,20 @@ pub fn drag_out(hwnd: isize, items: &[PathBuf]) -> io::Result<DropResult> {
 /// Stand-in so the app builds off Windows: nothing can drop on the window there.
 #[cfg(not(windows))]
 pub struct DropHost;
+
+#[cfg(not(windows))]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DragKeys {
+    pub ctrl: bool,
+    pub shift: bool,
+    pub alt: bool,
+    pub right: bool,
+}
+
+#[cfg(not(windows))]
+pub fn shell_drop(_hwnd: isize, _items: &[PathBuf], _target: &Path, _keys: DragKeys) -> io::Result<DropResult> {
+    Err(io::Error::new(io::ErrorKind::Unsupported, "shell drop is Windows-only"))
+}
 
 #[cfg(not(windows))]
 impl DropHost {

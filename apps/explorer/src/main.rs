@@ -283,6 +283,8 @@ struct App {
     pub frame_hover: Option<(dnd::HoverTarget, Option<PathBuf>)>,
     /// Folder under the pointer during a drag (set while drawing each frame).
     pub drop_target: Option<PathBuf>,
+    /// The folder of the tab the pointer is over during a drag.
+    pub tab_drop: Option<PathBuf>,
     release_pointer: bool,
     /// The window as an OLE drop target: files dragged in from other programs (Windows).
     pub drop_host: Option<explorer_sys::DropHost>,
@@ -435,6 +437,7 @@ impl App {
             drag_hover: dnd::HoverTimer::default(),
             frame_hover: None,
             drop_target: None,
+            tab_drop: None,
             release_pointer: false,
             drop_host: None,
             ext_pointer: false,
@@ -2606,6 +2609,7 @@ impl eframe::App for App {
             && let RawWindowHandle::Win32(w) = h.as_raw()
         {
             self.hwnd = w.hwnd.get();
+            explorer_sys::set_file_op_owner(self.hwnd);
             // Replaces winit's drop handler (always "copy", no pointer position, files only).
             if cfg!(windows) {
                 let wake = ui.ctx().clone();
@@ -2691,6 +2695,7 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         self.persist_tick(&ctx);
         self.drop_target = None;
+        self.tab_drop = None;
         view::tab_bar(self, ui);
         view::toolbar(self, ui);
         view::command_bar(self, ui);
