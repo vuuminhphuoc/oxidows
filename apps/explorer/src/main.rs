@@ -1068,6 +1068,13 @@ impl App {
             .spawn(move || {
                 let pre = undo::snapshot_targets(&sources, dest.as_deref());
                 let r = explorer_sys::file_op(op, &sources, dest.as_deref());
+                // Skip in the Replace dialog still reports success: say what actually happened.
+                let desc = if op == FileOp::Move && matches!(r, Ok(true)) {
+                    let moved = sources.iter().filter(|p| std::fs::symlink_metadata(p).is_err()).count();
+                    if moved < sources.len() { dnd::moved_text(moved, sources.len()) } else { desc }
+                } else {
+                    desc
+                };
                 // Recorded even when cancelled part-way: whatever was done can be undone.
                 let rec = if r.is_ok() { undo::record(op, &sources, dest.as_deref(), &pre) } else { None };
                 let _ = tx.send(Msg::OpDone(desc, r, rec));
