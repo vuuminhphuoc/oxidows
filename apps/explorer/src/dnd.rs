@@ -170,15 +170,17 @@ impl App {
                     std::thread::sleep(std::time::Duration::from_millis(100));
                     moved = gone();
                 }
-                self.status = Some(match moved {
-                    0 => "Nothing was moved".into(),
-                    n if n == sources.len() => format!("Moved {n} items"),
-                    n => format!("Moved {n} of {} items", sources.len()),
-                });
+                self.status = Some(moved_text(moved, sources.len()));
             }
             Ok(explorer_sys::DropResult::Copied) => self.status = Some(format!("Copied {} items", sources.len())),
             Ok(explorer_sys::DropResult::Linked) => self.status = Some("Created shortcuts".into()),
-            Ok(explorer_sys::DropResult::None) => {}
+            Ok(explorer_sys::DropResult::None) => {
+                // The shell's menu ("Move here") reports no effect even when it did the work, and a
+                // Skip or a cancelled menu leaves the files: look at the disk instead of keeping a
+                // message from an earlier action.
+                let gone = sources.iter().filter(|p| std::fs::symlink_metadata(p).is_err()).count();
+                self.status = (gone > 0).then(|| moved_text(gone, sources.len()));
+            }
             Err(e) => self.status = Some(format!("Drop: {e}")),
         }
         self.refresh();
@@ -333,6 +335,15 @@ impl App {
     }
 }
 
+/// Status line for a move that left `moved` of `total` items gone from their folder.
+pub fn moved_text(moved: usize, total: usize) -> String {
+    match moved {
+        0 => "Nothing was moved".into(),
+        n if n == total => format!("Moved {n} items"),
+        n => format!("Moved {n} of {total} items"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,5 +387,12 @@ mod tests {
         // Staying on the same target starts a fresh cycle if still eligible.
         assert_eq!(timer.step(t1 + Duration::from_millis(700), Some(tab2), delay), (None, Some(delay)));
         assert_eq!(timer.step(t1 + Duration::from_millis(800), None, delay), (None, None));
+    }
+
+    #[test]
+    fn moved_status_counts_what_left() {
+        assert_eq!(moved_text(0, 2), "Nothing was moved");
+        assert_eq!(moved_text(2, 2), "Moved 2 items");
+        assert_eq!(moved_text(1, 3), "Moved 1 of 3 items");
     }
 }
