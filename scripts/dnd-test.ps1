@@ -1,8 +1,8 @@
 <#
 .SYNOPSIS
   End-to-end drag and drop check for oxi-explorer on a real desktop: a drag out of the file list
-  into another program (a plain WinForms window), and a drag from another program into the window.
-  The mouse is driven with real input events, so the system's own drag loop runs.
+  into another program (a plain WinForms window), a drag from another program into the window, and
+  drags between the two panes of the split view. The mouse is driven with real input events, so the system's own drag loop runs.
 
 .EXAMPLE
   ./scripts/dnd-test.ps1 -Exe target/release/oxi-explorer.exe -OutDir dnd
@@ -156,12 +156,12 @@ $end = (Get-Date).AddSeconds(30)
 while ((Get-Date) -lt $end -and $p.MainWindowHandle -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 100; $p.Refresh() }
 if ($p.MainWindowHandle -eq [IntPtr]::Zero) { throw "no window" }
 # MainWindowHandle may be a helper window; the real one has the title.
-function Oxi-Hwnd {
-    foreach ($w in [DndEnum]::Of([uint32]$p.Id)) {
+function Oxi-Hwnd($proc = $p) {
+    foreach ($w in [DndEnum]::Of([uint32]$proc.Id)) {
         $f = $w -split '\|'
         if ($f[2] -like "*File Explorer (oxidows)" -and $f[1] -eq "Window Class") { return [IntPtr][int64]$f[0] }
     }
-    return $p.MainWindowHandle
+    return $proc.MainWindowHandle
 }
 $hw = Oxi-Hwnd
 Start-Sleep -Seconds 3
@@ -268,6 +268,61 @@ if (-not $arrived) { $failures += "drag in: the dropped file never reached the f
 Stop-Process -Id $source.Id -Force -ErrorAction SilentlyContinue
 
 Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+
+# --- Split view: drag files from one pane to the other and back ------------------------
+Start-Sleep -Seconds 1
+$left = Join-Path $root "split-left"
+$right = Join-Path $root "split-right"
+New-Item -ItemType Directory -Force -Path $left, $right | Out-Null
+foreach ($n in 1..3) { "left $n" | Set-Content (Join-Path $left "split-left-file-$n.txt") }
+foreach ($n in 1..2) { "right $n" | Set-Content (Join-Path $right "split-right-file-$n.txt") }
+"width=980`nheight=520`nmaximized=false`nsplit=$right`n" | Set-Content (Join-Path $cfgDir "explorer.ini")
+$sw = 1000; $sh = 560
+$stderr2 = Join-Path $OutDir "explorer-split-stderr.txt"
+$p = Start-Process -FilePath $exePath -ArgumentList "`"$left`"" -PassThru -RedirectStandardError $stderr2
+$end = (Get-Date).AddSeconds(30)
+while ((Get-Date) -lt $end -and $p.MainWindowHandle -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 100; $p.Refresh() }
+if ($p.MainWindowHandle -eq [IntPtr]::Zero) { throw "no window for the split view" }
+Start-Sleep -Seconds 3
+$hw = Oxi-Hwnd $p
+[Dnd.Win]::ShowWindow($hw, 9) | Out-Null
+[Dnd.Win]::MoveWindow($hw, 0, 0, $sw, $sh, $true) | Out-Null
+[Dnd.Win]::SetWindowPos($hw, [IntPtr]::new(-1), 0, 0, 0, 0, 0x0043) | Out-Null
+[Dnd.Win]::SetForegroundWindow($hw) | Out-Null
+Start-Sleep -Seconds 2
+Shot "split-before"
+Dump-Shot "split-before"
+Write-Host "split view: oxi window $(Rect-Of $hw)"
+function Drag-Within($x0, $y0, $x1, $y1) {
+    Mouse-To $x0 $y0; Start-Sleep -Milliseconds 150
+    Mouse-Down; Start-Sleep -Milliseconds 150
+    Mouse-Glide $x0 $y0 ($x0 + 30) $y0 6
+    Mouse-Glide ($x0 + 30) $y0 $x1 $y1 40
+    Start-Sleep -Milliseconds 400
+    Mouse-Up
+    Start-Sleep -Milliseconds 900
+}
+# Main pane (left half) to the blank part of the split pane; the press row is found by scanning.
+$toSplit = $false
+foreach ($y in 150..330 | Where-Object { $_ % 12 -eq 0 }) {
+    Drag-Within 250 $y 830 450
+    if (@(Get-ChildItem $right -Filter "split-left-file-*.txt" -ErrorAction SilentlyContinue).Count -gt 0) { $toSplit = $true; Write-Host "main to split pane: pressed at 250,$y"; break }
+}
+Shot "split-after-to-split"
+Dump-Shot "split-after-to-split"
+if (-not $toSplit) { $failures += "split view: a file dragged from the main pane never reached the split pane's folder" }
+# Split pane to the blank part of the main pane.
+$toMain = $false
+foreach ($y in 150..330 | Where-Object { $_ % 12 -eq 0 }) {
+    Drag-Within 700 $y 300 450
+    if (@(Get-ChildItem $left -Filter "split-right-file-*.txt" -ErrorAction SilentlyContinue).Count -gt 0) { $toMain = $true; Write-Host "split pane to main: pressed at 700,$y"; break }
+}
+Shot "split-after-to-main"
+Dump-Shot "split-after-to-main"
+if (-not $toMain) { $failures += "split view: a file dragged from the split pane never reached the main pane's folder" }
+Get-Content $stderr2 -ErrorAction SilentlyContinue | Select-Object -First 20 | ForEach-Object { Write-Host "  split stderr: $_" }
+
+Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
 Get-Content $stderr -ErrorAction SilentlyContinue | Where-Object { $_ -match "dnd|drop target" } | Select-Object -Last 40 | ForEach-Object { Write-Host "  app: $_" }
 if ($failures) { $failures | ForEach-Object { Write-Host "FAIL: $_" }; exit 1 }
-Write-Host "Drag and drop OK"
+Write-Host "Drag and drop OK (list, drag out, drag in, split view)"

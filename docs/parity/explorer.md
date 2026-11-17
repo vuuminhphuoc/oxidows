@@ -88,6 +88,7 @@ What Windows 11 File Explorer does, and where `oxi-explorer` stands. Matched by 
 | Compact mode | ✅ | … menu ▸ Compact view: tighter rows and tiles |
 | Preview pane (Alt+P) | ✅ | hosts the registered Windows preview handler (Office, PDF, mail, fonts, media) out of process; text and thumbnails otherwise; files marked as downloaded from the internet get a warning instead, as Explorer |
 | Details pane (Alt+Shift+P) | 🟡 | Shared panel slot with Preview pane; large thumbnail/icon, name, type, kind-specific properties (image, audio/video, document), in-place editing for Rating (five stars), Tags, Title, Authors, Comments via IPropertyStore, write error reporting; live GUI not yet verified |
+| Split view (Ctrl+Shift+S) | ✅ | Windows 11 Explorer has none; added to move files between two folders by dragging. A second pane beside the file list with its own folder, address box, back/up, sorting, selection, inline rename, shell "Show more options" menu and cut/copy/paste/delete. Drag across (same drive moves, other drive copies, Ctrl copies, Shift moves) onto a folder or the blank part of either pane, and out of the window as usual. Copy/Move buttons and Ctrl+Alt+C / Ctrl+Alt+M send the selection to the other pane; F6 switches the pane the keys act on; the folder is remembered. Drag tested on the CI desktop with real mouse input (`scripts/dnd-test.ps1`) |
 | Status bar: item count, selection count and size | ✅ | |
 
 ## Selection and keyboard

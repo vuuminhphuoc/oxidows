@@ -119,8 +119,7 @@ impl App {
     pub fn drag_paths(&mut self, paths: Vec<PathBuf>) {
         let Some(first) = paths.first() else { return };
         let source_dir = first.parent().map(Path::to_path_buf).unwrap_or_default();
-        let names =
-            paths.iter().filter_map(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).collect();
+        let names = paths.iter().filter_map(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).collect();
         self.drag = Some(Drag { paths, names, source_dir });
     }
 
@@ -158,7 +157,8 @@ impl App {
             self.hover_actions(ctx, hovered);
             let pos = ctx.input(|i| i.pointer.latest_pos());
             let over_list = pos.is_some_and(|p| self.list_rect.is_some_and(|r| r.contains(p)));
-            let target = self.drop_target.take().or_else(|| over_list.then(|| self.cur.clone()));
+            let over_split = pos.and_then(|p| self.split_list_target(p));
+            let target = self.drop_target.take().or(over_split).or_else(|| over_list.then(|| self.cur.clone()));
             if let Some(host) = &self.drop_host {
                 host.set_target(target.as_deref());
             }
@@ -169,6 +169,12 @@ impl App {
             return;
         }
         let (down, pos, mods) = ctx.input(|i| (i.pointer.primary_down(), i.pointer.latest_pos(), i.modifiers));
+        // With the split view open, the blank part of either pane is the folder it shows.
+        if self.drop_target.is_none()
+            && let Some(p) = pos
+        {
+            self.drop_target = self.split_drop_fallback(p);
+        }
         let inside = pos.is_some_and(|p| ctx.content_rect().contains(p));
         if !down {
             self.drag_hover.step(Instant::now(), None, DRAG_HOVER_DELAY);

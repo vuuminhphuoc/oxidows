@@ -237,10 +237,12 @@ pub enum ViewIcon {
     PreviewPane,
     /// A window with the details pane on the right.
     DetailsPane,
+    /// A window split into two folders side by side.
+    SplitView,
 }
 
 impl ViewIcon {
-    pub const ALL: [ViewIcon; 11] = [
+    pub const ALL: [ViewIcon; 12] = [
         ViewIcon::ExtraLarge,
         ViewIcon::Large,
         ViewIcon::Medium,
@@ -252,6 +254,7 @@ impl ViewIcon {
         ViewIcon::Compact,
         ViewIcon::PreviewPane,
         ViewIcon::DetailsPane,
+        ViewIcon::SplitView,
     ];
 
     /// Draws the picture into `rect` (meant for 16 × 16 points, scales with it).
@@ -345,6 +348,14 @@ impl ViewIcon {
                     for y in [5.5, 8.0, 10.5] {
                         line(11.0, y, 2.0);
                     }
+                }
+            }
+            ViewIcon::SplitView => {
+                boxed(1.5, 2.5, 13.0, 11.0, 2.0);
+                painter.line_segment([at(8.0, 2.5), at(8.0, 13.5)], stroke);
+                for y in [5.5, 8.0, 10.5] {
+                    line(3.0, y, 3.5);
+                    line(9.5, y, 3.5);
                 }
             }
         }

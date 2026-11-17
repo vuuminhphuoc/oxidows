@@ -9,6 +9,7 @@ mod menus;
 mod nearby;
 mod pane;
 mod settings;
+mod split;
 mod undo;
 mod view;
 
@@ -46,6 +47,10 @@ enum Msg {
     /// Subfolder names for the navigation tree, and display names of shell folders among them.
     Tree(PathBuf, Vec<String>, Vec<(PathBuf, String)>),
     Preview(PathBuf, pane::PreviewData),
+    /// The split pane's listing (same generation scheme as `Batch` and `Done`) and watcher.
+    SplitBatch(u64, Vec<Entry>),
+    SplitDone(u64, Result<(), String>),
+    SplitChanged(PathBuf),
 }
 
 /// Icons are cached per extension; only files that carry their own icon get one each.
@@ -372,6 +377,8 @@ struct App {
     /// Options ▸ Folder views: the button waiting for "Yes" (Apply to all folders, Reset folders).
     folder_confirm: Option<FolderAction>,
     default_app: ui_common::default_app::DefaultApp,
+    /// The second folder beside the main one (Ctrl+Shift+S).
+    pub split: Option<split::Split>,
 }
 
 impl App {
@@ -500,6 +507,7 @@ impl App {
             folder_confirm: None,
             grid_nav: None,
             default_app: ui_common::default_app::DefaultApp::new(cfg!(windows).then(folder_handler)),
+            split: None,
         };
         let s = app.persist.settings.clone();
         app.apply_settings(&s);
@@ -509,6 +517,9 @@ impl App {
         app.start_watch();
         app.start_icon_loader();
         app.load_drives();
+        if let Some(p) = app.persist.settings.split.clone() {
+            app.open_split(p);
+        }
         app
     }
 
@@ -1117,7 +1128,25 @@ impl App {
                     }
                     Err(e) => self.status = Some(format!("Could not connect to {}: {e}", root.display())),
                 },
-                Msg::Drives(d) => self.drives = d,
+                Msg::Drives(d) => {
+                    self.drives = d;
+                    self.split_drives_changed();
+                }
+                Msg::SplitBatch(g, batch) => {
+                    if let Some(s) = &mut self.split {
+                        s.on_batch(g, batch);
+                    }
+                }
+                Msg::SplitDone(g, r) => {
+                    if let Some(s) = &mut self.split {
+                        s.on_done(g, r);
+                    }
+                }
+                Msg::SplitChanged(dir) => {
+                    if let Some(s) = &mut self.split {
+                        s.on_changed(&dir);
+                    }
+                }
                 Msg::Devices(d) => {
                     for dev in &d {
                         ui_common::ensure_glyphs(&self.ctx, &dev.label);
@@ -1181,6 +1210,7 @@ impl App {
                         Err(e) => format!("Error: {e}"),
                     });
                     self.refresh();
+                    self.refresh_split();
                     self.load_drives();
                 }
             }
@@ -2303,6 +2333,9 @@ impl App {
         } else if preview_pane {
             self.toggle_pane(pane::Pane::Preview);
         }
+        if ui.input_mut(|i| i.consume_key(ctrl | Modifiers::SHIFT, Key::S)) {
+            self.toggle_split();
+        }
         let (new_tab, close_tab, prev_tab, next_tab) = ui.input_mut(|i| {
             (
                 i.consume_key(ctrl, Key::T),
@@ -2322,6 +2355,22 @@ impl App {
             let n = self.tabs.len();
             let to = if next_tab { (self.active_tab + 1) % n } else { (self.active_tab + n - 1) % n };
             self.switch_tab(to);
+        }
+        // With the split pane active, the keys act on its folder.
+        if self.split_active() {
+            return self.split_keys(ui);
+        }
+        if self.split.is_some() {
+            // Ctrl+C reaches egui as a Copy event, not a key press, also with Alt held.
+            let (copy, mv) = ui.input_mut(|i| {
+                let copy =
+                    i.modifiers.alt && i.modifiers.command && i.events.iter().any(|e| matches!(e, egui::Event::Copy));
+                (copy, i.consume_key(ctrl | alt, Key::M))
+            });
+            if copy || mv {
+                self.send_to_split(mv);
+                return;
+            }
         }
         // Check Ctrl+Shift+E before Ctrl+E so egui's logical match doesn't trigger search focus.
         let (back, fwd, up, f5, f11, reveal, addr, find, newdir) = ui.input_mut(|i| {
@@ -2373,6 +2422,11 @@ impl App {
         let paste_pressed = ctrl_v && !self.ctrl_v_was_down;
         self.ctrl_v_was_down = ctrl_v;
         if text_focused {
+            return;
+        }
+        // F6, as in Explorer, moves between panes: here, to the split pane (and back).
+        if self.split.is_some() && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F6)) {
+            self.split_switch_pane();
             return;
         }
         if paste_pressed {
@@ -2572,6 +2626,7 @@ impl eframe::App for App {
         let focused = ui.input(|i| i.viewport().focused.unwrap_or(true));
         if focused && !self.was_focused && !self.loading {
             self.refresh();
+            self.refresh_split();
         }
         self.was_focused = focused;
 
@@ -2588,6 +2643,14 @@ impl eframe::App for App {
         // A drop from another program finished (the shell did the copy or move): show the result.
         if self.drop_host.as_ref().is_some_and(|h| h.take_dropped()) {
             self.refresh();
+            self.refresh_split();
+        }
+        // A press in the split pane gives it the keyboard; a press anywhere else gives it back.
+        let pressed = ui.input(|i| i.pointer.any_pressed().then(|| i.pointer.interact_pos()).flatten());
+        if let (Some(p), Some(s)) = (pressed, &mut self.split)
+            && let Some(r) = s.rect
+        {
+            s.active = r.contains(p);
         }
         // Where the shell's drop target is not available (not Windows), files dropped on the window
         // arrive as events: move within a drive, copy across drives.
@@ -2636,9 +2699,11 @@ impl eframe::App for App {
         }
         view::sidebar(self, ui);
         pane::show(self, ui);
+        split::show(self, ui);
         let content = ui_common::content_frame(ui.style());
         let list = egui::CentralPanel::default().frame(content).show(ui, |ui| view::file_list(self, ui));
         self.list_rect = Some(list.response.rect);
+        split::mark_main(self, ui);
         view::dialog(self, ui);
         nearby::show(self, ui);
         if self.about_open {
