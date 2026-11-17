@@ -457,6 +457,17 @@ pub(crate) fn view_menu(app: &mut App, ui: &mut Ui) {
             }
         }
         ui.separator();
+        if MenuItem::new("Split view")
+            .icon(ViewIcon::SplitView)
+            .shortcut("Ctrl+Shift+S")
+            .checked(app.split.is_some())
+            .ui(ui)
+            .clicked()
+        {
+            app.toggle_split();
+            ui.close();
+        }
+        ui.separator();
         let none = ui_common::MenuIcon::None;
         menu_check(ui, none, "Item check boxes", &mut app.item_checkboxes);
         menu_check(ui, none, "File name extensions", &mut app.show_extensions);
@@ -632,6 +643,32 @@ pub fn command_bar(app: &mut App, ui: &mut Ui) {
             command_separator(ui);
             command_menu(ui, Icon::Sort, "Sort", "Sort and group the items", |ui| sort_menu(app, ui));
             command_menu(ui, Icon::View, "View", "Layout and which items and panes to show", |ui| view_menu(app, ui));
+            if app.split.is_some() {
+                command_separator(ui);
+                let can = files && !virt && app.split_has_folder();
+                if command_button(
+                    ui,
+                    Icon::Copy,
+                    "Copy to pane",
+                    can,
+                    "Copy the selected items into the folder of the split pane (Ctrl+Alt+C)",
+                )
+                .clicked()
+                {
+                    app.send_to_split(false);
+                }
+                if command_button(
+                    ui,
+                    Icon::Send,
+                    "Move to pane",
+                    can,
+                    "Move the selected items into the folder of the split pane (Ctrl+Alt+M)",
+                )
+                .clicked()
+                {
+                    app.send_to_split(true);
+                }
+            }
             if !app.filter.trim().is_empty() || app.deep_search.is_some() {
                 let n = app.search_filters.count();
                 let label = if n > 0 { format!("Search options ({n})") } else { "Search options".to_string() };
@@ -653,6 +690,16 @@ pub fn command_bar(app: &mut App, ui: &mut Ui) {
                 );
                 if r.clicked() {
                     app.toggle_pane(Pane::Details);
+                }
+                let r = ui_common::view_toggle(
+                    ui,
+                    ui_common::ViewIcon::SplitView,
+                    "Split",
+                    app.split.is_some(),
+                    "Show a second folder beside this one, to drag files between them (Ctrl+Shift+S)",
+                );
+                if r.clicked() {
+                    app.toggle_split();
                 }
             });
         });
@@ -943,13 +990,7 @@ fn tree_node(
                 tree_chevron(ui, openness, r, color);
             }
         });
-        ui_common::nav_item_sense(
-            ui,
-            Some(icon),
-            label,
-            explorer_core::path_eq(path, cur),
-            Sense::click_and_drag(),
-        )
+        ui_common::nav_item_sense(ui, Some(icon), label, explorer_core::path_eq(path, cur), Sense::click_and_drag())
     });
     let header = egui::InnerResponse { inner: row.inner, response: row.response.clone() };
     if let Some(target) = reveal

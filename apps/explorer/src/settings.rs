@@ -144,6 +144,8 @@ pub struct Settings {
     pub col_attrs: bool,
     pub pane: Pane,
     pub pane_width: f32,
+    /// The folder shown in the split pane; `None` while the split view is closed.
+    pub split: Option<PathBuf>,
     pub theme: Theme,
     /// Lower-cased folder path → (order changed, view).
     pub folders: BTreeMap<String, (u64, FolderView)>,
@@ -218,6 +220,7 @@ impl Default for Settings {
             col_attrs: false,
             pane: Pane::None,
             pane_width: 280.0,
+            split: None,
             theme: Theme::System,
             folders: BTreeMap::new(),
             pinned: Vec::new(),
@@ -380,6 +383,7 @@ impl Settings {
                     }
                 }
                 "pane_width" => s.pane_width = v.parse().unwrap_or(s.pane_width),
+                "split" if !v.is_empty() => s.split = Some(PathBuf::from(v)),
                 "gallery_folders" if !v.is_empty() => {
                     s.gallery_folders = v.split(';').filter(|p| !p.is_empty()).map(PathBuf::from).collect();
                 }
@@ -462,6 +466,9 @@ impl Settings {
             self.compact,
             self.pane_width.round()
         ));
+        if let Some(p) = &self.split {
+            out.push_str(&format!("split={}\n", p.display()));
+        }
         if !self.gallery_folders.is_empty() {
             let list: Vec<String> = self.gallery_folders.iter().map(|p| p.display().to_string()).collect();
             out.push_str(&format!("gallery_folders={}\n", list.join(";")));
@@ -725,6 +732,7 @@ impl App {
         s.col_attrs = self.col_attrs;
         s.pane = self.pane;
         s.pane_width = self.pane_width;
+        s.split = self.split.as_ref().map(|p| p.cur.clone());
         s.show_protected = self.show_protected;
         s.item_checkboxes = self.item_checkboxes;
         s.compact = self.compact;
@@ -762,6 +770,7 @@ mod tests {
             col_attrs: true,
             pane: Pane::Details,
             pane_width: 280.0,
+            split: Some(PathBuf::from(r"D:\Work")),
             theme: Theme::Light,
             transparency: true,
             folders: BTreeMap::new(),
