@@ -117,6 +117,11 @@ pub fn tab_bar(app: &mut App, ui: &mut Ui) {
                 rects.push(r.rect);
                 if app.dragging() && !active && r.contains_pointer() {
                     app.frame_hover = Some((crate::dnd::HoverTarget::Tab(i), None));
+                    // Released here, the files go into that tab's folder.
+                    let folder = app.tabs[i].cur.clone();
+                    if !classify(&folder).is_page() {
+                        app.tab_drop = Some(folder);
+                    }
                 }
                 if r.dragged() {
                     dragged = Some(i);

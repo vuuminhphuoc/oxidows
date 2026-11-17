@@ -220,7 +220,7 @@ pub fn show(hwnd: isize, dir: &Path, items: &[PathBuf], extended: bool) -> io::R
 /// The shell's data object for `items` (all in one folder): what Explorer puts on the
 /// clipboard or in a drag, with every format other programs expect (CF_HDROP, shell IDs,
 /// file contents for virtual targets…).
-fn data_object(hwnd: HWND, items: &[PathBuf]) -> io::Result<windows::Win32::System::Com::IDataObject> {
+pub(crate) fn data_object(hwnd: HWND, items: &[PathBuf]) -> io::Result<windows::Win32::System::Com::IDataObject> {
     crate::windows::com_init();
     let pidls = parse(items)?;
     let parent: IShellFolder = unsafe { SHBindToParent(pidls.0[0], None) }.map_err(to_io)?;

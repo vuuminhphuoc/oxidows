@@ -25,7 +25,7 @@ mod default_handler;
 #[cfg(windows)]
 mod drop_target;
 #[cfg(windows)]
-pub use drop_target::DropHost;
+pub use drop_target::{DragKeys, DropHost, shell_drop};
 #[cfg(any(windows, test))]
 pub mod everything;
 #[cfg(windows)]
@@ -806,6 +806,20 @@ pub fn drag_out(hwnd: isize, items: &[PathBuf]) -> io::Result<DropResult> {
 /// Stand-in so the app builds off Windows: nothing can drop on the window there.
 #[cfg(not(windows))]
 pub struct DropHost;
+
+#[cfg(not(windows))]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DragKeys {
+    pub ctrl: bool,
+    pub shift: bool,
+    pub alt: bool,
+    pub right: bool,
+}
+
+#[cfg(not(windows))]
+pub fn shell_drop(_hwnd: isize, _items: &[PathBuf], _target: &Path, _keys: DragKeys) -> io::Result<DropResult> {
+    Err(io::Error::new(io::ErrorKind::Unsupported, "shell drop is Windows-only"))
+}
 
 #[cfg(not(windows))]
 impl DropHost {
