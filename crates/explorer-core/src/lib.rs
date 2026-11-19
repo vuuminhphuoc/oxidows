@@ -842,14 +842,16 @@ pub fn format_size_kb(bytes: u64) -> String {
 
 /// Short human size for the status bar and drives, as Windows' `StrFormatByteSizeW` writes it:
 /// three significant digits, cut off rather than rounded ("1.50 KB", "12.3 GB", "117 MB").
-/// Each step to the next unit drops the low 10 bits, which is why 1,500,000 bytes is "1.42 MB".
+/// Each step to the next unit drops the low 10 bits, which is why 1,500,000 bytes is "1.42 MB",
+/// and 1000 KB already counts as "0.97 MB".
 pub fn format_bytes(bytes: u64) -> String {
     const UNITS: [&str; 6] = ["KB", "MB", "GB", "TB", "PB", "EB"];
     if bytes < 1024 {
         return format!("{bytes} bytes");
     }
     let (mut x, mut unit) = (bytes, 0);
-    while x >= 1 << 20 {
+    // Never four digits: from 1000 of a unit on, Windows shows the next unit ("0.97 MB").
+    while x >= 1000 << 10 {
         x >>= 10;
         unit += 1;
     }
@@ -1722,6 +1724,9 @@ mod tests {
         assert_eq!(format_bytes(123_456_789), "117 MB");
         assert_eq!(format_bytes(5_000_000_000), "4.65 GB");
         assert_eq!(format_bytes(15_000), "14.6 KB");
+        assert_eq!(format_bytes(999 * 1024), "999 KB");
+        assert_eq!(format_bytes(1000 * 1024), "0.97 MB");
+        assert_eq!(format_bytes(1023 * 1024), "0.99 MB");
         assert_eq!(format_bytes(500 * 1024 * 1024 * 1024), "500 GB");
     }
 
