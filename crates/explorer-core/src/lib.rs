@@ -740,9 +740,28 @@ pub fn format_attributes(attrs: u32) -> String {
     LETTERS.iter().filter(|(bit, _)| attrs & bit != 0).map(|&(_, c)| c).collect()
 }
 
-/// Natural ("logical") order like Explorer (`StrCmpLogicalW`): case-insensitive, "file2" < "file10",
-/// and between equal numbers the one with more leading zeros first ("file02" < "file2").
+/// The OS layer's own name order, when it has one (see [`set_name_order`]).
+static NAME_ORDER: std::sync::OnceLock<fn(&str, &str) -> Ordering> = std::sync::OnceLock::new();
+
+/// Makes [`natural_cmp`] use `f` from now on. `explorer-sys` installs Windows' own `StrCmpLogicalW`,
+/// so names sort exactly as in Explorer, including punctuation, accents and the user's language;
+/// [`natural_cmp_portable`] cannot know those tables. Only the first call has an effect.
+pub fn set_name_order(f: fn(&str, &str) -> Ordering) {
+    let _ = NAME_ORDER.set(f);
+}
+
+/// Explorer's name order: the one installed with [`set_name_order`], else [`natural_cmp_portable`].
 pub fn natural_cmp(a: &str, b: &str) -> Ordering {
+    match NAME_ORDER.get() {
+        Some(f) => f(a, b),
+        None => natural_cmp_portable(a, b),
+    }
+}
+
+/// Natural ("logical") order like Explorer (`StrCmpLogicalW`) for letters, digits, spaces and dots:
+/// case-insensitive, "file2" < "file10", and between equal numbers the one with more leading zeros
+/// first ("file02" < "file2"). Other characters just go by code point; used where no OS order is installed.
+pub fn natural_cmp_portable(a: &str, b: &str) -> Ordering {
     let (mut a, mut b) = (a.chars().peekable(), b.chars().peekable());
     loop {
         match (a.peek().copied(), b.peek().copied()) {
@@ -821,22 +840,30 @@ pub fn format_size_kb(bytes: u64) -> String {
     format!("{} KB", group_thousands(kb))
 }
 
-/// Short human size for the status bar and drives ("12.4 GB").
+/// Short human size for the status bar and drives, as Windows' `StrFormatByteSizeW` writes it:
+/// three significant digits, cut off rather than rounded ("1.50 KB", "12.3 GB", "117 MB").
+/// Each step to the next unit drops the low 10 bits, which is why 1,500,000 bytes is "1.42 MB",
+/// and 1000 KB already counts as "0.97 MB".
 pub fn format_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["bytes", "KB", "MB", "GB", "TB"];
-    let mut v = bytes as f64;
-    let mut u = 0;
-    while v >= 1024.0 && u < UNITS.len() - 1 {
-        v /= 1024.0;
-        u += 1;
+    const UNITS: [&str; 6] = ["KB", "MB", "GB", "TB", "PB", "EB"];
+    if bytes < 1024 {
+        return format!("{bytes} bytes");
     }
-    if u == 0 {
-        format!("{bytes} bytes")
-    } else if v >= 100.0 {
-        format!("{v:.0} {}", UNITS[u])
+    let (mut x, mut unit) = (bytes, 0);
+    // Never four digits: from 1000 of a unit on, Windows shows the next unit ("0.97 MB").
+    while x >= 1000 << 10 {
+        x >>= 10;
+        unit += 1;
+    }
+    let (whole, frac) = (x >> 10, x & 1023);
+    let digits = if whole >= 100 {
+        whole.to_string()
+    } else if whole >= 10 {
+        format!("{whole}.{}", (frac * 10) >> 10)
     } else {
-        format!("{v:.1} {}", UNITS[u])
-    }
+        format!("{whole}.{:02}", (frac * 100) >> 10)
+    };
+    format!("{digits} {}", UNITS[unit])
 }
 
 pub fn group_thousands(n: u64) -> String {
@@ -1660,7 +1687,7 @@ mod tests {
     #[test]
     fn natural_order() {
         let mut v = vec!["file10", "File2", "file1", "a", "file02"];
-        v.sort_by(|a, b| natural_cmp(a, b));
+        v.sort_by(|a, b| natural_cmp_portable(a, b));
         assert_eq!(v, ["a", "file1", "file02", "File2", "file10"]);
     }
 
@@ -1692,7 +1719,14 @@ mod tests {
         assert_eq!(format_size_kb(1025), "2 KB");
         assert_eq!(format_size_kb(5_000_000_000), "4,882,813 KB");
         assert_eq!(format_bytes(512), "512 bytes");
-        assert_eq!(format_bytes(1536), "1.5 KB");
+        assert_eq!(format_bytes(1536), "1.50 KB");
+        assert_eq!(format_bytes(1_500_000), "1.42 MB");
+        assert_eq!(format_bytes(123_456_789), "117 MB");
+        assert_eq!(format_bytes(5_000_000_000), "4.65 GB");
+        assert_eq!(format_bytes(15_000), "14.6 KB");
+        assert_eq!(format_bytes(999 * 1024), "999 KB");
+        assert_eq!(format_bytes(1000 * 1024), "0.97 MB");
+        assert_eq!(format_bytes(1023 * 1024), "0.99 MB");
         assert_eq!(format_bytes(500 * 1024 * 1024 * 1024), "500 GB");
     }
 

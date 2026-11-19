@@ -14,7 +14,7 @@ mod windows_only {
     use std::io::Write;
     use std::time::{Duration, Instant};
 
-    use explorer_core::{Entry, SortKey, format_size_kb, natural_cmp, sorted_view};
+    use explorer_core::{Entry, SortKey, format_size_kb, natural_cmp_portable, sorted_view};
     use windows_sys::Win32::UI::Shell::{StrCmpLogicalW, StrFormatKBSizeW};
 
     /// Folder size for the sort budget.
@@ -65,11 +65,11 @@ mod windows_only {
         let wide: Vec<Vec<u16>> = names.iter().map(|n| n.encode_utf16().chain(Some(0)).collect()).collect();
         let mut rows: Vec<(String, Duration, Option<Duration>)> = Vec::new();
 
-        // Name order: our `natural_cmp` on &str against StrCmpLogicalW on UTF-16 prepared once
+        // Name order: our `natural_cmp_portable` on &str against StrCmpLogicalW on UTF-16 prepared once
         // (the best case for Windows).
         let ours = time(|| {
             let mut v: Vec<&String> = names.iter().collect();
-            v.sort_by(|a, b| natural_cmp(a, b));
+            v.sort_by(|a, b| natural_cmp_portable(a, b));
             black_box(v);
         });
         let theirs = time(|| {
@@ -104,13 +104,18 @@ mod windows_only {
             .map(|(i, n)| Entry { name: n.clone(), is_dir: i % 10 == 0, size: sizes[i], ..Default::default() })
             .collect();
         let mut worst = Duration::ZERO;
-        for (label, key) in [("Name", SortKey::Name), ("Size", SortKey::Size)] {
+        let mut view = |label: &str, key: SortKey| {
             let d = time(|| {
                 black_box(sorted_view(&entries, "", true, key, true));
             });
             worst = worst.max(d);
             rows.push((format!("folder view of {FILES} entries sorted by {label}"), d, None));
-        }
+        };
+        view("Name (portable order)", SortKey::Name);
+        // What the app does: Windows' own comparer behind `natural_cmp`.
+        explorer_sys::use_windows_name_order();
+        view("Name (Windows order, as in the app)", SortKey::Name);
+        view("Size", SortKey::Size);
 
         let mut table = String::from(
             "### explorer-core vs Windows\n\n| Task | oxidows | Windows | Speed-up |\n| --- | --- | --- | --- |\n",

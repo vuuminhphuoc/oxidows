@@ -30,6 +30,13 @@ pub use drop_target::{DragKeys, DropHost, shell_drop};
 pub mod everything;
 #[cfg(windows)]
 mod libraries;
+#[cfg(windows)]
+mod name_order;
+#[cfg(windows)]
+pub use name_order::{use_windows_name_order, windows_name_cmp};
+/// Off Windows there is no system order to install; `natural_cmp_portable` stays in use.
+#[cfg(not(windows))]
+pub fn use_windows_name_order() {}
 
 mod walk;
 pub use walk::walk_parallel;

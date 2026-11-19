@@ -5,11 +5,16 @@
 //! Windows API and our code, and any difference fails CI. Edge cases (leading zeros, leap days,
 //! sizes at the 1 KB boundary) are listed in the corpora below; to guard a new function, add a
 //! corpus and a test. Runs on the `windows-latest` CI runner (its locale is en-US).
+//!
+//! The app itself sorts names with Windows' own `StrCmpLogicalW` (`use_windows_name_order`); the
+//! portable `natural_cmp_portable` is what tests and other platforms use, and is held to Windows
+//! for letters, digits, spaces and dots.
 #![cfg(windows)]
 
 use std::cmp::Ordering;
 
-use explorer_core::{format_bytes, format_size_kb, format_time, natural_cmp};
+use explorer_core::{format_bytes, format_size_kb, format_time, natural_cmp_portable};
+use explorer_sys::windows_name_cmp;
 use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
 use windows_sys::Win32::System::Time::FileTimeToSystemTime;
 use windows_sys::Win32::UI::Shell::{StrCmpLogicalW, StrFormatByteSizeW, StrFormatKBSizeW};
@@ -114,7 +119,7 @@ fn mismatches(names: &[&str]) -> Vec<String> {
     let mut out = Vec::new();
     for a in names {
         for b in names {
-            let (ours, theirs) = (natural_cmp(a, b), windows_cmp(a, b));
+            let (ours, theirs) = (natural_cmp_portable(a, b), windows_cmp(a, b));
             if ours != theirs {
                 out.push(format!("{a:?} vs {b:?}: oxidows {ours:?}, Windows {theirs:?}"));
             }
@@ -207,28 +212,98 @@ fn file_time_text_matches_windows() {
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
 
-/// Never fails: prints where oxidows still differs from Windows, for the CI log
-/// (`cargo test -p explorer-sys --test oracle divergence_report -- --nocapture`).
+/// Short sizes as the status bar shows them, against `StrFormatByteSizeW`: unit steps, the cut-off
+/// (not rounding) of the third digit, and a spread of magnitudes.
 #[test]
-fn divergence_report() {
-    let all: Vec<&str> = NAMES.iter().chain(WIDE_NAMES).copied().collect();
-    let bad = mismatches(&all);
-    println!("natural order, punctuation and non-ASCII names: {} of {} pairs differ", bad.len(), all.len() * all.len());
-    for line in bad.iter().take(40) {
-        println!("  {line}");
+fn short_size_matches_explorer() {
+    let mut sizes: Vec<u64> = vec![
+        0,
+        1,
+        500,
+        1000,
+        1023,
+        1024,
+        1025,
+        1536,
+        10_239,
+        10_240,
+        10_752,
+        102_399,
+        102_400,
+        999 * 1024,
+        1000 * 1024 - 1,
+        1000 * 1024,
+        1001 * 1024,
+        1_047_552,
+        1_048_575,
+        1_048_576,
+        1_500_000,
+        123_456_789,
+        999 << 20,
+        (1000 << 20) - 1,
+        1000 << 20,
+        1_073_741_823,
+        1_073_741_824,
+        5_000_000_000,
+        1 << 40,
+        (1 << 40) - 1,
+        (1 << 50) + 12_345_678,
+        (1 << 60) - 1,
+    ];
+    // Every magnitude from 2^10 to 2^59, a few values each, from a fixed seed.
+    let mut seed = 7u64;
+    for bits in 10..60 {
+        for _ in 0..8 {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            sizes.push((1u64 << bits) | (seed >> 20) & ((1u64 << bits) - 1));
+        }
     }
-
-    let mut differ = 0;
-    for n in [0u64, 1, 500, 1000, 1023, 1024, 1536, 10_240, 1_048_576, 1_500_000, 123_456_789, 5_000_000_000] {
+    let mut bad = Vec::new();
+    for n in sizes {
         let mut buf = [0u16; 64];
         // SAFETY: `buf` is writable for 64 u16 and the length passed is 64.
         unsafe { StrFormatByteSizeW(n as i64, buf.as_mut_ptr(), buf.len() as u32) };
         let theirs = buf_to_string(&buf);
         let ours = format_bytes(n);
         if ours != theirs {
-            differ += 1;
-            println!("  size {n}: oxidows {ours:?}, Windows {theirs:?}");
+            bad.push(format!("{n} bytes: oxidows {ours:?}, Windows {theirs:?}"));
         }
     }
-    println!("short sizes (format_bytes): {differ} of 12 differ");
+    assert!(bad.is_empty(), "{} sizes differ:\n{}", bad.len(), bad.join("\n"));
+}
+
+/// The comparer the app installs is `StrCmpLogicalW` itself, also for names past its 260-unit
+/// stack buffer and for names with punctuation and non-ASCII letters.
+#[test]
+fn installed_name_order_is_windows_own() {
+    let long_a = "a".repeat(300) + "1";
+    let long_b = "a".repeat(300) + "02";
+    let mut names: Vec<&str> = NAMES.iter().chain(WIDE_NAMES).copied().collect();
+    names.extend([long_a.as_str(), long_b.as_str(), "", "a"]);
+    let mut bad = Vec::new();
+    for a in &names {
+        for b in &names {
+            if windows_name_cmp(a, b) != windows_cmp(a, b) {
+                bad.push(format!("{a:.20?} vs {b:.20?}"));
+            }
+        }
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
+/// Never fails: prints where the portable name order still differs from Windows, for the CI log
+/// (`cargo test -p explorer-sys --test oracle divergence_report -- --nocapture`). The app is not
+/// affected: it sorts with Windows' own comparer.
+#[test]
+fn divergence_report() {
+    let all: Vec<&str> = NAMES.iter().chain(WIDE_NAMES).copied().collect();
+    let bad = mismatches(&all);
+    println!(
+        "portable name order, punctuation and non-ASCII names: {} of {} pairs differ",
+        bad.len(),
+        all.len() * all.len()
+    );
+    for line in bad.iter().take(40) {
+        println!("  {line}");
+    }
 }
