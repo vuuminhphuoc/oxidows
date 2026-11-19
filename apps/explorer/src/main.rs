@@ -2950,6 +2950,8 @@ fn recent_files(max: usize) -> Vec<Entry> {
 }
 
 fn main() -> eframe::Result {
+    // Sort names with Windows' own order (punctuation, accents, language) like File Explorer does.
+    explorer_sys::use_windows_name_order();
     // After an in-app update: wait for the replaced exe to exit, clear its leftovers.
     ui_common::update::startup();
     // OpenGL where there is a GPU driver, wgpu (WARP) otherwise; see `ui_common::choose_renderer`.
