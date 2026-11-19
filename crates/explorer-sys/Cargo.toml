@@ -8,6 +8,10 @@ license.workspace = true
 [lints]
 workspace = true
 
+[[bench]]
+name = "vs_windows"
+harness = false
+
 [dependencies]
 explorer-core = { workspace = true }
 

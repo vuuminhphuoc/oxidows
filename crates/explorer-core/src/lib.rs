@@ -1,4 +1,6 @@
 #![forbid(unsafe_code)]
+// Gate: library code reports errors instead of panicking (tests may unwrap).
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 //! Platform-independent part of the File Explorer.
 //!
@@ -519,14 +521,12 @@ pub fn timeline_positions(months: &[(&str, usize)], track_height: f32) -> Vec<Ti
 }
 
 pub fn timeline_hit(segments: &[TimelineSegment], y: f32) -> Option<&TimelineSegment> {
-    if segments.is_empty() {
-        return None;
+    let (first, last) = (segments.first()?, segments.last()?);
+    if y <= first.y_start {
+        return Some(first);
     }
-    if y <= segments[0].y_start {
-        return segments.first();
-    }
-    if y >= segments.last().unwrap().y_end {
-        return segments.last();
+    if y >= last.y_end {
+        return Some(last);
     }
     segments.iter().find(|s| y >= s.y_start && y <= s.y_end)
 }
@@ -740,7 +740,8 @@ pub fn format_attributes(attrs: u32) -> String {
     LETTERS.iter().filter(|(bit, _)| attrs & bit != 0).map(|&(_, c)| c).collect()
 }
 
-/// Natural ("logical") order like Explorer: case-insensitive and "file2" < "file10".
+/// Natural ("logical") order like Explorer (`StrCmpLogicalW`): case-insensitive, "file2" < "file10",
+/// and between equal numbers the one with more leading zeros first ("file02" < "file2").
 pub fn natural_cmp(a: &str, b: &str) -> Ordering {
     let (mut a, mut b) = (a.chars().peekable(), b.chars().peekable());
     loop {
@@ -752,7 +753,7 @@ pub fn natural_cmp(a: &str, b: &str) -> Ordering {
                 let na: String = std::iter::from_fn(|| a.next_if(|c| c.is_ascii_digit())).collect();
                 let nb: String = std::iter::from_fn(|| b.next_if(|c| c.is_ascii_digit())).collect();
                 let (ta, tb) = (na.trim_start_matches('0'), nb.trim_start_matches('0'));
-                let ord = ta.len().cmp(&tb.len()).then_with(|| ta.cmp(tb)).then_with(|| na.len().cmp(&nb.len()));
+                let ord = ta.len().cmp(&tb.len()).then_with(|| ta.cmp(tb)).then_with(|| nb.len().cmp(&na.len()));
                 if ord != Ordering::Equal {
                     return ord;
                 }
@@ -913,7 +914,14 @@ pub fn unique_name(base: &str, existing: &[Entry]) -> String {
     if !taken(base) {
         return base.into();
     }
-    (2..).map(|i| format!("{base} ({i})")).find(|n| !taken(n)).expect("unbounded")
+    let mut i = 2u64;
+    loop {
+        let name = format!("{base} ({i})");
+        if !taken(&name) {
+            return name;
+        }
+        i += 1;
+    }
 }
 
 /// Browser-style back/forward over visited folders.
@@ -1653,7 +1661,7 @@ mod tests {
     fn natural_order() {
         let mut v = vec!["file10", "File2", "file1", "a", "file02"];
         v.sort_by(|a, b| natural_cmp(a, b));
-        assert_eq!(v, ["a", "file1", "File2", "file02", "file10"]);
+        assert_eq!(v, ["a", "file1", "file02", "File2", "file10"]);
     }
 
     #[test]

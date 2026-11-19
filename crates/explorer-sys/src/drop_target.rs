@@ -207,7 +207,12 @@ impl IDropTarget_Impl for Target_Impl {
         Ok(())
     }
 
-    fn DragOver(&self, grfkeystate: MODIFIERKEYS_FLAGS, pt: &POINTL, pdweffect: *mut DROPEFFECT) -> windows::core::Result<()> {
+    fn DragOver(
+        &self,
+        grfkeystate: MODIFIERKEYS_FLAGS,
+        pt: &POINTL,
+        pdweffect: *mut DROPEFFECT,
+    ) -> windows::core::Result<()> {
         let allowed = unsafe { *pdweffect };
         {
             let mut s = self.st.borrow_mut();

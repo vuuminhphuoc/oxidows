@@ -1,4 +1,6 @@
 #![forbid(unsafe_code)]
+// Gate: library code reports errors instead of panicking (tests may unwrap).
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 //! Platform-independent part of the Task Manager.
 //!
