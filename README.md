@@ -90,7 +90,8 @@ cargo build --release -p oxi-taskmgr
 cargo build --release -p oxi-explorer
 ```
 
-The toolchain is pinned in `rust-toolchain.toml`. CI (`.github/workflows/ci.yml`) runs clippy, tests and a
+The toolchain is pinned in `rust-toolchain.toml`. CI (`.github/workflows/ci.yml`) runs fmt, clippy, tests (including
+checks against the real Windows, see [docs/testing.md](docs/testing.md)) and a
 release build on `windows-latest`, then [`scripts/smoke-all.ps1`](scripts/smoke-all.ps1) launches every
 `oxi-*.exe` and records time to window, private working set, idle CPU and a screenshot (job summary +
 `smoke-results` artifact), plus one screenshot per view listed in `apps/<name>/smoke.json`. Name a new
