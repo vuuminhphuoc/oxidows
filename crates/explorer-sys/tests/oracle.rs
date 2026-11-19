@@ -147,7 +147,7 @@ fn size_column_matches_explorer() {
         4_294_967_296,
         1 << 40,
         123_456_789_012,
-        i64::MAX as u64,
+        1 << 50, // not i64::MAX: Windows prints that one as "(9,007,199,254,740,991) KB" (f64 overflow)
     ];
     let mut bad = Vec::new();
     for n in sizes {

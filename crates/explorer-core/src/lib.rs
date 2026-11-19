@@ -740,7 +740,8 @@ pub fn format_attributes(attrs: u32) -> String {
     LETTERS.iter().filter(|(bit, _)| attrs & bit != 0).map(|&(_, c)| c).collect()
 }
 
-/// Natural ("logical") order like Explorer: case-insensitive and "file2" < "file10".
+/// Natural ("logical") order like Explorer (`StrCmpLogicalW`): case-insensitive, "file2" < "file10",
+/// and between equal numbers the one with more leading zeros first ("file02" < "file2").
 pub fn natural_cmp(a: &str, b: &str) -> Ordering {
     let (mut a, mut b) = (a.chars().peekable(), b.chars().peekable());
     loop {
@@ -752,7 +753,7 @@ pub fn natural_cmp(a: &str, b: &str) -> Ordering {
                 let na: String = std::iter::from_fn(|| a.next_if(|c| c.is_ascii_digit())).collect();
                 let nb: String = std::iter::from_fn(|| b.next_if(|c| c.is_ascii_digit())).collect();
                 let (ta, tb) = (na.trim_start_matches('0'), nb.trim_start_matches('0'));
-                let ord = ta.len().cmp(&tb.len()).then_with(|| ta.cmp(tb)).then_with(|| na.len().cmp(&nb.len()));
+                let ord = ta.len().cmp(&tb.len()).then_with(|| ta.cmp(tb)).then_with(|| nb.len().cmp(&na.len()));
                 if ord != Ordering::Equal {
                     return ord;
                 }
@@ -1660,7 +1661,7 @@ mod tests {
     fn natural_order() {
         let mut v = vec!["file10", "File2", "file1", "a", "file02"];
         v.sort_by(|a, b| natural_cmp(a, b));
-        assert_eq!(v, ["a", "file1", "File2", "file02", "file10"]);
+        assert_eq!(v, ["a", "file1", "file02", "File2", "file10"]);
     }
 
     #[test]
