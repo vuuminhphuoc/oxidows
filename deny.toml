@@ -1,0 +1,40 @@
+# cargo-deny policy, checked in CI (see .github/workflows/deny.yml).
+# Only the Windows build ships, so dependencies are resolved for Windows targets.
+[graph]
+targets = ["x86_64-pc-windows-msvc"]
+
+[advisories]
+# Known vulnerabilities and unsound/unmaintained crates fail the check.
+version = 2
+yanked = "deny"
+
+[licenses]
+version = 2
+# Permissive licenses only. self_cell is "Apache-2.0 OR GPL-2.0-only", so it is used under Apache-2.0.
+# OFL-1.1 and Ubuntu-font-1.0 come from the fonts bundled in epaint_default_fonts.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "0BSD",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "ISC",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "allow"
+# The workspace crates depend on each other by path, without a version, and cargo-deny treats
+# unpublished-but-not-`publish = false` crates as public. Cargo.lock pins every registry crate anyway.
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
