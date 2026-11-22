@@ -1,0 +1,26 @@
+version: 2
+updates:
+  # GitHub Actions are pinned by commit SHA (see .github/workflows); Dependabot bumps the SHA
+  # and the version comment together.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci"
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # Minor and patch bumps arrive as one PR; major bumps (egui and eframe move together) stay
+      # separate so each can be checked on its own.
+      cargo-minor-patch:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: "deps"
