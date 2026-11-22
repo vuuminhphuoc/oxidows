@@ -14,6 +14,7 @@ harness = false
 
 [dependencies]
 explorer-core = { workspace = true }
+oxi-crash = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [

@@ -489,7 +489,12 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GW_OWNER, GetWindow, GetWindowTextLengthW, GetWindowThreadProcessId, IsWindowVisible,
 };
 
+// A panic must not unwind out of the callback (the process would end): log it, keep enumerating.
 unsafe extern "system" fn collect_window(hwnd: HWND, lparam: LPARAM) -> windows_sys::core::BOOL {
+    oxi_crash::guard_or(1, || unsafe { collect_window_inner(hwnd, lparam) })
+}
+
+unsafe fn collect_window_inner(hwnd: HWND, lparam: LPARAM) -> windows_sys::core::BOOL {
     // SAFETY: lparam is the &mut HashSet passed by `window_pids`, alive for the EnumWindows call.
     unsafe {
         let set = &mut *(lparam as *mut std::collections::HashMap<u32, usize>);

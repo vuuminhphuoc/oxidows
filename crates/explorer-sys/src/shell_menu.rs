@@ -40,6 +40,13 @@ unsafe extern "system" fn forward_proc(
     _id: usize,
     _data: usize,
 ) -> LRESULT {
+    // A panic must not unwind out of a Windows callback (the process would end): log it and pass
+    // the message on to the next handler.
+    oxi_crash::guard(|| unsafe { forward_inner(hwnd, msg, wparam, lparam) })
+        .unwrap_or_else(|| unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) })
+}
+
+unsafe fn forward_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if matches!(msg, WM_INITMENUPOPUP | WM_DRAWITEM | WM_MEASUREITEM | WM_MENUCHAR) {
         let handled = ACTIVE.with(|a| {
             let a = a.borrow();

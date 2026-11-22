@@ -908,6 +908,18 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        // A panic inside a frame is logged to crash.log and shown in the status line; the window stays.
+        if let Some(notice) = oxi_crash::take_notice() {
+            self.status.set(notice);
+        }
+        if oxi_crash::guard_frame(|| self.frame(ui, frame)).is_none() {
+            ui.ctx().request_repaint();
+        }
+    }
+}
+
+impl App {
+    fn frame(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.drain();
         self.icons.poll(ui.ctx());
         // Started by the run-as-administrator task: take the foreground once the window shows
@@ -1101,6 +1113,8 @@ impl eframe::App for App {
 }
 
 fn main() -> eframe::Result {
+    // Panics go to %APPDATA%\oxidows\crash.log; risky boundaries catch them (see oxi-crash).
+    oxi_crash::install("oxi-taskmgr");
     // After an in-app update: wait for the replaced exe to exit, clear its leftovers.
     ui_common::update::startup();
     // `--set-default` / `--restore-default`: change Ctrl+Shift+Esc without opening the window

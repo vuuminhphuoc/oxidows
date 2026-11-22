@@ -1067,7 +1067,7 @@ impl App {
             .name("file-op".into())
             .spawn(move || {
                 let pre = undo::snapshot_targets(&sources, dest.as_deref());
-                let r = explorer_sys::file_op(op, &sources, dest.as_deref());
+                let r = contained(|| explorer_sys::file_op(op, &sources, dest.as_deref()));
                 // Skip in the Replace dialog still reports success: say what actually happened.
                 let desc = if op == FileOp::Move && matches!(r, Ok(true)) {
                     let moved = sources.iter().filter(|p| std::fs::symlink_metadata(p).is_err()).count();
@@ -1990,7 +1990,7 @@ impl App {
         thread::Builder::new()
             .name("shell-op".into())
             .spawn(move || {
-                let r = f(hwnd);
+                let r = contained(|| f(hwnd));
                 let _ = tx.send(Msg::OpDone(desc, r, None));
                 ctx.request_repaint();
             })
@@ -2093,7 +2093,7 @@ impl App {
         self.ops_running += 1;
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         thread::spawn(move || {
-            let r = explorer_sys::map_drive(letter, &remote, persistent, true).map(|()| true);
+            let r = contained(|| explorer_sys::map_drive(letter, &remote, persistent, true).map(|()| true));
             let _ = tx.send(Msg::OpDone(format!("Mapped {letter}: to {}", remote.display()), r, None));
             ctx.request_repaint();
         });
@@ -2622,8 +2622,51 @@ impl App {
     }
 }
 
+/// Runs a background operation so a panic inside it still ends it in the UI, as an error, instead
+/// of leaving the operation counter running (the panic itself is logged to crash.log).
+fn contained(f: impl FnOnce() -> std::io::Result<bool>) -> std::io::Result<bool> {
+    oxi_crash::guard(f).unwrap_or_else(|| Err(std::io::Error::other("internal error, see crash.log")))
+}
+
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        // A panic inside a frame is logged to crash.log and shown in the status line; the window stays.
+        if let Some(notice) = oxi_crash::take_notice() {
+            self.status = Some(notice);
+        }
+        if oxi_crash::guard_frame(|| self.frame(ui, frame)).is_none() {
+            ui.ctx().request_repaint();
+        }
+    }
+
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        // While another program drags files over the window the system sends no mouse messages, so
+        // the pointer is placed from the drag's own position (this is what lights up the folder
+        // under it).
+        if let Some(host) = &self.drop_host {
+            if let Some((x, y)) = host.client_pos() {
+                let ppp = ctx.pixels_per_point();
+                raw.events.push(egui::Event::PointerMoved(egui::pos2(x as f32 / ppp, y as f32 / ppp)));
+                self.ext_pointer = true;
+            } else if std::mem::take(&mut self.ext_pointer) {
+                raw.events.push(egui::Event::PointerGone);
+            }
+        }
+        if std::mem::take(&mut self.release_pointer) {
+            // The button went up inside the system drag loop; tell egui so it stops dragging.
+            raw.events.push(egui::Event::PointerButton {
+                pos: egui::Pos2::ZERO,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+            raw.events.push(egui::Event::PointerGone);
+        }
+    }
+}
+
+impl App {
+    fn frame(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};
         if self.hwnd == 0
             && let Ok(h) = frame.window_handle()
@@ -2744,31 +2787,6 @@ impl eframe::App for App {
         }
         self.options(ui.ctx());
         self.finish_drag(&ctx);
-    }
-
-    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
-        // While another program drags files over the window the system sends no mouse messages, so
-        // the pointer is placed from the drag's own position (this is what lights up the folder
-        // under it).
-        if let Some(host) = &self.drop_host {
-            if let Some((x, y)) = host.client_pos() {
-                let ppp = ctx.pixels_per_point();
-                raw.events.push(egui::Event::PointerMoved(egui::pos2(x as f32 / ppp, y as f32 / ppp)));
-                self.ext_pointer = true;
-            } else if std::mem::take(&mut self.ext_pointer) {
-                raw.events.push(egui::Event::PointerGone);
-            }
-        }
-        if std::mem::take(&mut self.release_pointer) {
-            // The button went up inside the system drag loop; tell egui so it stops dragging.
-            raw.events.push(egui::Event::PointerButton {
-                pos: egui::Pos2::ZERO,
-                button: egui::PointerButton::Primary,
-                pressed: false,
-                modifiers: egui::Modifiers::NONE,
-            });
-            raw.events.push(egui::Event::PointerGone);
-        }
     }
 }
 
@@ -2950,6 +2968,8 @@ fn recent_files(max: usize) -> Vec<Entry> {
 }
 
 fn main() -> eframe::Result {
+    // Panics go to %APPDATA%\oxidows\crash.log; risky boundaries catch them (see oxi-crash).
+    oxi_crash::install("oxi-explorer");
     // Sort names with Windows' own order (punctuation, accents, language) like File Explorer does.
     explorer_sys::use_windows_name_order();
     // After an in-app update: wait for the replaced exe to exit, clear its leftovers.

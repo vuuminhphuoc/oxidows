@@ -13,6 +13,7 @@ explorer-core = { workspace = true }
 explorer-sys = { workspace = true }
 egui = { workspace = true }
 ui-common = { workspace = true }
+oxi-crash = { workspace = true }
 oxi-share = { workspace = true }
 qrcode = { version = "0.14", default-features = false }
 egui_extras = { workspace = true }

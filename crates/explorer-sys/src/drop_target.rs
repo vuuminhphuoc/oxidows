@@ -17,7 +17,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use windows::Win32::Foundation::{HWND, POINT, POINTL};
+use windows::Win32::Foundation::{E_FAIL, HWND, POINT, POINTL};
 use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::System::Com::IDataObject;
 use windows::Win32::System::Ole::{
@@ -173,6 +173,11 @@ fn follow(st: &Shared, entering: bool, effect: &mut DROPEFFECT) {
     }
 }
 
+/// A panic must not unwind into the OLE drag loop (the process would end): log it and fail the call.
+fn contain(f: impl FnOnce() -> windows::core::Result<()>) -> windows::core::Result<()> {
+    oxi_crash::guard(f).unwrap_or_else(|| Err(E_FAIL.into()))
+}
+
 #[implement(IDropTarget)]
 struct Target {
     st: Shared,
@@ -187,24 +192,26 @@ impl IDropTarget_Impl for Target_Impl {
         pt: &POINTL,
         pdweffect: *mut DROPEFFECT,
     ) -> windows::core::Result<()> {
-        let allowed = unsafe { *pdweffect };
-        {
-            let mut s = self.st.borrow_mut();
-            s.active = true;
-            s.keys = grfkeystate;
-            s.pos = *pt;
-            s.allowed = allowed;
-            s.data = pdataobj.as_ref().cloned();
-            s.bound = None;
-            // The app says where the pointer is once it has drawn a frame; until then, nowhere.
-            s.wanted = None;
-        }
-        let mut effect = DROPEFFECT_NONE;
-        follow(&self.st, true, &mut effect);
-        dbg_log(format_args!("enter at {},{} effect {}", pt.x, pt.y, effect.0));
-        unsafe { *pdweffect = effect };
-        (self.st.borrow().wake)();
-        Ok(())
+        contain(|| {
+            let allowed = unsafe { *pdweffect };
+            {
+                let mut s = self.st.borrow_mut();
+                s.active = true;
+                s.keys = grfkeystate;
+                s.pos = *pt;
+                s.allowed = allowed;
+                s.data = pdataobj.as_ref().cloned();
+                s.bound = None;
+                // The app says where the pointer is once it has drawn a frame; until then, nowhere.
+                s.wanted = None;
+            }
+            let mut effect = DROPEFFECT_NONE;
+            follow(&self.st, true, &mut effect);
+            dbg_log(format_args!("enter at {},{} effect {}", pt.x, pt.y, effect.0));
+            unsafe { *pdweffect = effect };
+            (self.st.borrow().wake)();
+            Ok(())
+        })
     }
 
     fn DragOver(
@@ -213,34 +220,38 @@ impl IDropTarget_Impl for Target_Impl {
         pt: &POINTL,
         pdweffect: *mut DROPEFFECT,
     ) -> windows::core::Result<()> {
-        let allowed = unsafe { *pdweffect };
-        {
-            let mut s = self.st.borrow_mut();
-            s.keys = grfkeystate;
-            s.pos = *pt;
-            s.allowed = allowed;
-        }
-        let mut effect = DROPEFFECT_NONE;
-        follow(&self.st, false, &mut effect);
-        unsafe { *pdweffect = effect };
-        // The app reads the position on its next frame and says which folder it is over.
-        (self.st.borrow().wake)();
-        Ok(())
+        contain(|| {
+            let allowed = unsafe { *pdweffect };
+            {
+                let mut s = self.st.borrow_mut();
+                s.keys = grfkeystate;
+                s.pos = *pt;
+                s.allowed = allowed;
+            }
+            let mut effect = DROPEFFECT_NONE;
+            follow(&self.st, false, &mut effect);
+            unsafe { *pdweffect = effect };
+            // The app reads the position on its next frame and says which folder it is over.
+            (self.st.borrow().wake)();
+            Ok(())
+        })
     }
 
     fn DragLeave(&self) -> windows::core::Result<()> {
-        let bound = {
-            let mut s = self.st.borrow_mut();
-            s.active = false;
-            s.data = None;
-            s.wanted = None;
-            s.bound.take()
-        };
-        if let Some((_, t)) = bound {
-            let _ = unsafe { t.DragLeave() };
-        }
-        (self.st.borrow().wake)();
-        Ok(())
+        contain(|| {
+            let bound = {
+                let mut s = self.st.borrow_mut();
+                s.active = false;
+                s.data = None;
+                s.wanted = None;
+                s.bound.take()
+            };
+            if let Some((_, t)) = bound {
+                let _ = unsafe { t.DragLeave() };
+            }
+            (self.st.borrow().wake)();
+            Ok(())
+        })
     }
 
     fn Drop(
@@ -250,40 +261,42 @@ impl IDropTarget_Impl for Target_Impl {
         pt: &POINTL,
         pdweffect: *mut DROPEFFECT,
     ) -> windows::core::Result<()> {
-        let allowed = unsafe { *pdweffect };
-        {
-            let mut s = self.st.borrow_mut();
-            s.keys = grfkeystate;
-            s.pos = *pt;
-            s.allowed = allowed;
-            if let Some(d) = pdataobj.as_ref() {
-                s.data = Some(d.clone());
+        contain(|| {
+            let allowed = unsafe { *pdweffect };
+            {
+                let mut s = self.st.borrow_mut();
+                s.keys = grfkeystate;
+                s.pos = *pt;
+                s.allowed = allowed;
+                if let Some(d) = pdataobj.as_ref() {
+                    s.data = Some(d.clone());
+                }
             }
-        }
-        // Make sure the shell target of the folder under the pointer is the one entered.
-        let mut effect = DROPEFFECT_NONE;
-        follow(&self.st, false, &mut effect);
-        let (bound, data, keys, pos) = {
-            let mut s = self.st.borrow_mut();
-            s.active = false;
-            s.wanted = None;
-            (s.bound.take(), s.data.take(), s.keys, s.pos)
-        };
-        let mut result = DROPEFFECT_NONE;
-        if let (Some((_, t)), Some(data)) = (bound, data) {
-            let mut e = allowed;
-            if unsafe { t.Drop(&data, keys, pos, &mut e) }.is_ok() {
-                result = e;
+            // Make sure the shell target of the folder under the pointer is the one entered.
+            let mut effect = DROPEFFECT_NONE;
+            follow(&self.st, false, &mut effect);
+            let (bound, data, keys, pos) = {
+                let mut s = self.st.borrow_mut();
+                s.active = false;
+                s.wanted = None;
+                (s.bound.take(), s.data.take(), s.keys, s.pos)
+            };
+            let mut result = DROPEFFECT_NONE;
+            if let (Some((_, t)), Some(data)) = (bound, data) {
+                let mut e = allowed;
+                if unsafe { t.Drop(&data, keys, pos, &mut e) }.is_ok() {
+                    result = e;
+                }
             }
-        }
-        dbg_log(format_args!("drop -> {}", result.0));
-        unsafe { *pdweffect = result };
-        {
-            let mut s = self.st.borrow_mut();
-            s.dropped = true;
-        }
-        (self.st.borrow().wake)();
-        Ok(())
+            dbg_log(format_args!("drop -> {}", result.0));
+            unsafe { *pdweffect = result };
+            {
+                let mut s = self.st.borrow_mut();
+                s.dropped = true;
+            }
+            (self.st.borrow().wake)();
+            Ok(())
+        })
     }
 }
 

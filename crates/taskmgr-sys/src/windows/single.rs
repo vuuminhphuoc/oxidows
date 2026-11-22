@@ -68,7 +68,11 @@ pub fn claim(wait_for_previous: bool) -> bool {
 
 /// Shows, restores and focuses another process's Task Manager window. False if there is none.
 fn bring_forward() -> bool {
+    // A panic must not unwind out of the callback (the process would end): log it, keep enumerating.
     unsafe extern "system" fn each(h: HWND, found: LPARAM) -> BOOL {
+        oxi_crash::guard_or(1, || unsafe { each_inner(h, found) })
+    }
+    unsafe fn each_inner(h: HWND, found: LPARAM) -> BOOL {
         let mut pid = 0u32;
         let mut buf = [0u16; 128];
         // SAFETY: valid window handle from EnumWindows; buffers sized as passed.

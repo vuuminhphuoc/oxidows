@@ -94,6 +94,13 @@ fn show_window(h: HWND) {
 }
 
 unsafe extern "system" fn subclass(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _id: usize, _data: usize) -> LRESULT {
+    // A panic must not unwind out of a Windows callback (the process would end): log it and pass
+    // the message on to the next handler.
+    oxi_crash::guard(|| unsafe { subclass_inner(h, msg, wp, lp) })
+        .unwrap_or_else(|| unsafe { DefSubclassProc(h, msg, wp, lp) })
+}
+
+unsafe fn subclass_inner(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     if msg == CALLBACK {
         match (lp & 0xffff) as u32 {
             WM_LBUTTONUP => show_window(h),

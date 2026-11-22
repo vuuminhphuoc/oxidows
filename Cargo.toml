@@ -16,6 +16,7 @@ explorer-core = { path = "crates/explorer-core" }
 explorer-sys = { path = "crates/explorer-sys" }
 ui-common = { path = "crates/ui-common" }
 oxi-share = { path = "crates/oxi-share" }
+oxi-crash = { path = "crates/oxi-crash" }
 eframe = { version = "0.36", default-features = false }
 egui = "0.36"
 egui_extras = { version = "0.36", default-features = false }
@@ -30,7 +31,9 @@ todo = "warn"
 opt-level = 3
 lto = "fat"
 codegen-units = 1
-panic = "abort"
+# Unwind, so a panic can be caught at the risky boundaries (see crates/oxi-crash) instead of ending
+# the process.
+panic = "unwind"
 strip = true
 
 [profile.dev.package."*"]

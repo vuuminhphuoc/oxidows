@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 taskmgr-core = { workspace = true }
+oxi-crash = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [

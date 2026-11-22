@@ -769,6 +769,7 @@ name = "explorer-sys"
 version = "0.12.3"
 dependencies = [
  "explorer-core",
+ "oxi-crash",
  "windows",
  "windows-core",
  "windows-sys 0.61.2",
@@ -1873,6 +1874,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxi-crash"
+version = "0.12.3"
+
+[[package]]
 name = "oxi-explorer"
 version = "0.12.3"
 dependencies = [
@@ -1881,6 +1886,7 @@ dependencies = [
  "egui_extras",
  "explorer-core",
  "explorer-sys",
+ "oxi-crash",
  "oxi-share",
  "qrcode",
  "raw-window-handle",
@@ -1908,6 +1914,7 @@ dependencies = [
  "eframe",
  "egui",
  "egui_extras",
+ "oxi-crash",
  "raw-window-handle",
  "taskmgr-core",
  "taskmgr-sys",
@@ -2606,6 +2613,7 @@ version = "0.12.3"
 name = "taskmgr-sys"
 version = "0.12.3"
 dependencies = [
+ "oxi-crash",
  "taskmgr-core",
  "windows-sys 0.61.2",
 ]

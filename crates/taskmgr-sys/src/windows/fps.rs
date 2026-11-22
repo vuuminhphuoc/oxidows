@@ -86,6 +86,11 @@ fn same(a: &GUID, b: &GUID) -> bool {
 }
 
 unsafe extern "system" fn on_event(rec: *mut EVENT_RECORD) {
+    // A panic must not unwind out of the ETW callback (the process would end): log it, drop the event.
+    let _ = oxi_crash::guard(|| unsafe { on_event_inner(rec) });
+}
+
+unsafe fn on_event_inner(rec: *mut EVENT_RECORD) {
     // SAFETY: ETW passes a valid record for the duration of the call.
     let rec = unsafe { &*rec };
     let h = &rec.EventHeader;

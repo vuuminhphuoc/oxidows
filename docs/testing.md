@@ -29,3 +29,20 @@ shows them all.
 
 Run locally on Windows with `cargo test -p explorer-sys --test oracle` and
 `cargo bench -p explorer-sys --bench vs_windows`.
+
+## Panics
+
+The release profile unwinds (`panic = "unwind"`), so one panic does not end the app. `oxi-crash` is
+the one place that deals with it:
+
+- `oxi_crash::install` (first thing in each `main`) logs every panic, with the thread, location and
+  a backtrace, to `%APPDATA%\oxidows\crash.log` (cut back past 256 KB) and queues a one-line notice
+  that the status bar shows (`take_notice`).
+- `guard_frame` wraps each UI frame: a panic is caught and the window stays. Five panicking frames
+  within three seconds mean the app cannot draw any more, so it exits instead of looping.
+- Every `extern "system"` callback (drop target, window procedures, ETW, `EnumWindows`) wraps its
+  body in `guard` / `guard_or`. Rust aborts if a panic unwinds out of one, so a new callback must
+  do the same and fall back to the default handling.
+- Background file operations report a panic as an error, so the operation counter still ends.
+
+`cargo test -p oxi-crash` covers the catch, the log and the notice.

@@ -165,6 +165,20 @@ unsafe extern "system" fn reply_wndproc(
     wparam: windows_sys::Win32::Foundation::WPARAM,
     lparam: windows_sys::Win32::Foundation::LPARAM,
 ) -> windows_sys::Win32::Foundation::LRESULT {
+    // A panic must not unwind out of a Windows callback (the process would end): log it and let
+    // the default procedure handle the message.
+    oxi_crash::guard(|| unsafe { reply_inner(hwnd, msg, wparam, lparam) }).unwrap_or_else(|| unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::DefWindowProcW(hwnd, msg, wparam, lparam)
+    })
+}
+
+#[cfg(windows)]
+unsafe fn reply_inner(
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    msg: u32,
+    wparam: windows_sys::Win32::Foundation::WPARAM,
+    lparam: windows_sys::Win32::Foundation::LPARAM,
+) -> windows_sys::Win32::Foundation::LRESULT {
     use windows_sys::Win32::System::DataExchange::COPYDATASTRUCT;
     use windows_sys::Win32::UI::WindowsAndMessaging::{DefWindowProcW, GWLP_USERDATA, GetWindowLongPtrW, WM_COPYDATA};
 
